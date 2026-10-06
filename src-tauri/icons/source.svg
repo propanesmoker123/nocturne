@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#1B0B3A"/>
+      <stop offset="0.5" stop-color="#5B1A78"/>
+      <stop offset="1" stop-color="#FF3D6E"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.28" cy="0.22" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <mask id="moon">
+      <rect width="1024" height="1024" fill="#000"/>
+      <circle cx="392" cy="505" r="236" fill="#fff"/>
+      <circle cx="498" cy="420" r="200" fill="#000"/>
+    </mask>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="210" fill="url(#bg)"/>
+  <rect x="48" y="48" width="928" height="928" rx="210" fill="url(#glow)"/>
+  <rect width="1024" height="1024" fill="#FFFFFF" mask="url(#moon)"/>
+  <g fill="#FFFFFF">
+    <rect x="636" y="572" width="44" height="168" rx="22" opacity="0.95"/>
+    <rect x="706" y="452" width="44" height="288" rx="22" opacity="0.95"/>
+    <rect x="776" y="520" width="44" height="220" rx="22" opacity="0.95"/>
+    <rect x="846" y="620" width="44" height="120" rx="22" opacity="0.95"/>
+  </g>
+</svg>
