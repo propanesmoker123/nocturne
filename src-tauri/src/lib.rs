@@ -1,4 +1,5 @@
 mod http;
+mod island;
 mod proxy;
 mod session;
 mod vk;
@@ -27,6 +28,7 @@ pub fn run() {
         .manage(http::Http::new())
         .manage(vk::Limiter::new())
         .manage(session::SessionState::new())
+        .manage(island::IslandState::new())
         .invoke_handler(tauri::generate_handler![
             vk::vk_api,
             proxy::proxy_fetch,
@@ -34,12 +36,14 @@ pub fn run() {
             session::session_login,
             session::session_logout,
             http::set_user_agent,
+            island::island_set_hit_rect,
+            island::island_configure,
             app_quit,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 match window.label() {
-                    session::SESSION_LABEL => {
+                    session::SESSION_LABEL | island::LABEL => {
                         api.prevent_close();
                         let _ = window.hide();
                     }
@@ -50,6 +54,8 @@ pub fn run() {
         })
         .setup(|app| {
             session::create_window(app.handle())?;
+            island::create_window(app.handle())?;
+            island::start(app.handle());
             if let Some(w) = app.get_webview_window("main") {
                 w.show()?;
             }

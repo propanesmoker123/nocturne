@@ -161,12 +161,18 @@ export function startBridges(actions: BridgeActions) {
   }, 2000)
 
   applyAccent(null)
+  const pushIslandSettings = () => void emitTo('island', EV.islandSettings, useSettings.getState().island)
+  pushIslandSettings()
   useSettings.subscribe((st, prev) => {
+    if (st.island !== prev.island) pushIslandSettings()
     if (st.accent === prev.accent) return
     applyAccent(artworkColor)
     pushIsland()
   })
 
   void listen<PlayerCommand>(EV.playerCommand, (e) => runCommand(e.payload, actions))
-  void listen(EV.requestState, () => pushIsland())
+  void listen(EV.requestState, () => {
+    pushIslandSettings()
+    pushIsland()
+  })
 }

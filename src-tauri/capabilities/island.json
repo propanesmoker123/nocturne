@@ -8,7 +8,7 @@
     "core:event:default",
     "store:default",
     "allow-island-set-hit-rect",
-    "allow-island-get-state",
+    "allow-island-configure",
     "allow-proxy-fetch"
   ]
 }

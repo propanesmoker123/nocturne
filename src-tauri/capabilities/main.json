@@ -29,8 +29,6 @@
     "allow-session-login",
     "allow-session-logout",
     "allow-set-user-agent",
-    "allow-island-set-enabled",
-    "allow-island-set-mode",
     "allow-media-update",
     "allow-import-wallpaper",
     "allow-app-quit"
