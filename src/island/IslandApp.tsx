@@ -1,4 +1,4 @@
-import { Minus } from 'lucide-react'
+import { Minus, Pin, PinOff } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState, type WheelEvent } from 'react'
 import { Artwork } from '../components/Artwork'
@@ -8,14 +8,41 @@ import { Slider } from '../components/Slider'
 import { EV, type PlayerCommand, type PlayerSnapshot } from '../lib/events'
 import { formatTime } from '../lib/format'
 import { DEFAULT_SETTINGS, type IslandSettings } from '../lib/settings'
-import { emitTo, invoke, listen } from '../lib/tauri'
-import { SHAPES, hitRect, isInteractive, type IslandShape } from './geometry'
+import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
+import { SHAPES, collapseDelay, hitRect, isInteractive, type IslandShape } from './geometry'
 import s from './island.module.css'
 
 const spring = { type: 'spring', stiffness: 420, damping: 32, mass: 0.85 } as const
 const fade = { initial: { opacity: 0, filter: 'blur(6px)' }, animate: { opacity: 1, filter: 'blur(0px)' }, exit: { opacity: 0, filter: 'blur(6px)' }, transition: { duration: 0.18 } }
 
 const send = (cmd: PlayerCommand) => void emitTo('main', EV.playerCommand, cmd)
+const setIsland = (patch: Partial<IslandSettings>) => void emitTo('main', EV.islandSet, patch)
+
+let dragArmed = false
+let moveTimer: ReturnType<typeof setTimeout> | undefined
+
+/** Drag the island by any empty spot; the new place is saved once the window stops moving. */
+async function startDrag() {
+  if (!isTauri()) return
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  dragArmed = true
+  await getCurrentWindow().startDragging().catch(() => (dragArmed = false))
+}
+
+async function watchMoves() {
+  if (!isTauri()) return () => {}
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  return getCurrentWindow().onMoved(({ payload }) => {
+    if (!dragArmed) return
+    clearTimeout(moveTimer)
+    moveTimer = setTimeout(() => {
+      dragArmed = false
+      setIsland({ position: { x: payload.x, y: payload.y } })
+    }, 350)
+  })
+}
+
+const isControl = (t: EventTarget | null) => !!(t as HTMLElement | null)?.closest('button, [role="slider"], input')
 
 /** Position interpolated from the last snapshot so the scrubber moves smoothly between events. */
 function useLivePosition(st: PlayerSnapshot | null, active: boolean) {
@@ -30,14 +57,21 @@ function useLivePosition(st: PlayerSnapshot | null, active: boolean) {
   return Math.min(st.duration || Infinity, st.position + extra)
 }
 
-function Expanded({ st, accent }: { st: PlayerSnapshot; accent: string }) {
+function Expanded({ st, accent, locked }: { st: PlayerSnapshot; accent: string; locked: boolean }) {
   const t = st.track!
   const live = useLivePosition(st, true)
   const [drag, setDrag] = useState<number | null>(null)
   const pos = drag ?? live
   const d = st.duration || t.duration
   return (
-    <motion.div className={s.expanded} {...fade}>
+    <motion.div
+      className={s.expanded}
+      data-draggable={!locked || undefined}
+      {...fade}
+      onMouseDown={(e) => {
+        if (e.button === 0 && !locked && !isControl(e.target)) void startDrag()
+      }}
+    >
       <div className={s.top}>
         <button type="button" aria-label="Открыть Nocturne" onClick={() => send({ type: 'showWindow' })}>
           <Artwork src={t.coverLarge ?? t.cover} size={56} radius={13} seed={t.key} />
@@ -50,6 +84,15 @@ function Expanded({ st, accent }: { st: PlayerSnapshot; accent: string }) {
           <div className={`${s.artist} truncate`}>{t.artist}</div>
         </div>
         <div className={s.topActions}>
+          <IconButton
+            className={s.round}
+            size={30}
+            active={locked}
+            label={locked ? 'Открепить — можно перетаскивать' : 'Закрепить на месте'}
+            onClick={() => setIsland({ locked: !locked })}
+          >
+            {locked ? <Pin size={15} strokeWidth={2.2} /> : <PinOff size={15} strokeWidth={2.2} />}
+          </IconButton>
           <IconButton className={s.round} size={30} label={t.liked ? 'Убрать из Моей музыки' : 'Добавить в Мою музыку'} onClick={() => send({ type: 'toggleLike' })}>
             {t.liked ? <IconCheck size={16} /> : <IconPlus size={16} />}
           </IconButton>
@@ -116,7 +159,7 @@ export function IslandApp() {
     if (inside) {
       if (settingsRef.current.expandOn === 'hover') hoverTimer.current = setTimeout(() => setExpanded(true), 220)
     } else {
-      leaveTimer.current = setTimeout(() => setExpanded(false), settingsRef.current.expandOn === 'hover' ? 380 : 900)
+      leaveTimer.current = setTimeout(() => setExpanded(false), collapseDelay(settingsRef.current.expandOn))
     }
   }, [])
 
@@ -126,6 +169,7 @@ export function IslandApp() {
       listen<IslandSettings>(EV.islandSettings, (e) => setSettings(e.payload)),
       listen<{ inside: boolean }>(EV.islandHover, (e) => onHover(e.payload.inside)),
     ]
+    offs.push(watchMoves())
     void emitTo('main', EV.requestState)
     return () => offs.forEach((p) => void p.then((off) => off()))
   }, [onHover])
@@ -152,9 +196,15 @@ export function IslandApp() {
 
   useEffect(() => {
     void invoke('island_configure', {
-      config: { wantVisible: settings.enabled && hasTrack, mode: settings.visibility, monitor: settings.monitor, hideInFullscreen: settings.hideInFullscreen },
+      config: {
+        wantVisible: settings.enabled && hasTrack,
+        mode: settings.visibility,
+        monitor: settings.monitor,
+        hideInFullscreen: settings.hideInFullscreen,
+        position: settings.position,
+      },
     }).catch(() => {})
-  }, [settings.enabled, settings.visibility, settings.monitor, settings.hideInFullscreen, hasTrack])
+  }, [settings.enabled, settings.visibility, settings.monitor, settings.hideInFullscreen, settings.position, hasTrack])
 
   useEffect(() => {
     void invoke('island_set_hit_rect', { ...hitRect(shape), interactive: isInteractive(shape, settings.expandOn) }).catch(() => {})
@@ -204,7 +254,7 @@ export function IslandApp() {
               )}
             </motion.div>
           )}
-          {shape === 'expanded' && <Expanded key="expanded" st={st} accent={accent} />}
+          {shape === 'expanded' && <Expanded key="expanded" st={st} accent={accent} locked={settings.locked} />}
         </AnimatePresence>
       </motion.div>
     </div>

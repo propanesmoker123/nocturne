@@ -1,6 +1,6 @@
 import { artworkAccent, toCss } from '../lib/color'
 import { EV, type PlayerCommand, type PlayerSnapshot } from '../lib/events'
-import { useSettings } from '../lib/settings'
+import { useSettings, type IslandSettings } from '../lib/settings'
 import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
 import { usePlayer, type PlayerState } from './store'
 
@@ -171,6 +171,10 @@ export function startBridges(actions: BridgeActions) {
   })
 
   void listen<PlayerCommand>(EV.playerCommand, (e) => runCommand(e.payload, actions))
+  void listen<Partial<IslandSettings>>(EV.islandSet, (e) => {
+    const { position, locked } = e.payload
+    useSettings.getState().updateIsland({ ...(position !== undefined ? { position } : {}), ...(locked !== undefined ? { locked } : {}) })
+  })
   void listen(EV.requestState, () => {
     pushIslandSettings()
     pushIsland()

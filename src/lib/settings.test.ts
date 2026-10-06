@@ -38,6 +38,15 @@ describe('mergeSettings', () => {
     expect(mergeSettings({ wallpaper: { kind: 'video' } }).wallpaper).toEqual(DEFAULT_SETTINGS.wallpaper)
   })
 
+  test('keeps a saved island position and lock, rejects junk', () => {
+    const s = mergeSettings({ island: { position: { x: -1500, y: 40 }, locked: true } })
+    expect(s.island.position).toEqual({ x: -1500, y: 40 })
+    expect(s.island.locked).toBe(true)
+    expect(mergeSettings({ island: { position: { x: 'a', y: 2 } } }).island.position).toBeNull()
+    expect(mergeSettings({ island: { position: 7 } }).island.position).toBeNull()
+    expect(mergeSettings({}).island.locked).toBe(false)
+  })
+
   test('merges island options', () => {
     const s = mergeSettings({ island: { expandOn: 'click', monitor: 'DISPLAY2', enabled: 'no' } })
     expect(s.island.expandOn).toBe('click')

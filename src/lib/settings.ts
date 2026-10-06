@@ -20,6 +20,10 @@ export interface IslandSettings {
   hideInFullscreen: boolean
   /** Monitor name, or null for the primary monitor. */
   monitor: string | null
+  /** Window top-left in physical screen px when the user dragged it; null = top centre. */
+  position: { x: number; y: number } | null
+  /** Pinned in place: dragging is disabled. */
+  locked: boolean
 }
 
 export interface Settings {
@@ -40,7 +44,7 @@ export const DEFAULT_SETTINGS: Settings = {
   wallpaperBlur: 0,
   wallpaperDim: 0.55,
   accent: 'auto',
-  island: { enabled: true, expandOn: 'hover', visibility: 'always', showOnTrackChange: true, hideInFullscreen: true, monitor: null },
+  island: { enabled: true, expandOn: 'hover', visibility: 'always', showOnTrackChange: true, hideInFullscreen: true, monitor: null, position: null, locked: false },
   hotkeys: DEFAULT_HOTKEYS,
   hotkeysEnabled: true,
   closeToTray: true,
@@ -90,6 +94,11 @@ export function mergeSettings(saved: unknown): Settings {
       showOnTrackChange: bool(isl.showOnTrackChange, d.island.showOnTrackChange),
       hideInFullscreen: bool(isl.hideInFullscreen, d.island.hideInFullscreen),
       monitor: typeof isl.monitor === 'string' && isl.monitor ? isl.monitor : null,
+      position:
+        isObj(isl.position) && Number.isFinite(isl.position.x) && Number.isFinite(isl.position.y)
+          ? { x: Math.round(isl.position.x as number), y: Math.round(isl.position.y as number) }
+          : null,
+      locked: bool(isl.locked, d.island.locked),
     },
     hotkeys,
     hotkeysEnabled: bool(saved.hotkeysEnabled, d.hotkeysEnabled),

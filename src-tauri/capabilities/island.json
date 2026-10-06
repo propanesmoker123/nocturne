@@ -9,6 +9,6 @@
     "store:default",
     "allow-island-set-hit-rect",
     "allow-island-configure",
-    "allow-proxy-fetch"
+    "core:window:allow-start-dragging"
   ]
 }

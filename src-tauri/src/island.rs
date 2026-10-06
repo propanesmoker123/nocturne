@@ -9,6 +9,14 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        if cfg!(debug_assertions) {
+            eprintln!("[island] {}", format!($($arg)*));
+        }
+    };
+}
+
 pub const LABEL: &str = "island";
 pub const WIDTH: f64 = 480.0;
 pub const HEIGHT: f64 = 260.0;
@@ -40,6 +48,19 @@ pub fn covers_monitor(window: PxRect, monitor: PxRect) -> bool {
     window.0 <= monitor.0 && window.1 <= monitor.1 && window.2 >= monitor.2 && window.3 >= monitor.3
 }
 
+/// Where the island window goes: the user's saved spot if it is still on a monitor,
+/// otherwise the top centre of `fallback`. `width` is the window width in physical px.
+pub fn resolve_position(saved: Option<(i32, i32)>, monitors: &[PxRect], fallback: PxRect, width: i32) -> (i32, i32) {
+    if let Some(p) = saved {
+        // The pill sits at the top centre of the window: that point must be on a screen.
+        let pill = (p.0 + width / 2, p.1 + 8);
+        if monitors.iter().any(|m| contains(*m, pill)) {
+            return p;
+        }
+    }
+    (fallback.0 + (fallback.2 - fallback.0 - width) / 2, fallback.1)
+}
+
 pub fn contains(rect: PxRect, point: (i32, i32)) -> bool {
     point.0 >= rect.0 && point.0 < rect.2 && point.1 >= rect.1 && point.1 < rect.3
 }
@@ -52,6 +73,15 @@ pub struct IslandConfig {
     pub mode: String,
     pub monitor: Option<String>,
     pub hide_in_fullscreen: bool,
+    /// Window top-left (physical px) chosen by dragging; None = top centre of `monitor`.
+    #[serde(default)]
+    pub position: Option<IslandPos>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+pub struct IslandPos {
+    pub x: i32,
+    pub y: i32,
 }
 
 struct Inner {
@@ -59,7 +89,7 @@ struct Inner {
     interactive: bool,
     config: IslandConfig,
     shown: bool,
-    placed_for: Option<Option<String>>,
+    placed_for: Option<(Option<String>, Option<IslandPos>)>,
 }
 
 pub struct IslandState(Mutex<Inner>);
@@ -69,7 +99,7 @@ impl IslandState {
         Self(Mutex::new(Inner {
             rect: Rect::default(),
             interactive: false,
-            config: IslandConfig { want_visible: false, mode: "always".into(), monitor: None, hide_in_fullscreen: true },
+            config: IslandConfig { want_visible: false, mode: "always".into(), monitor: None, hide_in_fullscreen: true, position: None },
             shown: false,
             placed_for: None,
         }))
@@ -99,29 +129,29 @@ pub fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .build()
 }
 
-/// Puts the island at the top centre of the named monitor (or the primary one).
-fn place(win: &WebviewWindow, monitor: Option<&str>) {
+/// Puts the island where the user dragged it, or at the top centre of the named monitor
+/// (or the primary one). The window size follows the target monitor's scale.
+fn place(win: &WebviewWindow, monitor: Option<&str>, saved: Option<IslandPos>) {
     let monitors = win.available_monitors().unwrap_or_default();
-    let target = monitor
+    let fallback = monitor
         .and_then(|name| monitors.iter().find(|m| m.name().map(|n| n.as_str()) == Some(name)).cloned())
         .or_else(|| win.primary_monitor().ok().flatten())
         .or_else(|| monitors.first().cloned());
-    let Some(m) = target else { return };
-    let scale = m.scale_factor();
-    let w = (WIDTH * scale).round() as i32;
-    let h = (HEIGHT * scale).round() as i32;
-    let x = m.position().x + (m.size().width as i32 - w) / 2;
-    let y = m.position().y;
-    let _ = win.set_position(PhysicalPosition::new(x, y));
-    let _ = win.set_size(PhysicalSize::new(w as u32, h as u32));
-}
-
-macro_rules! trace {
-    ($($arg:tt)*) => {
-        if cfg!(debug_assertions) {
-            eprintln!("[island] {}", format!($($arg)*));
-        }
+    let Some(fallback) = fallback else { return };
+    let rect = |m: &tauri::Monitor| -> PxRect {
+        let (p, s) = (m.position(), m.size());
+        (p.x, p.y, p.x + s.width as i32, p.y + s.height as i32)
     };
+    let rects: Vec<PxRect> = monitors.iter().map(rect).collect();
+    let fallback_w = (WIDTH * fallback.scale_factor()).round() as i32;
+    let (x, y) = resolve_position(saved.map(|p| (p.x, p.y)), &rects, rect(&fallback), fallback_w);
+    let scale = monitors
+        .iter()
+        .find(|m| contains(rect(m), (x + fallback_w / 2, y + 8)))
+        .map(|m| m.scale_factor())
+        .unwrap_or_else(|| fallback.scale_factor());
+    let _ = win.set_position(PhysicalPosition::new(x, y));
+    let _ = win.set_size(PhysicalSize::new((WIDTH * scale).round() as u32, (HEIGHT * scale).round() as u32));
 }
 
 /// True when an exclusive D3D game runs, or the foreground window (not ours, not the
@@ -208,17 +238,19 @@ pub fn start(app: &AppHandle) {
                 let c = &g.config;
                 let show = c.want_visible && !(c.hide_in_fullscreen && fullscreen) && (c.mode != "background" || !main_is_active);
                 let monitor = c.monitor.clone();
-                let needs_place = g.placed_for.as_ref() != Some(&monitor);
+                let saved = c.position;
+                let key = (monitor.clone(), saved);
+                let needs_place = g.placed_for.as_ref() != Some(&key);
                 if needs_place {
-                    g.placed_for = Some(monitor.clone());
+                    g.placed_for = Some(key);
                 }
                 let changed = show != g.shown;
                 g.shown = show;
-                ((show, changed), g.rect, g.interactive, monitor, needs_place)
+                ((show, changed), g.rect, g.interactive, (monitor, saved), needs_place)
             };
             let (show, visibility_changed) = should_show;
             if needs_place || (visibility_changed && show) {
-                place(&win, monitor.as_deref());
+                place(&win, monitor.0.as_deref(), monitor.1);
             }
             if visibility_changed {
                 trace!("visible -> {show} (fullscreen {fullscreen}, main active {main_is_active})");
@@ -316,6 +348,19 @@ mod tests {
         assert!(contains((0, 0, 1920, 1080), (720, 0)));
         assert!(!contains((0, 0, 1920, 1080), (1920, 10)));
         assert!(contains((-1920, 0, 0, 1080), (-1200, 0)));
+    }
+
+    #[test]
+    fn saved_position_on_a_monitor_is_kept() {
+        let mons = [(0, 0, 1920, 1080), (-1920, 0, 0, 1080)];
+        assert_eq!(resolve_position(Some((-1500, 300)), &mons, mons[0], 480), (-1500, 300));
+    }
+
+    #[test]
+    fn saved_position_off_every_monitor_falls_back_to_top_centre() {
+        let mons = [(0, 0, 1920, 1080)];
+        assert_eq!(resolve_position(Some((-1500, 300)), &mons, mons[0], 480), (720, 0));
+        assert_eq!(resolve_position(None, &mons, mons[0], 480), (720, 0));
     }
 
     #[test]

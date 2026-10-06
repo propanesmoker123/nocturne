@@ -21,3 +21,8 @@ export function hitRect(shape: IslandShape) {
 export function isInteractive(shape: IslandShape, expandOn: 'hover' | 'click'): boolean {
   return shape === 'expanded' || expandOn === 'click'
 }
+
+/** How long the expanded island lingers after the cursor leaves it (ms). */
+export function collapseDelay(expandOn: 'hover' | 'click'): number {
+  return expandOn === 'hover' ? 300 : 200
+}

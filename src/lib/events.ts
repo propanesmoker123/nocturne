@@ -7,6 +7,7 @@ export const EV = {
   requestState: 'player:request-state',
   islandHover: 'island:hover',
   islandSettings: 'island:settings',
+  islandSet: 'island:set',
   sessionReady: 'session:ready',
   sessionLoggedOut: 'session:logged-out',
 } as const

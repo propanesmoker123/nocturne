@@ -77,11 +77,17 @@
   padding: 16px 18px 14px;
   gap: 8px;
 }
+.expanded[data-draggable] {
+  cursor: grab;
+}
+.expanded[data-draggable]:active {
+  cursor: grabbing;
+}
 .top {
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 .title {
   display: flex;

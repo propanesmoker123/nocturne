@@ -179,6 +179,14 @@ export function SettingsPage() {
             ))}
           </select>
         </Row>
+        <Row title="Положение" sub={st.island.position ? 'Там, куда вы перетащили остров' : 'Сверху по центру монитора. Раскройте остров и тяните за пустое место'}>
+          <Button disabled={!st.island.position} onClick={() => st.updateIsland({ position: null })}>
+            Вернуть наверх
+          </Button>
+        </Row>
+        <Row title="Закрепить на месте" sub="Остров не сдвинется случайно">
+          <Switch label="Закрепить на месте" checked={st.island.locked} onChange={(v) => st.updateIsland({ locked: v })} />
+        </Row>
         <Row title="Показывать при смене трека">
           <Switch label="Показывать при смене трека" checked={st.island.showOnTrackChange} onChange={(v) => st.updateIsland({ showOnTrackChange: v })} />
         </Row>
