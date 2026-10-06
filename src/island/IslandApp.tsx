@@ -1,4 +1,4 @@
-import { Minus, Pin, PinOff } from 'lucide-react'
+import { LocateFixed, Minus, Pin, PinOff } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState, type WheelEvent } from 'react'
 import { Artwork } from '../components/Artwork'
@@ -57,7 +57,7 @@ function useLivePosition(st: PlayerSnapshot | null, active: boolean) {
   return Math.min(st.duration || Infinity, st.position + extra)
 }
 
-function Expanded({ st, accent, locked }: { st: PlayerSnapshot; accent: string; locked: boolean }) {
+function Expanded({ st, accent, locked, moved }: { st: PlayerSnapshot; accent: string; locked: boolean; moved: boolean }) {
   const t = st.track!
   const live = useLivePosition(st, true)
   const [drag, setDrag] = useState<number | null>(null)
@@ -93,6 +93,11 @@ function Expanded({ st, accent, locked }: { st: PlayerSnapshot; accent: string; 
           >
             {locked ? <Pin size={15} strokeWidth={2.2} /> : <PinOff size={15} strokeWidth={2.2} />}
           </IconButton>
+          {moved && (
+            <IconButton className={s.round} size={30} label="Вернуть наверх по центру" onClick={() => setIsland({ position: null })}>
+              <LocateFixed size={15} strokeWidth={2.2} />
+            </IconButton>
+          )}
           <IconButton className={s.round} size={30} label={t.liked ? 'Убрать из Моей музыки' : 'Добавить в Мою музыку'} onClick={() => send({ type: 'toggleLike' })}>
             {t.liked ? <IconCheck size={16} /> : <IconPlus size={16} />}
           </IconButton>
@@ -254,7 +259,7 @@ export function IslandApp() {
               )}
             </motion.div>
           )}
-          {shape === 'expanded' && <Expanded key="expanded" st={st} accent={accent} locked={settings.locked} />}
+          {shape === 'expanded' && <Expanded key="expanded" st={st} accent={accent} locked={settings.locked} moved={!!settings.position} />}
         </AnimatePresence>
       </motion.div>
     </div>

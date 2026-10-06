@@ -16,6 +16,8 @@ use url::Url;
 pub const SESSION_LABEL: &str = "vk-session";
 const IDLE_URL: &str = "https://vk.ru/robots.txt";
 const LOGIN_URL: &str = "https://vk.ru/";
+/// Covers the parked page (robots.txt) while VK's login page is still loading.
+const LOADING_SCRIPT: &str = r#"document.documentElement.innerHTML = '<body style="margin:0;height:100vh;display:grid;place-items:center;background:#1c1c1e;color:#98989f;font:15px/1.4 Segoe UI,sans-serif">Открываем страницу входа VK…</body>'"#;
 const WEB_APP_ID: u32 = 6287487;
 /// A page reload of the same URL re-checks the session at most this often.
 const PAGE_RECHECK: Duration = Duration::from_secs(4);
@@ -372,6 +374,7 @@ pub fn session_status(st: tauri::State<'_, SessionState>) -> SessionStatus {
 pub fn session_login(app: AppHandle) -> Result<(), String> {
     trace!("login requested");
     let w = app.get_webview_window(SESSION_LABEL).ok_or("session window missing")?;
+    let _ = w.eval(LOADING_SCRIPT);
     w.navigate(LOGIN_URL.parse().expect("login url")).map_err(|e| e.to_string())?;
     w.center().ok();
     w.show().map_err(|e| e.to_string())?;

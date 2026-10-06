@@ -4,17 +4,37 @@ import { useSession } from '../app/session'
 import { WindowControls } from '../app/Titlebar'
 import { Button, Spinner } from '../components/controls'
 import { Wallpaper } from '../components/Wallpaper'
+import { useUpdates } from '../lib/updates'
 import s from './Login.module.css'
+
+/** People stuck on this screen still need to get the update that fixes their login. */
+function UpdateNotice() {
+  const { phase, version, progress, install } = useUpdates()
+  if (phase !== 'available' && phase !== 'downloading') return null
+  return (
+    <button type="button" className={s.update} disabled={phase === 'downloading'} onClick={() => void install()}>
+      {phase === 'downloading' ? (
+        <>
+          <Spinner size={14} /> Загружаем обновление… {Math.round(progress * 100)}%
+        </>
+      ) : (
+        `Вышла Nocturne ${version} — обновить`
+      )}
+    </button>
+  )
+}
 
 export function Login() {
   const loggingIn = useSession((x) => x.loggingIn)
   const login = useSession((x) => x.login)
+  const resetLogin = useSession((x) => x.resetLogin)
   return (
     <div className={s.screen}>
       <Wallpaper config={{ kind: 'preset', preset: 'dusk' }} look={{ blur: 0, dim: 0.45 }} />
       <div className={s.chrome} data-tauri-drag-region>
         <WindowControls />
       </div>
+      <UpdateNotice />
       <motion.div
         className={s.card}
         initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
@@ -33,6 +53,9 @@ export function Login() {
               </div>
               <button type="button" className={s.link} onClick={() => void login()}>
                 Открыть окно входа ещё раз
+              </button>
+              <button type="button" className={s.link} onClick={() => void resetLogin()}>
+                Не получается? Начать вход с чистого листа
               </button>
             </>
           ) : (

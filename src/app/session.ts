@@ -12,6 +12,8 @@ interface SessionState {
   user: User | null
   loggingIn: boolean
   login(): Promise<void>
+  /** Forgets VK cookies left by a half-finished login and opens the login page again. */
+  resetLogin(): Promise<void>
   logout(): Promise<void>
 }
 
@@ -22,6 +24,15 @@ export const useSession = create<SessionState>((set) => ({
   async login() {
     set({ loggingIn: true })
     try {
+      await invoke('session_login')
+    } catch {
+      set({ loggingIn: false })
+    }
+  },
+  async resetLogin() {
+    set({ loggingIn: true })
+    try {
+      await invoke('session_logout')
       await invoke('session_login')
     } catch {
       set({ loggingIn: false })
