@@ -50,6 +50,8 @@ export function normalizeTrack(raw: RawAudio, now: number = Date.now()): Track {
     artists: artists.length ? artists : [{ name: artist }],
     playable: !!url && !raw.content_restricted,
     hasLyrics: !!raw.has_lyrics,
+    liked: !!raw.like,
+    releaseId: raw.release_audio_id || undefined,
   }
 }
 

@@ -88,6 +88,13 @@ describe('normalizeTrack', () => {
     expect(t.subtitle).toBe('Remix')
   })
 
+  test('maps the library flag and the release id', () => {
+    const t = normalizeTrack(rawAudio({ like: true, release_audio_id: '-2001_77' }))
+    expect(t.liked).toBe(true)
+    expect(t.releaseId).toBe('-2001_77')
+    expect(normalizeTrack(rawAudio()).liked).toBe(false)
+  })
+
   test('decodes html entities VK leaves in titles', () => {
     expect(normalizeTrack(rawAudio({ title: 'Rock &amp; Roll', artist: 'A &quot;B&quot;' })).title).toBe('Rock & Roll')
     expect(normalizeTrack(rawAudio({ title: 'x', artist: 'A &quot;B&quot;' })).artist).toBe('A "B"')

@@ -23,6 +23,9 @@ export interface Track {
   artists: { id?: string; name: string }[]
   playable: boolean
   hasLyrics: boolean
+  /** In the viewer's "Моя музыка" (VK `like` flag). */
+  liked: boolean
+  releaseId?: string
 }
 
 export interface Playlist {

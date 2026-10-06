@@ -37,6 +37,9 @@ export interface RawAudio {
   content_restricted?: number
   has_lyrics?: boolean
   track_code?: string
+  /** true when the track is in the viewer's library */
+  like?: boolean
+  release_audio_id?: string
   main_artists?: RawArtist[]
   featured_artists?: RawArtist[]
   album?: { id: number; owner_id: number; title: string; access_key?: string; thumb?: RawPhotoSizes }
