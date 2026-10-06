@@ -1,0 +1,24 @@
+/* ── Page header (iOS large title) ─────────────────────────── */
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0 18px;
+}
+.largeTitle {
+  font: var(--t-large);
+  letter-spacing: var(--track-large);
+  margin: 0;
+}
+.subtitle {
+  font: var(--t-callout);
+  color: var(--label-2);
+  margin: 4px 0 0;
+}
+.headerActions {
+  display: flex;
+  gap: 10px;
+  flex: none;
+}
+

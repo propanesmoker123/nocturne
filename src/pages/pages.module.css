@@ -1,0 +1,171 @@
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -4px 0 18px;
+}
+.filter {
+  position: relative;
+  margin-left: auto;
+  width: 240px;
+}
+.filter svg {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--label-3);
+  pointer-events: none;
+}
+.filter input {
+  width: 100%;
+  height: 32px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 10px 0 31px;
+  background: var(--fill-4);
+  color: var(--label);
+  font: var(--t-callout);
+}
+.filter input:focus {
+  background: var(--fill-3);
+  box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--accent) 70%, transparent);
+}
+.filter input::placeholder {
+  color: var(--label-3);
+}
+.meta {
+  font: var(--t-callout);
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Playlist / album header */
+.hero {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  gap: 28px;
+  align-items: end;
+  padding: 10px 0 26px;
+}
+.heroArt {
+  width: 232px;
+  height: 232px;
+  border-radius: 14px;
+  box-shadow: var(--shadow-art);
+}
+.heroKind {
+  font: 600 13px/16px var(--font);
+  color: var(--label-2);
+  margin-bottom: 6px;
+}
+.heroTitle {
+  font: var(--t-title1);
+  font-size: 34px;
+  line-height: 40px;
+  letter-spacing: var(--track-large);
+  margin: 0 0 6px;
+}
+.heroOwner {
+  font: 500 17px/22px var(--font);
+  color: var(--accent-text);
+  margin-bottom: 6px;
+}
+.heroMeta {
+  font: var(--t-subhead);
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 10px;
+}
+.heroDesc {
+  font: var(--t-callout);
+  color: var(--label-2);
+  max-width: 64ch;
+  margin: 0 0 16px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  user-select: text;
+}
+.heroActions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+/* Friends */
+.people {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 26px 18px;
+}
+.person {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 10px 6px;
+  border-radius: 16px;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.person:hover {
+  background: var(--fill-4);
+}
+.person[data-locked] {
+  opacity: 0.5;
+}
+.personPhoto {
+  position: relative;
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--fill-3);
+  box-shadow: var(--shadow-1);
+}
+.lock {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--bg-elevated-2);
+  color: var(--label-2);
+  box-shadow: 0 0 0 3px #000;
+}
+.personName {
+  font: 500 14px/18px var(--font);
+}
+.personSub {
+  font: var(--t-footnote);
+  color: var(--label-3);
+  margin-top: -6px;
+}
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 10px 0 26px;
+}
+.profilePhoto {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: var(--shadow-art);
+}
+
+.hint {
+  font: var(--t-callout);
+  color: var(--label-3);
+  padding: 40px 0;
+  text-align: center;
+}
+.greeting {
+  color: var(--label-2);
+}

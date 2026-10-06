@@ -1,0 +1,101 @@
+.root {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.main {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.scroller {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-padding-top: calc(var(--titlebar-h) + 12px);
+}
+
+.page {
+  min-height: 100%;
+  padding: calc(var(--titlebar-h) + 6px) var(--gutter) calc(var(--player-h) + 56px);
+}
+
+/* ── Titlebar / navigation bar ─────────────────────────────── */
+.titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  height: var(--titlebar-h);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 0 6px 0 14px;
+  transition: background-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+}
+.titlebar[data-scrolled] {
+  background: var(--mat-chrome);
+  backdrop-filter: var(--mat-blur);
+  -webkit-backdrop-filter: var(--mat-blur);
+  box-shadow: 0 0.5px 0 var(--separator);
+}
+.titlebar[data-overlay] {
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.nav {
+  display: flex;
+  gap: 2px;
+}
+.inlineTitle {
+  font: var(--t-headline);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+  max-width: 40vw;
+  pointer-events: none;
+}
+.titlebar[data-scrolled] .inlineTitle {
+  opacity: 1;
+  transform: none;
+}
+.titlebar[data-overlay] .inlineTitle {
+  opacity: 0;
+}
+.windowControls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.winBtn {
+  width: 40px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--label-2);
+  transition: background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.winBtn:hover {
+  background: var(--fill-3);
+  color: var(--label);
+}
+.winBtn[data-close]:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+.splash {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--label-2);
+}

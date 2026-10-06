@@ -1,0 +1,156 @@
+.wrap {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 14px;
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.bar {
+  pointer-events: auto;
+  position: relative;
+  width: 100%;
+  max-width: 1180px;
+  height: var(--player-h);
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(300px, 460px) minmax(0, 1fr);
+  align-items: center;
+  gap: 20px;
+  padding: 0 18px 0 12px;
+  border-radius: 20px;
+  background: var(--mat-thick);
+  backdrop-filter: var(--mat-blur-strong);
+  -webkit-backdrop-filter: var(--mat-blur-strong);
+  box-shadow: var(--shadow-float), var(--mat-edge);
+}
+
+/* Left: artwork + titles */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.artButton {
+  position: relative;
+  border-radius: var(--r-sm);
+  flex: none;
+}
+.artButton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(0, 0, 0, 0.45) center / 20px no-repeat;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 15l6-6 6 6'/%3E%3C/svg%3E");
+  opacity: 0;
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+.artButton:hover::after {
+  opacity: 1;
+}
+.titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font: var(--t-headline);
+  font-size: 14px;
+}
+.artist {
+  font: var(--t-subhead);
+  color: var(--label-2);
+}
+.artist button:hover {
+  color: var(--label);
+  text-decoration: underline;
+  text-decoration-color: var(--label-3);
+}
+.explicit {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  background: var(--label-3);
+  color: #000;
+  font: 700 9px/1 var(--font);
+}
+
+/* Center: transport + scrubber */
+.center {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+.transport {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+}
+.play {
+  width: 40px;
+  height: 40px;
+}
+.timeline {
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  align-items: center;
+  gap: 8px;
+  font: var(--t-caption);
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
+}
+.timeline span:first-child {
+  text-align: right;
+}
+
+/* Right: extras + volume */
+.right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+.volume {
+  width: 112px;
+  margin-left: 2px;
+}
+.empty {
+  color: var(--label-3);
+  font: var(--t-subhead);
+  white-space: nowrap;
+}
+.placeholderArt {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--r-sm);
+  background: var(--fill-4);
+  display: grid;
+  place-items: center;
+  color: var(--label-3);
+}
+
+@media (max-width: 1100px) {
+  .bar {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 380px) auto;
+    gap: 12px;
+  }
+  .volume {
+    display: none;
+  }
+}

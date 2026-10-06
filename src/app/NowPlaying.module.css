@@ -1,0 +1,211 @@
+.sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  overflow: hidden;
+  background: #050505;
+  color: #fff;
+}
+
+/* Living backdrop: three blurred copies of the artwork drifting at different speeds */
+.backdrop {
+  position: absolute;
+  inset: -20%;
+  filter: blur(90px) saturate(1.7) brightness(0.72);
+  transform: translateZ(0);
+}
+.backdrop img {
+  position: absolute;
+  width: 70%;
+  height: 70%;
+  object-fit: cover;
+  border-radius: 50%;
+  opacity: 0.95;
+}
+.backdrop img:nth-child(1) {
+  left: 0;
+  top: 0;
+  animation: drift1 48s linear infinite;
+}
+.backdrop img:nth-child(2) {
+  right: 0;
+  bottom: 0;
+  animation: drift2 62s linear infinite;
+}
+.backdrop img:nth-child(3) {
+  left: 25%;
+  top: 25%;
+  width: 55%;
+  height: 55%;
+  animation: drift3 80s linear infinite reverse;
+  mix-blend-mode: screen;
+  opacity: 0.6;
+}
+@keyframes drift1 {
+  to {
+    transform: rotate(360deg) translate(4%, 2%);
+  }
+}
+@keyframes drift2 {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+@keyframes drift3 {
+  50% {
+    transform: rotate(180deg) scale(1.2);
+  }
+  to {
+    transform: rotate(360deg) scale(1);
+  }
+}
+.scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 30% 40%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.35) 70%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.45) 100%);
+}
+
+.chrome {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 0 14px;
+  z-index: 2;
+}
+
+.layout {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: 56px;
+  padding: calc(var(--titlebar-h) + 24px) 56px 40px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  gap: 28px;
+}
+.artFrame {
+  --art: clamp(240px, min(50vh, 40vw), 540px);
+  width: var(--art);
+  height: var(--art);
+  border-radius: 14px;
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.75), 0 10px 26px -8px rgba(0, 0, 0, 0.5);
+}
+
+.controls {
+  width: min(100%, calc(clamp(240px, min(50vh, 40vw), 540px) + 40px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.titleBlock {
+  flex: 1;
+  min-width: 0;
+}
+.title {
+  font: 700 24px/30px var(--font);
+  letter-spacing: var(--track-title);
+}
+.artist {
+  font: 500 19px/24px var(--font);
+  color: rgba(255, 255, 255, 0.62);
+}
+.artist:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+.roundBtn {
+  background: rgba(255, 255, 255, 0.14);
+}
+.roundBtn:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+.times {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -6px;
+  font: 500 12px/14px var(--font);
+  color: rgba(255, 255, 255, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+.transport {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 6px;
+}
+.big {
+  width: 64px;
+  height: 64px;
+}
+.volumeRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* Right column: queue / lyrics */
+.side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 14px;
+}
+.sidePanel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.22);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 1080px) {
+  .layout {
+    grid-template-columns: 1fr;
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+  .side {
+    display: none;
+  }
+  .side[data-forced] {
+    display: flex;
+    position: absolute;
+    inset: calc(var(--titlebar-h) + 16px) 24px 24px auto;
+    width: min(420px, calc(100% - 48px));
+    padding: 12px;
+    border-radius: 22px;
+    background: rgba(20, 20, 22, 0.72);
+    backdrop-filter: var(--mat-blur-strong);
+    -webkit-backdrop-filter: var(--mat-blur-strong);
+    z-index: 3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backdrop img {
+    animation: none;
+  }
+}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { filterTracks, formatCount, formatTime, normalizeSearch, pluralRu } from './format'
+import { filterTracks, formatCount, formatLongDuration, formatTime, normalizeSearch, pluralRu } from './format'
 
 describe('formatTime', () => {
   test('formats minutes and seconds', () => {
@@ -80,5 +80,14 @@ describe('filterTracks', () => {
     const r = filterTracks(list, 'ЕЛКА')
     expect(performance.now() - t0).toBeLessThan(50)
     expect(r).toHaveLength(1)
+  })
+})
+
+describe('formatLongDuration', () => {
+  test('uses minutes below an hour and hours plus minutes above', () => {
+    expect(formatLongDuration(0)).toBe('0 мин')
+    expect(formatLongDuration(42 * 60 + 20)).toBe('42 мин')
+    expect(formatLongDuration(72 * 60)).toBe('1 ч 12 мин')
+    expect(formatLongDuration(2 * 3600 + 10)).toBe('2 ч')
   })
 })

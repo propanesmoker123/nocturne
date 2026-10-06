@@ -39,3 +39,12 @@ export function filterTracks<T extends { title: string; artist: string }>(list: 
     return words.every((w) => hay.includes(w))
   })
 }
+
+/** Total running time for list headers: "42 мин", "1 ч 12 мин", "2 ч". */
+export function formatLongDuration(sec: number): string {
+  const minutes = Math.floor(Math.max(0, sec) / 60)
+  if (minutes < 60) return `${minutes} мин`
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return m ? `${h} ч ${m} мин` : `${h} ч`
+}

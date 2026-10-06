@@ -1,0 +1,84 @@
+.screen {
+  position: relative;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  isolation: isolate;
+}
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 460px;
+  padding: 0 24px;
+}
+.icon {
+  width: 112px;
+  height: 112px;
+  border-radius: 26px;
+  box-shadow: 0 24px 60px -16px rgba(0, 0, 0, 0.7), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  margin-bottom: 26px;
+}
+.title {
+  font: 700 40px/46px var(--font);
+  letter-spacing: -0.028em;
+  margin: 0 0 10px;
+}
+.lead {
+  font: 400 17px/24px var(--font);
+  color: var(--label-2);
+  margin: 0 0 30px;
+}
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-height: 92px;
+}
+.note {
+  font: var(--t-footnote);
+  color: var(--label-3);
+  max-width: 360px;
+  margin: 10px 0 0;
+}
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 500 15px/20px var(--font);
+  color: var(--label-2);
+}
+.link {
+  font: 600 14px/18px var(--font);
+  color: var(--accent-text);
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+.link:hover {
+  background: var(--fill-4);
+}
+.disclaimer {
+  position: absolute;
+  bottom: 22px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font: var(--t-footnote);
+  color: var(--label-3);
+}
+.chrome {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-h);
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 6px;
+  align-items: center;
+  z-index: 2;
+}

@@ -1,0 +1,107 @@
+.layer {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: #000;
+  pointer-events: none;
+}
+
+.media {
+  position: absolute;
+  inset: -4%;
+  width: 108%;
+  height: 108%;
+  object-fit: cover;
+  filter: blur(var(--wp-blur, 0px)) saturate(var(--wp-sat, 1));
+}
+
+/* Dynamic: the playing artwork, heavily blurred and slowly drifting */
+.dynamic {
+  position: absolute;
+  inset: -25%;
+  filter: blur(110px) saturate(1.5);
+  opacity: 0.85;
+}
+.dynamic img {
+  position: absolute;
+  width: 60%;
+  height: 60%;
+  object-fit: cover;
+  border-radius: 50%;
+  transition: opacity 1.2s var(--ease-out);
+}
+.dynamic img:nth-child(1) {
+  left: 0;
+  top: 0;
+  animation: wp-drift 70s linear infinite;
+}
+.dynamic img:nth-child(2) {
+  right: 0;
+  bottom: 0;
+  animation: wp-drift 90s linear infinite reverse;
+}
+@keyframes wp-drift {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, var(--wp-dim, 0.55));
+}
+.vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 80% at 70% 0%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.45) 100%);
+}
+
+/* Presets: slow mesh gradients */
+.preset {
+  position: absolute;
+  inset: -30%;
+  filter: blur(80px);
+  animation: wp-spin 60s linear infinite;
+}
+.preset i {
+  position: absolute;
+  width: 55%;
+  height: 55%;
+  border-radius: 50%;
+  mix-blend-mode: screen;
+}
+.preset i:nth-child(1) {
+  left: 5%;
+  top: 10%;
+  animation: wp-float 24s var(--ease-in-out) infinite alternate;
+}
+.preset i:nth-child(2) {
+  right: 5%;
+  top: 20%;
+  animation: wp-float 30s var(--ease-in-out) infinite alternate-reverse;
+}
+.preset i:nth-child(3) {
+  left: 25%;
+  bottom: 5%;
+  animation: wp-float 36s var(--ease-in-out) infinite alternate;
+}
+@keyframes wp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes wp-float {
+  to {
+    transform: translate(12%, -10%) scale(1.15);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dynamic img,
+  .preset,
+  .preset i {
+    animation: none;
+  }
+}
