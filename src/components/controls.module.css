@@ -113,16 +113,10 @@
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18), 0 1px 1px rgba(0, 0, 0, 0.16);
-  transition: transform var(--dur-3) cubic-bezier(0.34, 1.4, 0.64, 1), width var(--dur-2) var(--ease-out);
-}
-.switch:active::after {
-  width: 28px;
+  transition: transform var(--dur-3) var(--ease-out);
 }
 .switch[aria-checked='true']::after {
   transform: translateX(17px);
-}
-.switch[aria-checked='true']:active::after {
-  transform: translateX(12px);
 }
 
 /* Segmented control */

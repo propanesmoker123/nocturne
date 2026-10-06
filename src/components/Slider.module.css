@@ -1,6 +1,7 @@
 .slider {
-  --track: 5px;
+  /* The track is drawn at its active height and squashed with scaleY at rest. */
   --track-active: 9px;
+  --track-scale: 0.56;
   position: relative;
   display: flex;
   align-items: center;
@@ -10,26 +11,27 @@
   cursor: default;
 }
 .slider[data-size='sm'] {
-  --track: 4px;
   --track-active: 7px;
+  --track-scale: 0.57;
 }
 .slider[data-size='lg'] {
-  --track: 7px;
   --track-active: 12px;
+  --track-scale: 0.58;
   height: 28px;
 }
 .track {
   position: relative;
   width: 100%;
-  height: var(--track);
+  height: var(--track-active);
   border-radius: var(--r-pill);
   background: rgba(255, 255, 255, 0.16);
   overflow: hidden;
-  transition: height var(--dur-3) cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform: scaleY(var(--track-scale));
+  transition: transform var(--dur-2) var(--ease-out);
 }
 .slider:hover .track,
 .slider[data-dragging] .track {
-  height: var(--track-active);
+  transform: scaleY(1);
 }
 .buffered,
 .fill {

@@ -32,6 +32,18 @@ pub fn hit_test(cursor: (f64, f64), win_pos: (i32, i32), scale: f64, rect: Rect)
     x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
 }
 
+/// Physical-pixel rectangle (left, top, right, bottom).
+pub type PxRect = (i32, i32, i32, i32);
+
+/// A window counts as full screen when it covers its whole monitor (not just the work area).
+pub fn covers_monitor(window: PxRect, monitor: PxRect) -> bool {
+    window.0 <= monitor.0 && window.1 <= monitor.1 && window.2 >= monitor.2 && window.3 >= monitor.3
+}
+
+pub fn contains(rect: PxRect, point: (i32, i32)) -> bool {
+    point.0 >= rect.0 && point.0 < rect.2 && point.1 >= rect.1 && point.1 < rect.3
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct IslandConfig {
@@ -104,17 +116,60 @@ fn place(win: &WebviewWindow, monitor: Option<&str>) {
     let _ = win.set_size(PhysicalSize::new(w as u32, h as u32));
 }
 
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        if cfg!(debug_assertions) {
+            eprintln!("[island] {}", format!($($arg)*));
+        }
+    };
+}
+
+/// True when an exclusive D3D game runs, or the foreground window (not ours, not the
+/// desktop) covers the whole monitor the island sits on.
 #[cfg(windows)]
-fn foreground_fullscreen() -> bool {
-    use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN};
-    let mut state = 0;
-    // SAFETY: plain out-parameter call into shell32.
-    let hr = unsafe { SHQueryUserNotificationState(&mut state) };
-    hr == 0 && (state == QUNS_BUSY || state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE)
+fn fullscreen_on(island_pos: (i32, i32)) -> bool {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId};
+
+    // SAFETY: plain Win32 queries with valid out-pointers; handles are only read.
+    unsafe {
+        let mut state = 0;
+        if SHQueryUserNotificationState(&mut state) == 0 && state == QUNS_RUNNING_D3D_FULL_SCREEN {
+            return true;
+        }
+        let fg = GetForegroundWindow();
+        if fg.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, &mut pid);
+        if pid == std::process::id() {
+            return false;
+        }
+        let mut class = [0u16; 64];
+        let n = GetClassNameW(fg, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+        let class = String::from_utf16_lossy(&class[..n]);
+        if matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
+            return false;
+        }
+        let mut wr: RECT = std::mem::zeroed();
+        if GetWindowRect(fg, &mut wr) == 0 {
+            return false;
+        }
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), &mut mi) == 0 {
+            return false;
+        }
+        let m = (mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom);
+        covers_monitor((wr.left, wr.top, wr.right, wr.bottom), m) && contains(m, island_pos)
+    }
 }
 
 #[cfg(not(windows))]
-fn foreground_fullscreen() -> bool {
+fn fullscreen_on(_island_pos: (i32, i32)) -> bool {
     false
 }
 
@@ -139,7 +194,12 @@ pub fn start(app: &AppHandle) {
             tick = tick.wrapping_add(1);
             let Some(win) = app.get_webview_window(LABEL) else { continue };
             if tick % 10 == 0 {
-                fullscreen = foreground_fullscreen();
+                let pos = win.outer_position().map(|p| (p.x + 8, p.y + 8)).unwrap_or((0, 0));
+                let now_full = fullscreen_on(pos);
+                if now_full != fullscreen {
+                    trace!("full screen on island monitor: {now_full}");
+                }
+                fullscreen = now_full;
                 main_is_active = main_active(&app);
             }
             let state = app.state::<IslandState>();
@@ -161,6 +221,7 @@ pub fn start(app: &AppHandle) {
                 place(&win, monitor.as_deref());
             }
             if visibility_changed {
+                trace!("visible -> {show} (fullscreen {fullscreen}, main active {main_is_active})");
                 if show {
                     let _ = win.show();
                     let _ = win.set_always_on_top(true);
@@ -197,6 +258,7 @@ pub fn island_set_hit_rect(state: tauri::State<'_, IslandState>, x: f64, y: f64,
 
 #[tauri::command]
 pub fn island_configure(state: tauri::State<'_, IslandState>, config: IslandConfig) {
+    trace!("configure {config:?}");
     if let Ok(mut g) = state.0.lock() {
         g.config = config;
     }
@@ -234,6 +296,26 @@ mod tests {
     fn edges_count_as_inside() {
         assert!(hit_test((140.0, 8.0), (0, 0), 1.0, PILL));
         assert!(hit_test((340.0, 44.0), (0, 0), 1.0, PILL));
+    }
+
+    #[test]
+    fn borderless_fullscreen_covers_the_monitor() {
+        assert!(covers_monitor((0, 0, 1920, 1080), (0, 0, 1920, 1080)));
+        assert!(covers_monitor((-1920, 0, 0, 1080), (-1920, 0, 0, 1080)));
+    }
+
+    #[test]
+    fn maximized_window_above_the_taskbar_does_not() {
+        // Maximized windows overhang by 8 px but stop at the taskbar.
+        assert!(!covers_monitor((-8, -8, 1928, 1048), (0, 0, 1920, 1080)));
+        assert!(!covers_monitor((100, 100, 900, 700), (0, 0, 1920, 1080)));
+    }
+
+    #[test]
+    fn contains_checks_half_open_bounds() {
+        assert!(contains((0, 0, 1920, 1080), (720, 0)));
+        assert!(!contains((0, 0, 1920, 1080), (1920, 10)));
+        assert!(contains((-1920, 0, 0, 1080), (-1200, 0)));
     }
 
     #[test]
