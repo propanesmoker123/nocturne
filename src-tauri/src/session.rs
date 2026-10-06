@@ -87,6 +87,11 @@ pub fn parse_poll_result(raw: &str) -> Option<Result<WebToken, SessionMsgError>>
     }
 }
 
+/// Does a failed refresh mean the VK session is gone (as opposed to a transient failure)?
+pub fn is_signed_out(err: &str) -> bool {
+    err.starts_with("Rejected(")
+}
+
 /// Lets only genuine page loads (Started → Finished) trigger a session check, and not more
 /// than once per `PAGE_RECHECK` for the same URL. WebView2 reports a spurious "Finished"
 /// without "Started" after cancelled navigations; those must never trigger anything.
@@ -345,7 +350,17 @@ pub async fn get_token(app: &AppHandle) -> Result<String, String> {
     if st.status().state == Phase::None {
         return Err("not logged in".to_string());
     }
-    refresh(app).await.map(|t| t.access_token)
+    match refresh(app).await {
+        Ok(t) => Ok(t.access_token),
+        Err(e) => {
+            if is_signed_out(&e) {
+                st.invalidate();
+                st.set_phase(Phase::None);
+                let _ = app.emit("session:logged-out", ());
+            }
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -414,6 +429,18 @@ mod tests {
     fn okay_without_token_is_rejected() {
         let raw = r#"{"ok":true,"body":{"type":"okay","data":{"user_id":42}}}"#;
         assert!(matches!(parse_poll_result(raw), Some(Err(SessionMsgError::Rejected(_)))));
+    }
+
+    #[test]
+    fn rejected_refresh_means_signed_out() {
+        assert!(is_signed_out(&format!("{:?}", SessionMsgError::Rejected("\"unauthorized\"".into()))));
+    }
+
+    #[test]
+    fn transient_failures_do_not_sign_out() {
+        assert!(!is_signed_out("timeout"));
+        assert!(!is_signed_out(&format!("{:?}", SessionMsgError::Script("TypeError: Failed to fetch".into()))));
+        assert!(!is_signed_out("eval timeout"));
     }
 
     #[test]
