@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-island-set-mode"
+description = "Enables the island_set_mode command without any pre-configured scope."
+commands.allow = ["island_set_mode"]
+
+[[permission]]
+identifier = "deny-island-set-mode"
+description = "Denies the island_set_mode command without any pre-configured scope."
+commands.deny = ["island_set_mode"]

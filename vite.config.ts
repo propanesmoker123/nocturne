@@ -20,8 +20,8 @@ export default defineConfig({
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
-        island: resolve(__dirname, 'island.html'),
+        main: resolve(import.meta.dirname, 'index.html'),
+        island: resolve(import.meta.dirname, 'island.html'),
       },
     },
   },

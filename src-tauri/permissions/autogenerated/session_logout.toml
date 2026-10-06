@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-session-logout"
+description = "Enables the session_logout command without any pre-configured scope."
+commands.allow = ["session_logout"]
+
+[[permission]]
+identifier = "deny-session-logout"
+description = "Denies the session_logout command without any pre-configured scope."
+commands.deny = ["session_logout"]

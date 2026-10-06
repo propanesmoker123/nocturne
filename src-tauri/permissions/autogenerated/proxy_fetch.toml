@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-proxy-fetch"
+description = "Enables the proxy_fetch command without any pre-configured scope."
+commands.allow = ["proxy_fetch"]
+
+[[permission]]
+identifier = "deny-proxy-fetch"
+description = "Denies the proxy_fetch command without any pre-configured scope."
+commands.deny = ["proxy_fetch"]

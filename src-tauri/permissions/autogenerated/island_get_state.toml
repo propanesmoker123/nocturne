@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-island-get-state"
+description = "Enables the island_get_state command without any pre-configured scope."
+commands.allow = ["island_get_state"]
+
+[[permission]]
+identifier = "deny-island-get-state"
+description = "Denies the island_get_state command without any pre-configured scope."
+commands.deny = ["island_get_state"]
