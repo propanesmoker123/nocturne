@@ -11,9 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Webview
 
 macro_rules! trace {
     ($($arg:tt)*) => {
-        if cfg!(debug_assertions) {
-            eprintln!("[island] {}", format!($($arg)*));
-        }
+        crate::journal::write("island", &format!($($arg)*))
     };
 }
 

@@ -24,7 +24,11 @@ export interface IslandSettings {
   position: { x: number; y: number } | null
   /** Pinned in place: dragging is disabled. */
   locked: boolean
+  /** 0 = solid black, up to ISLAND_MAX_TRANSPARENCY = mostly see-through. */
+  transparency: number
 }
+
+export const ISLAND_MAX_TRANSPARENCY = 0.7
 
 export interface Settings {
   wallpaper: WallpaperConfig
@@ -44,7 +48,7 @@ export const DEFAULT_SETTINGS: Settings = {
   wallpaperBlur: 0,
   wallpaperDim: 0.55,
   accent: 'auto',
-  island: { enabled: true, expandOn: 'hover', visibility: 'always', showOnTrackChange: true, hideInFullscreen: true, monitor: null, position: null, locked: false },
+  island: { enabled: true, expandOn: 'hover', visibility: 'always', showOnTrackChange: true, hideInFullscreen: true, monitor: null, position: null, locked: false, transparency: 0 },
   hotkeys: DEFAULT_HOTKEYS,
   hotkeysEnabled: true,
   closeToTray: true,
@@ -99,6 +103,7 @@ export function mergeSettings(saved: unknown): Settings {
           ? { x: Math.round(isl.position.x as number), y: Math.round(isl.position.y as number) }
           : null,
       locked: bool(isl.locked, d.island.locked),
+      transparency: num(isl.transparency, d.island.transparency, 0, ISLAND_MAX_TRANSPARENCY),
     },
     hotkeys,
     hotkeysEnabled: bool(saved.hotkeysEnabled, d.hotkeysEnabled),

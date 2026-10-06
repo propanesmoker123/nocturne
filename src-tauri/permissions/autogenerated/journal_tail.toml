@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-journal-tail"
+description = "Enables the journal_tail command without any pre-configured scope."
+commands.allow = ["journal_tail"]
+
+[[permission]]
+identifier = "deny-journal-tail"
+description = "Denies the journal_tail command without any pre-configured scope."
+commands.deny = ["journal_tail"]

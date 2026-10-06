@@ -3,6 +3,7 @@ import { Artwork } from '../components/Artwork'
 import { IconButton, Spinner } from '../components/controls'
 import { IconBackward, IconCheck, IconForward, IconLyrics, IconNote, IconPause, IconPlay, IconPlus, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
+import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
 import { usePlayer } from '../player/store'
 import { isInLibrary, toggleLibrary } from './library'
@@ -20,18 +21,19 @@ export function Scrubber({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
   const duration = usePlayer((p) => p.duration || p.current?.duration || 0)
   const buffered = usePlayer((p) => p.buffered)
   const seek = usePlayer((p) => p.seek)
-  const hasTrack = usePlayer((p) => !!p.current)
+  const trackKey = usePlayer((p) => p.current?.key)
   const [drag, setDrag] = useState<number | null>(null)
   const shown = drag ?? position
   return (
     <div className={s.timeline}>
       <span>{formatTime(shown)}</span>
-      <Slider
-        size={size}
+      <WaveformScrubber
+        trackKey={trackKey}
+        height={size === 'sm' ? 26 : 40}
         label="Позиция трека"
         value={duration ? position / duration : 0}
         buffered={duration ? buffered / duration : 0}
-        disabled={!hasTrack || !duration}
+        disabled={!trackKey || !duration}
         step={5 / Math.max(duration, 1)}
         valueText={(v) => formatTime(v * duration)}
         onChange={(v) => setDrag(v * duration)}

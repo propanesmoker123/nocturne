@@ -34,6 +34,9 @@
     "allow-media-update",
     "allow-set-close-to-tray",
     "allow-import-wallpaper",
+    "allow-journal-write",
+    "allow-journal-tail",
+    "allow-journal-open-dir",
     "allow-app-quit"
   ]
 }

@@ -47,6 +47,13 @@ describe('mergeSettings', () => {
     expect(mergeSettings({}).island.locked).toBe(false)
   })
 
+  test('keeps island transparency within the readable range', () => {
+    expect(mergeSettings({}).island.transparency).toBe(0)
+    expect(mergeSettings({ island: { transparency: 0.4 } }).island.transparency).toBe(0.4)
+    expect(mergeSettings({ island: { transparency: 3 } }).island.transparency).toBe(0.7)
+    expect(mergeSettings({ island: { transparency: 'x' } }).island.transparency).toBe(0)
+  })
+
   test('merges island options', () => {
     const s = mergeSettings({ island: { expandOn: 'click', monitor: 'DISPLAY2', enabled: 'no' } })
     expect(s.island.expandOn).toBe('click')

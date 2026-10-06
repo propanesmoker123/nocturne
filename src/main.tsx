@@ -12,6 +12,7 @@ import { installShortcuts } from './app/shortcuts'
 import { startSystemSync } from './app/systemSync'
 import { toast } from './app/toast'
 import { startGlobalHotkeys } from './lib/globalHotkeys'
+import { journalUncaughtErrors } from './lib/journal'
 import { startUpdateChecks } from './lib/updates'
 import { initSettings, useSettings } from './lib/settings'
 import { invoke, isTauri } from './lib/tauri'
@@ -33,6 +34,7 @@ async function showMainWindow(toggle = false) {
 }
 
 async function boot() {
+  journalUncaughtErrors()
   setCaptchaHandler((e) => (e.captchaImg ? askCaptcha(e.captchaImg) : Promise.resolve(null)))
   installShortcuts()
   await initSettings()

@@ -184,16 +184,19 @@ pub async fn vk_api(app: AppHandle, http: State<'_, Http>, limiter: State<'_, Li
     loop {
         let token = session::get_token(&app).await.map_err(|message| VkError::Auth { message })?;
         limiter.turn().await;
-        match parse_api_response(send(&http, &method, &form, &token).await?) {
+        let raw = send(&http, &method, &form, &token).await.inspect_err(|e| crate::journal::write("vk", &format!("{method}: {e:?}")))?;
+        match parse_api_response(raw) {
             ApiOutcome::Ok(v) => return Ok(v),
             ApiOutcome::Err { code, message, captcha_sid, captcha_img, redirect_uri } => match policy.on_error(code) {
                 Decision::Retry { refresh, delay } => {
+                    crate::journal::write("vk", &format!("{method}: error {code}, retrying"));
                     if refresh {
                         app.state::<session::SessionState>().invalidate();
                     }
                     tokio::time::sleep(delay).await;
                 }
                 Decision::GiveUp => {
+                    crate::journal::write("vk", &format!("{method}: error {code}: {message}"));
                     if classify(code) == ErrorAction::RefreshAndRetry {
                         return Err(VkError::Auth { message });
                     }

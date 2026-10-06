@@ -42,6 +42,17 @@ async function watchMoves() {
   })
 }
 
+/** What the player is doing right now: loading, playing (live bars) or paused. */
+function StatusGlyph({ st, accent, size }: { st: PlayerSnapshot; accent: string; size: number }) {
+  if (st.isLoading && st.isPlaying) return <Spinner size={size} />
+  if (st.isPlaying) return <EqualizerBars playing height={size} width={size > 15 ? 3.5 : 3} color={accent} />
+  return (
+    <span className={s.paused} aria-label="Пауза">
+      <IconPause size={size} />
+    </span>
+  )
+}
+
 const isControl = (t: EventTarget | null) => !!(t as HTMLElement | null)?.closest('button, [role="slider"], input')
 
 /** Position interpolated from the last snapshot so the scrubber moves smoothly between events. */
@@ -101,7 +112,7 @@ function Expanded({ st, accent, locked, moved }: { st: PlayerSnapshot; accent: s
           <IconButton className={s.round} size={30} label={t.liked ? 'Убрать из Моей музыки' : 'Добавить в Мою музыку'} onClick={() => send({ type: 'toggleLike' })}>
             {t.liked ? <IconCheck size={16} /> : <IconPlus size={16} />}
           </IconButton>
-          <EqualizerBars playing={st.isPlaying} height={16} color={accent} />
+          <StatusGlyph st={st} accent={accent} size={16} />
         </div>
       </div>
       <div className={s.time}>
@@ -227,7 +238,7 @@ export function IslandApp() {
   const onWheel = (e: WheelEvent) => send({ type: 'volumeBy', value: e.deltaY < 0 ? 0.05 : -0.05 })
 
   return (
-    <div className={s.stage}>
+    <div className={s.stage} style={{ ['--island-clear' as string]: settings.transparency }}>
       <motion.div
         className={s.island}
         initial={false}
@@ -240,7 +251,7 @@ export function IslandApp() {
           {shape === 'compact' && (
             <motion.div key="compact" className={s.compact} {...fade}>
               <Artwork className={s.compactArt} src={t.cover} size={24} radius={7} seed={t.key} />
-              {st.isLoading && st.isPlaying ? <Spinner size={14} /> : <EqualizerBars playing={st.isPlaying} height={14} color={accent} />}
+              <StatusGlyph st={st} accent={accent} size={14} />
             </motion.div>
           )}
           {shape === 'peek' && (
@@ -255,7 +266,7 @@ export function IslandApp() {
                   {flash === 'added' ? <IconCheck size={15} /> : <Minus size={15} strokeWidth={2.6} />}
                 </span>
               ) : (
-                <EqualizerBars playing={st.isPlaying} height={18} width={3.5} color={accent} />
+                <StatusGlyph st={st} accent={accent} size={18} />
               )}
             </motion.div>
           )}

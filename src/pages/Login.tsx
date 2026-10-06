@@ -4,8 +4,32 @@ import { useSession } from '../app/session'
 import { WindowControls } from '../app/Titlebar'
 import { Button, Spinner } from '../components/controls'
 import { Wallpaper } from '../components/Wallpaper'
+import { useState } from 'react'
+import { copyJournal } from '../lib/journal'
 import { useUpdates } from '../lib/updates'
 import s from './Login.module.css'
+
+/** Lets someone stuck on login send what happened to whoever helps them. */
+function CopyJournalLink() {
+  const [state, setState] = useState<'idle' | 'copied' | 'empty' | 'failed'>('idle')
+  const label = { idle: 'Скопировать журнал входа', copied: 'Журнал скопирован — отправьте его', empty: 'Журнал пока пуст', failed: 'Не получилось скопировать' }[state]
+  return (
+    <button
+      type="button"
+      className={s.link}
+      onClick={async () => {
+        try {
+          setState((await copyJournal()) ? 'copied' : 'empty')
+        } catch {
+          setState('failed')
+        }
+        setTimeout(() => setState('idle'), 2500)
+      }}
+    >
+      {label}
+    </button>
+  )
+}
 
 /** People stuck on this screen still need to get the update that fixes their login. */
 function UpdateNotice() {
@@ -57,6 +81,7 @@ export function Login() {
               <button type="button" className={s.link} onClick={() => void resetLogin()}>
                 Не получается? Начать вход с чистого листа
               </button>
+              <CopyJournalLink />
             </>
           ) : (
             <Button variant="primary" size="lg" onClick={() => void login()}>

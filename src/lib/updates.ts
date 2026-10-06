@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { journal } from './journal'
 import { isTauri } from './tauri'
 
 export const CHECK_EVERY_MS = 6 * 3600_000
@@ -35,12 +36,14 @@ export const useUpdates = create<UpdateState>((set, get) => ({
       const { check } = await import('@tauri-apps/plugin-updater')
       const update = await check()
       if (update) {
+        journal('update', `available: ${update.version}`)
         pending = update as unknown as Pending
         set({ phase: 'available', version: update.version, notes: update.body })
       } else {
         set({ phase: 'none' })
       }
     } catch (e) {
+      journal('update', `check failed: ${String(e)}`)
       // No release published yet / offline: stay quiet unless the user asked.
       set({ phase: manual ? 'error' : 'idle', error: String(e) })
     }
@@ -61,6 +64,7 @@ export const useUpdates = create<UpdateState>((set, get) => ({
       const { relaunch } = await import('@tauri-apps/plugin-process')
       await relaunch()
     } catch (e) {
+      journal('update', `install failed: ${String(e)}`)
       set({ phase: 'error', error: String(e) })
     }
   },

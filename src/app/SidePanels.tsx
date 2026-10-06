@@ -8,6 +8,7 @@ import { remainingSeconds } from '../player/logic'
 import { upcoming } from '../player/queue'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
+import type { Track } from '../vk/models'
 import { describeError } from '../vk/errors'
 import s from './SidePanels.module.css'
 import { X } from 'lucide-react'
@@ -20,16 +21,38 @@ function minutesLabel(sec: number): string {
   return rest ? `${h} ч ${rest} мин` : `${h} ч`
 }
 
-export function QueuePanel() {
+/** Separate so the playback clock re-renders only this line, not every queue row. */
+function QueueHeader({ label, count }: { label: string; count: number }) {
   const queue = usePlayer((p) => p.queue)
   const position = usePlayer((p) => p.position)
+  return (
+    <div className={s.header}>
+      <span className={s.headerTitle}>{label}</span>
+      <span className={s.headerMeta}>
+        {count} {pluralRu(count, 'трек', 'трека', 'треков')} · {minutesLabel(remainingSeconds(queue, position))}
+      </span>
+    </div>
+  )
+}
+
+/** Keys that stay put while the queue advances, so rows (and their artwork) are not rebuilt. */
+function stableKeys(tracks: Track[]): string[] {
+  const seen = new Map<string, number>()
+  return tracks.map((t) => {
+    const n = seen.get(t.key) ?? 0
+    seen.set(t.key, n + 1)
+    return `${t.key}#${n}`
+  })
+}
+
+export function QueuePanel() {
+  const queue = usePlayer((p) => p.queue)
   const source = usePlayer((p) => p.source)
   const { jumpTo, removeFromQueue, moveInQueue } = usePlayer.getState()
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dropAt, setDropAt] = useState<number | null>(null)
 
   const rest = queue ? upcoming(queue) : []
-  const left = remainingSeconds(queue, position)
   if (!queue || rest.length === 0) {
     return (
       <div className={s.empty}>
@@ -39,15 +62,11 @@ export function QueuePanel() {
   }
   const [nextUp, ...later] = rest
   const base = queue.pos + 1
+  const keys = stableKeys(later)
 
   return (
     <>
-      <div className={s.header}>
-        <span className={s.headerTitle}>{source?.label ?? 'Очередь'}</span>
-        <span className={s.headerMeta}>
-          {rest.length} {pluralRu(rest.length, 'трек', 'трека', 'треков')} · {minutesLabel(left)}
-        </span>
-      </div>
+      <QueueHeader label={source?.label ?? 'Очередь'} count={rest.length} />
       <button type="button" className={s.nextUp} onClick={() => jumpTo(base)} style={{ width: 'calc(100% - 16px)', textAlign: 'left' }}>
         <Artwork src={nextUp.cover?.m} size={64} radius={8} seed={nextUp.key} />
         <div className={s.rowText}>
@@ -61,9 +80,11 @@ export function QueuePanel() {
           const orderPos = base + 1 + i
           return (
             <li
-              key={`${t.key}-${orderPos}`}
+              key={keys[i]}
               className={s.row}
+              tabIndex={0}
               draggable
+              title="Играть"
               data-dragging={dragFrom === orderPos || undefined}
               data-drop-target={dropAt === orderPos && dragFrom !== orderPos ? true : undefined}
               onDragStart={(e) => {
@@ -84,7 +105,8 @@ export function QueuePanel() {
                 setDragFrom(null)
                 setDropAt(null)
               }}
-              onDoubleClick={() => jumpTo(orderPos)}
+              onClick={() => jumpTo(orderPos)}
+              onKeyDown={(e) => e.key === 'Enter' && jumpTo(orderPos)}
             >
               <Artwork src={t.cover?.s} size={40} radius={6} seed={t.key} />
               <div className={s.rowText}>
@@ -93,7 +115,15 @@ export function QueuePanel() {
               </div>
               <div className={s.rowEnd}>
                 <span className={s.duration}>{formatTime(t.duration)}</span>
-                <IconButton className={s.removeBtn} size={26} label="Убрать из очереди" onClick={() => removeFromQueue(orderPos)}>
+                <IconButton
+                  className={s.removeBtn}
+                  size={26}
+                  label="Убрать из очереди"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    removeFromQueue(orderPos)
+                  }}
+                >
                   <X size={15} strokeWidth={2.2} />
                 </IconButton>
               </div>

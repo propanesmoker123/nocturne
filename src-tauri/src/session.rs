@@ -25,13 +25,15 @@ const PAGE_RECHECK: Duration = Duration::from_secs(4);
 const REFRESH_SPACING: Duration = Duration::from_secs(2);
 const POLL_EVERY: Duration = Duration::from_millis(150);
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long one script round trip into the session page may take.
+const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
+/// Extra attempts after a failure that is not VK saying "unauthorized".
+const TRANSIENT_RETRIES: [Duration; 2] = [Duration::from_millis(1500), Duration::from_secs(4)];
 
-/// Debug-build trace for the session flow. Never prints tokens, queries or fragments.
+/// Journal entry for the session flow. Never pass tokens, queries or fragments.
 macro_rules! trace {
     ($($arg:tt)*) => {
-        if cfg!(debug_assertions) {
-            eprintln!("[session] {}", format!($($arg)*));
-        }
+        crate::journal::write("session", &format!($($arg)*))
     };
 }
 
@@ -260,10 +262,24 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
     let app = app.clone();
     let visible = window.is_visible().unwrap_or(false);
     tauri::async_runtime::spawn(async move {
-        let result = refresh(&app).await;
+        // A busy WebView (app start, slow PC) can miss the eval deadline; only VK saying
+        // "unauthorized" means there is no session, so give hiccups a couple more tries.
+        let mut result = refresh(&app).await;
+        for delay in TRANSIENT_RETRIES {
+            match &result {
+                Err(e) if !is_signed_out(e) => {
+                    tokio::time::sleep(delay).await;
+                    result = refresh(&app).await;
+                }
+                _ => break,
+            }
+        }
         let st = app.state::<SessionState>();
         match result {
             Ok(_) => {
+                if visible {
+                    trace!("signed in, closing the login window");
+                }
                 if let Some(w) = app.get_webview_window(SESSION_LABEL) {
                     let _ = w.hide();
                     if w.url().map(|u| u.as_str() != IDLE_URL).unwrap_or(true) {
@@ -274,11 +290,12 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
                     let _ = m.set_focus();
                 }
             }
-            Err(_) if !visible => {
+            Err(e) if !visible => {
+                trace!("no VK session ({e}), showing the login screen");
                 st.set_phase(Phase::None);
                 let _ = app.emit("session:logged-out", ());
             }
-            Err(_) => {}
+            Err(e) => trace!("login window: not signed in yet ({e})"),
         }
     });
 }
@@ -293,7 +310,7 @@ async fn eval_value(window: &WebviewWindow, script: String) -> Result<String, St
             }
         })
         .map_err(|e| e.to_string())?;
-    tokio::time::timeout(Duration::from_secs(3), rx).await.map_err(|_| "eval timeout".to_string())?.map_err(|_| "eval dropped".to_string())
+    tokio::time::timeout(EVAL_TIMEOUT, rx).await.map_err(|_| "eval timeout".to_string())?.map_err(|_| "eval dropped".to_string())
 }
 
 /// Requests a fresh web token through the session page. Serialized and spaced out so a
@@ -309,25 +326,29 @@ pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
 
     let window = app.get_webview_window(SESSION_LABEL).ok_or("session window missing")?;
     let nonce = uuid::Uuid::new_v4().simple().to_string();
-    eval_value(&window, token_script(&nonce)).await?;
-    let deadline = Instant::now() + REFRESH_TIMEOUT;
-    let res = loop {
-        tokio::time::sleep(POLL_EVERY).await;
-        if Instant::now() > deadline {
-            break Err("timeout".to_string());
-        }
-        let raw = match eval_value(&window, poll_script(&nonce)).await {
-            Ok(raw) => raw,
-            Err(e) => break Err(e),
-        };
-        if let Some(r) = parse_poll_result(&raw) {
-            break r.map_err(|e| format!("{e:?}"));
+    let res = match eval_value(&window, token_script(&nonce)).await {
+        Err(e) => Err(e),
+        Ok(_) => {
+            let deadline = Instant::now() + REFRESH_TIMEOUT;
+            loop {
+                tokio::time::sleep(POLL_EVERY).await;
+                if Instant::now() > deadline {
+                    break Err("timeout".to_string());
+                }
+                let raw = match eval_value(&window, poll_script(&nonce)).await {
+                    Ok(raw) => raw,
+                    Err(e) => break Err(e),
+                };
+                if let Some(r) = parse_poll_result(&raw) {
+                    break r.map_err(|e| format!("{e:?}"));
+                }
+            }
         }
     };
     drop(last);
 
     match &res {
-        Ok(t) => trace!("token ok for user {} (expires in {}s)", t.user_id, t.expires - now_secs()),
+        Ok(t) => trace!("token ok (expires in {}s)", t.expires - now_secs()),
         Err(e) => trace!("token failed: {e}"),
     }
     if let Ok(tok) = &res {
@@ -384,6 +405,7 @@ pub fn session_login(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn session_logout(app: AppHandle) -> Result<(), String> {
+    trace!("signing out and clearing VK cookies");
     let st = app.state::<SessionState>();
     st.invalidate();
     st.set_phase(Phase::None);

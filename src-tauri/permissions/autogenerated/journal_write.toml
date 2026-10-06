@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-journal-write"
+description = "Enables the journal_write command without any pre-configured scope."
+commands.allow = ["journal_write"]
+
+[[permission]]
+identifier = "deny-journal-write"
+description = "Denies the journal_write command without any pre-configured scope."
+commands.deny = ["journal_write"]

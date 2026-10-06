@@ -1,5 +1,6 @@
 mod http;
 mod island;
+mod journal;
 #[cfg(windows)]
 mod media;
 mod tray;
@@ -64,6 +65,9 @@ pub fn run() {
             media_update,
             tray::set_close_to_tray,
             wallpaper::import_wallpaper,
+            journal::journal_write,
+            journal::journal_tail,
+            journal::journal_open_dir,
             app_quit,
         ])
         .on_window_event(|window, event| {
@@ -86,6 +90,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            journal::init(app.handle());
             session::create_window(app.handle())?;
             island::create_window(app.handle())?;
             island::start(app.handle());

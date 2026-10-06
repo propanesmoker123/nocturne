@@ -1,11 +1,13 @@
 import { create } from 'zustand'
 import { toast } from '../app/toast'
+import { journal } from '../lib/journal'
 import { debouncedSaver, loadJSON } from '../lib/persist'
 import * as vk from '../vk/api'
 import type { Track } from '../vk/models'
 import { engine } from './engine'
 import { dedupeAppend, needsFreshUrl, prevAction } from './logic'
 import * as Q from './queue'
+import { beginWaveform, captureSource } from './waveform'
 
 export interface QueueSource {
   kind: 'list' | 'mix'
@@ -61,6 +63,12 @@ export interface PlayerState {
 }
 
 const isPlayable = (t: Track) => t.playable
+
+/** Warm the image cache for the next track so the queue card and player swap covers instantly. */
+function preloadCovers(t: Track | undefined) {
+  if (typeof Image === 'undefined' || !t?.cover) return
+  for (const src of [t.cover.m, t.cover.l]) if (src) new Image().src = src
+}
 let loadToken = 0
 let loadedKey: string | null = null
 let consecutiveFailures = 0
@@ -100,6 +108,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       return
     }
     set({ current: t, position: startAt, duration: t.duration, buffered: 0, isLoading: autoplay })
+    preloadCovers(Q.upcoming(q)[0])
     let track = t
     if (needsFreshUrl(t, Date.now())) {
       try {
@@ -118,6 +127,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       return
     }
     loadedKey = track.key
+    beginWaveform(track.key, track.duration)
     engine.load(track.url, startAt, autoplay)
     void extendMixIfNeeded()
   }
@@ -125,6 +135,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
   const onFailure = (t: Track, reason?: string) => {
     consecutiveFailures++
     if (consecutiveFailures >= 5) {
+      journal('player', 'five tracks in a row failed, stopping')
       consecutiveFailures = 0
       engine.stop()
       loadedKey = null
@@ -137,6 +148,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
   }
 
   // Engine → store
+  engine.onSource = captureSource
   engine.on('time', () => set({ position: engine.position, duration: engine.duration || get().current?.duration || 0, buffered: engine.buffered }))
   engine.on('state', () => set({ isPlaying: engine.playing }))
   engine.on('loading', () => {
@@ -156,6 +168,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
   engine.on('error', () => {
     const t = get().current
     if (!t) return
+    journal('player', `playback error: ${engine.lastError || 'unknown'}${retried.has(t.key) ? ', skipping track' : ', retrying with a fresh link'}`)
     if (!retried.has(t.key)) {
       retried.add(t.key)
       replaceTrack({ ...t, urlFetchedAt: 0 })

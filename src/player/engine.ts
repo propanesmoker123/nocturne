@@ -14,6 +14,8 @@ class Engine {
   private listeners = new Map<EngineEvent, Set<Listener>>()
   private recovered = false
   lastError = ''
+  /** Told about every new source, so the waveform can tap the same stream. */
+  onSource: ((src: { url: string; hls: Hls | null }) => void) | null = null
 
   constructor() {
     this.audio = new Audio()
@@ -70,10 +72,13 @@ class Engine {
         loader: isTauri() ? TauriLoader : Hls.DefaultConfig.loader,
         enableWorker: true,
         startPosition: startAt > 0 ? startAt : -1,
-        maxBufferLength: 40,
+        // A song is a few MB: fetch it whole, so seeking is instant and the waveform fills in.
+        maxBufferLength: 600,
+        maxMaxBufferLength: 600,
         backBufferLength: 30,
       })
       this.hls = hls
+      this.onSource?.({ url, hls })
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (autoplay) void a.play().catch(() => {})
       })
@@ -89,6 +94,7 @@ class Engine {
       hls.loadSource(url)
       hls.attachMedia(a)
     } else {
+      this.onSource?.({ url, hls: null })
       a.src = url
       if (startAt > 0) a.addEventListener('loadedmetadata', () => (a.currentTime = startAt), { once: true })
       if (autoplay) void a.play().catch(() => {})

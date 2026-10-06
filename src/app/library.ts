@@ -1,4 +1,4 @@
-import { normalizeSearch } from '../lib/format'
+import { sameSong } from '../lib/search'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
@@ -16,10 +16,6 @@ function markLiked(key: string, liked: boolean) {
   usePlayer.getState().updateTrack(key, { liked })
   patchTrackInCache(key, { liked })
 }
-
-const sameSong = (a: Track, b: Track) =>
-  (!!a.releaseId && a.releaseId === b.releaseId) ||
-  (normalizeSearch(a.title) === normalizeSearch(b.title) && normalizeSearch(a.artist) === normalizeSearch(b.artist) && Math.abs(a.duration - b.duration) <= 2)
 
 /** Finds the copy of `t` that lives in "Моя музыка" (owner = me). */
 async function findLibraryCopy(t: Track): Promise<Track | null> {

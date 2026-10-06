@@ -33,6 +33,12 @@ pub async fn proxy_fetch(http: State<'_, Http>, url: String) -> Result<tauri::ip
     if !host_allowed(&url) {
         return Err(format!("host not allowed: {url}"));
     }
+    // Signed CDN links must not reach the journal: host only.
+    let host = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    let fail = |msg: String| {
+        crate::journal::write("proxy", &format!("{host}: {msg}"));
+        msg
+    };
     let resp = http
         .client
         .get(&url)
@@ -41,12 +47,12 @@ pub async fn proxy_fetch(http: State<'_, Http>, url: String) -> Result<tauri::ip
         .header(reqwest::header::REFERER, "https://vk.ru/")
         .send()
         .await
-        .map_err(|e| format!("network: {e}"))?;
+        .map_err(|e| fail(format!("network: {}", e.without_url())))?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(format!("HTTP {}", status.as_u16()));
+        return Err(fail(format!("HTTP {}", status.as_u16())));
     }
-    let bytes = resp.bytes().await.map_err(|e| format!("network: {e}"))?;
+    let bytes = resp.bytes().await.map_err(|e| fail(format!("network: {}", e.without_url())))?;
     Ok(tauri::ipc::Response::new(bytes.to_vec()))
 }
 

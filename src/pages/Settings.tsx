@@ -8,8 +8,9 @@ import { PageHeader } from '../components/PageHeader'
 import { Slider } from '../components/Slider'
 import { PRESETS, PresetLayer } from '../components/Wallpaper'
 import { useHotkeyStatus } from '../lib/globalHotkeys'
+import { copyJournal, openJournalFolder } from '../lib/journal'
 import { DEFAULT_HOTKEYS, HOTKEY_LABELS, findDuplicateHotkeys, type HotkeyAction } from '../lib/hotkeys'
-import { WALLPAPER_PRESETS, useSettings, type WallpaperConfig } from '../lib/settings'
+import { ISLAND_MAX_TRANSPARENCY, WALLPAPER_PRESETS, useSettings, type WallpaperConfig } from '../lib/settings'
 import { isTauri } from '../lib/tauri'
 import { pickWallpaper } from '../lib/wallpaper'
 import { useUpdates } from '../lib/updates'
@@ -222,6 +223,16 @@ export function SettingsPage() {
         <Row title="Закрепить на месте" sub="Остров не сдвинется случайно">
           <Switch label="Закрепить на месте" checked={st.island.locked} onChange={(v) => st.updateIsland({ locked: v })} />
         </Row>
+        <Row title="Прозрачность" sub={`${Math.round(st.island.transparency * 100)} %`}>
+          <div className={s.sliderBox}>
+            <Slider
+              label="Прозрачность острова"
+              value={st.island.transparency / ISLAND_MAX_TRANSPARENCY}
+              onChange={(v) => st.updateIsland({ transparency: v * ISLAND_MAX_TRANSPARENCY })}
+              onCommit={(v) => st.updateIsland({ transparency: v * ISLAND_MAX_TRANSPARENCY })}
+            />
+          </div>
+        </Row>
         <Row title="Показывать при смене трека">
           <Switch label="Показывать при смене трека" checked={st.island.showOnTrackChange} onChange={(v) => st.updateIsland({ showOnTrackChange: v })} />
         </Row>
@@ -267,6 +278,28 @@ export function SettingsPage() {
         </Row>
         <Row title="Транслировать в статус VK" sub="Друзья увидят, что вы слушаете">
           <Switch label="Транслировать в статус VK" checked={st.broadcastStatus} onChange={(v) => st.update({ broadcastStatus: v })} />
+        </Row>
+      </Group>
+
+      <Group
+        title="Журнал"
+        note="Записи о входе, ошибках VK, воспроизведения и обновлений — чтобы разобраться, если что-то сломалось. Без паролей, токенов, ссылок и названий треков. Хранится только на этом компьютере, не больше 10 МБ: старые записи удаляются сами."
+      >
+        <Row title="Журнал работы" sub="Скопируйте и отправьте тому, кто помогает разобраться">
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button
+              onClick={async () => {
+                try {
+                  toast((await copyJournal()) ? 'Журнал скопирован' : 'Журнал пока пуст', 'info')
+                } catch (e) {
+                  toast(`Не получилось скопировать: ${String(e)}`, 'error')
+                }
+              }}
+            >
+              Скопировать
+            </Button>
+            <Button onClick={() => void openJournalFolder().catch((e) => toast(`Не получилось открыть папку: ${String(e)}`, 'error'))}>Открыть папку</Button>
+          </div>
         </Row>
       </Group>
 

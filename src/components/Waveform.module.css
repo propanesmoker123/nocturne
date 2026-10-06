@@ -1,0 +1,19 @@
+.wave {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  cursor: pointer;
+  touch-action: none;
+  border-radius: 4px;
+  outline: none;
+}
+.wave:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.wave[data-disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+.canvas {
+  display: block;
+}

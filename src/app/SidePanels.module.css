@@ -30,7 +30,11 @@
   gap: 12px;
   padding: 7px 10px;
   border-radius: 10px;
+  cursor: pointer;
   transition: background-color var(--dur-1) var(--ease-out);
+  /* long queues: skip layout and paint for rows far off screen */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 54px;
 }
 .row:hover {
   background: rgba(255, 255, 255, 0.08);
