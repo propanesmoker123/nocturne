@@ -1,6 +1,6 @@
 [package]
 name = "nocturne"
-version = "0.2.1"
+version = "0.2.2"
 description = "Nocturne — desktop client for VK Music"
 authors = ["propanesmoker123"]
 edition = "2021"
