@@ -62,18 +62,24 @@ const manifestPath = join(outDir, 'latest.json')
 writeFileSync(manifestPath, `${JSON.stringify(buildManifest({ version, notes, pubDate: new Date(), repo, file, signature }), null, 2)}\n`)
 console.log(`\nУстановщик: ${exe}\nМанифест:   ${manifestPath}`)
 
-// 4. Publish (needs `gh auth login` once).
-let hasGh = false
-try {
-  execFileSync('gh', ['--version'], { stdio: 'ignore' })
-  hasGh = true
-} catch {}
+// 4. Publish (needs `gh auth login` once). GH_PATH, a portable copy in
+// %LOCALAPPDATA%\gh-cli, or gh on PATH.
+const ghCandidates = [process.env.GH_PATH, process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'gh-cli', 'bin', 'gh.exe'), 'gh'].filter(Boolean)
+let ghBin = null
+for (const candidate of ghCandidates) {
+  try {
+    execFileSync(candidate, ['--version'], { stdio: 'ignore' })
+    ghBin = candidate
+    break
+  } catch {}
+}
+const hasGh = ghBin !== null
 if (!hasGh) {
   console.log(`\nGitHub CLI не найден. Создайте релиз v${version} в https://github.com/${repo}/releases/new и приложите:\n  ${exe}\n  ${manifestPath}`)
   process.exit(0)
 }
 const gh = spawnSync(
-  'gh',
+  ghBin,
   ['release', 'create', `v${version}`, exe, manifestPath, '--repo', repo, '--title', `Nocturne ${version}`, '--notes', notes || `Nocturne ${version}`],
   { cwd: root, stdio: 'inherit', shell: false },
 )
