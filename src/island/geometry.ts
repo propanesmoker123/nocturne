@@ -23,6 +23,4 @@ export function isInteractive(shape: IslandShape, expandOn: 'hover' | 'click'): 
 }
 
 /** How long the expanded island lingers after the cursor leaves it (ms). */
-export function collapseDelay(expandOn: 'hover' | 'click'): number {
-  return expandOn === 'hover' ? 300 : 200
-}
+export const COLLAPSE_DELAY = 100

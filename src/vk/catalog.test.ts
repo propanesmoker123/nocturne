@@ -109,3 +109,51 @@ describe('parseSection', () => {
     expect(section.blocks[0].kind === 'tracks' && section.blocks[0].tracks).toHaveLength(1)
   })
 })
+
+describe('recommended playlists ("Слушайте друг друга")', () => {
+  const raw: RawCatalogResponse = {
+    section: {
+      id: 'S',
+      title: 'Главная',
+      blocks: [
+        { id: 'h', data_type: 'none', layout: { name: 'header_extended', title: 'Слушайте друг друга' } },
+        {
+          id: 'r',
+          data_type: 'music_recommended_playlists',
+          layout: { name: 'large_slider' },
+          playlists_ids: ['5_48', '6_9', '7_1'],
+          audios_ids: ['5_1', '5_2', '6_3'],
+        },
+      ],
+    },
+    audios: [audio(5, 1), audio(5, 2), audio(6, 3)],
+    playlists: [playlist(5, 48), playlist(6, 9), playlist(7, 1)],
+    profiles: [
+      { id: 5, first_name: 'Ан', last_name: 'I', photo_100: 'https://p/5.jpg' },
+      { id: 6, first_name: 'Костя', last_name: 'Пятница' },
+    ],
+    recommended_playlists: [
+      { id: 48, owner_id: 5, audios: ['5_1', '5_2', '5_404'], color: '#3681FF', cover: 'https://bg/48.png', percentage: 0.98, percentage_title: 'совпадение с вашим вкусом' },
+      { id: 9, owner_id: 6, audios: ['6_3'], color: 'url(x)', percentage: '0.93' },
+    ],
+  }
+
+  test('pairs each playlist with its match, colours, owner and preview tracks', () => {
+    const block = parseSection(raw, 1).blocks[0]
+    expect(block.kind).toBe('recommended')
+    expect(block.title).toBe('Слушайте друг друга')
+    if (block.kind !== 'recommended') return
+    const [a, b] = block.items
+    expect(a.playlist).toMatchObject({ ownerId: 5, id: 48, title: 'Playlist 48', ownerName: 'Ан I' })
+    expect(a).toMatchObject({ match: 0.98, matchTitle: 'совпадение с вашим вкусом', color: '#3681FF', background: 'https://bg/48.png', ownerPhoto: 'https://p/5.jpg' })
+    expect(a.tracks.map((t) => t.key)).toEqual(['5_1', '5_2'])
+    expect(b.match).toBe(0.93)
+    expect(b.matchTitle).toBe('совпадение с вашим вкусом')
+    expect(b.color).toBeUndefined()
+  })
+
+  test('skips playlists VK sent no match for', () => {
+    const block = parseSection(raw, 1).blocks[0]
+    expect(block.kind === 'recommended' && block.items.map((i) => i.playlist.id)).toEqual([48, 9])
+  })
+})

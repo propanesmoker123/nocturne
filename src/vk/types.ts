@@ -117,6 +117,17 @@ export interface RawStreamMix {
   stream_mix?: { id: string; title: string }
 }
 
+/** Another listener's playlist with a taste match, from the "Слушайте друг друга" block. */
+export interface RawRecommendedPlaylist {
+  id: number
+  owner_id: number
+  audios?: string[]
+  color?: string
+  cover?: string
+  percentage?: number | string
+  percentage_title?: string
+}
+
 export interface RawCatalogResponse {
   catalog?: { default_section: string; sections: RawCatalogSection[] }
   section?: RawCatalogSection
@@ -125,6 +136,7 @@ export interface RawCatalogResponse {
   profiles?: RawUser[]
   groups?: RawGroup[]
   audio_stream_mixes?: RawStreamMix[]
+  recommended_playlists?: RawRecommendedPlaylist[]
 }
 
 export interface RawList<T> {

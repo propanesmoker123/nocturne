@@ -2,15 +2,15 @@ import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { showMenu } from '../app/menu'
 import { useRouter } from '../app/router'
-import { playlistMenuItems } from '../app/trackActions'
-import { pluralRu } from '../lib/format'
+import { openTrackMenu, playlistMenuItems } from '../app/trackActions'
+import { formatTime, pluralRu } from '../lib/format'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
-import type { Playlist } from '../vk/models'
+import type { Playlist, RecommendedPlaylist } from '../vk/models'
 import { toast } from '../app/toast'
 import { Artwork } from './Artwork'
-import { Spinner } from './controls'
+import { EqualizerBars, Spinner } from './controls'
 import { IconMore, IconPause, IconPlay } from './Icons'
 import s from './cards.module.css'
 
@@ -122,6 +122,89 @@ export function PlaylistCard({ playlist: p }: { playlist: Playlist }) {
         {p.title}
       </button>
       <div className={`${s.cardSub} truncate`}>{playlistSubtitle(p)}</div>
+    </div>
+  )
+}
+
+/** Another listener's playlist from "Слушайте друг друга": taste match, owner and a short preview. */
+export function RecommendedCard({ item }: { item: RecommendedPlaylist }) {
+  const { playlist: p, tracks } = item
+  const push = useRouter((r) => r.push)
+  const currentKey = usePlayer((x) => x.current?.key)
+  const isPlaying = usePlayer((x) => x.isPlaying)
+  const [busy, setBusy] = useState(false)
+  const open = () => push({ name: 'playlist', ownerId: p.ownerId, id: p.id, accessKey: p.accessKey })
+  const play = (i: number) => tracks[i]?.playable && usePlayer.getState().playList(tracks, i)
+  return (
+    <div className={s.rec} style={item.color ? ({ ['--rec' as string]: item.color } as CSSProperties) : undefined}>
+      <div
+        className={s.recHead}
+        role="link"
+        tabIndex={0}
+        onClick={open}
+        onKeyDown={(e) => e.key === 'Enter' && open()}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          showMenu(e, playlistMenuItems(p, undefined))
+        }}
+      >
+        {item.background && <img className={s.recBg} src={item.background} alt="" loading="lazy" draggable={false} />}
+        <div className={s.recMatch}>
+          <b>{Math.round(item.match * 100)}%</b> · {item.matchTitle}
+        </div>
+        <div className={s.recTitle}>{p.title}</div>
+        {p.ownerName && (
+          <div className={s.recOwner}>
+            <Artwork src={item.ownerPhoto} size={18} radius={9} seed={p.ownerName} />
+            <span className="truncate">{p.ownerName}</span>
+          </div>
+        )}
+        <button
+          type="button"
+          className={`${s.coverBtn} ${s.recPlay}`}
+          aria-label={`Играть «${p.title}»`}
+          onClick={async (e) => {
+            e.stopPropagation()
+            setBusy(true)
+            await playPlaylist(p)
+            setBusy(false)
+          }}
+        >
+          {busy ? <Spinner size={16} /> : <IconPlay size={17} />}
+        </button>
+      </div>
+      <div className={s.recTracks}>
+        {tracks.map((t, i) => {
+          const current = t.key === currentKey
+          return (
+            <div
+              key={`${t.key}-${i}`}
+              className={s.recRow}
+              role="button"
+              tabIndex={t.playable ? 0 : -1}
+              aria-disabled={!t.playable || undefined}
+              data-current={current || undefined}
+              onClick={() => play(i)}
+              onKeyDown={(e) => e.key === 'Enter' && play(i)}
+              onContextMenu={(e) => openTrackMenu(e, t, { list: tracks, index: i })}
+            >
+              <div className={s.recArt}>
+                <Artwork src={t.cover?.s} size={40} radius={6} seed={t.key} />
+                {t.playable && (
+                  <span className={s.recArtPlay} data-on={(current && isPlaying) || undefined} aria-hidden="true">
+                    {current && isPlaying ? <EqualizerBars playing height={12} color="#fff" /> : <IconPlay size={15} />}
+                  </span>
+                )}
+              </div>
+              <div className={s.recText}>
+                <div className={`${s.recTrack} truncate`}>{t.title}</div>
+                <div className={`${s.recArtist} truncate`}>{t.artist}</div>
+              </div>
+              <span className={s.recTime}>{formatTime(t.duration)}</span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

@@ -60,6 +60,18 @@ export interface User {
   photo?: string
 }
 
+export interface RecommendedPlaylist {
+  playlist: Playlist
+  /** Taste match, 0..1 */
+  match: number
+  matchTitle: string
+  color?: string
+  background?: string
+  ownerPhoto?: string
+  /** A few tracks VK picked as a preview */
+  tracks: Track[]
+}
+
 interface BlockBase {
   id: string
   title: string
@@ -71,6 +83,7 @@ export type Block =
   | (BlockBase & { kind: 'tracks'; tracks: Track[] })
   | (BlockBase & { kind: 'playlists'; playlists: Playlist[] })
   | (BlockBase & { kind: 'mix'; mixId: string; description?: string })
+  | (BlockBase & { kind: 'recommended'; items: RecommendedPlaylist[] })
 
 export interface CatalogSection {
   id: string

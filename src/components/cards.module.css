@@ -153,6 +153,151 @@
   background: var(--fill-3);
 }
 
+/* ── Recommended playlist card ("Слушайте друг друга") ───── */
+.rec {
+  --rec: var(--accent);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  background: var(--fill-4);
+  box-shadow: var(--shadow-1), inset 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+  scroll-snap-align: start;
+}
+.recHead {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 132px;
+  padding: 14px 16px 14px;
+  color: #fff;
+  background: var(--rec);
+  cursor: pointer;
+}
+.recHead::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.26), transparent 65%);
+}
+.recBg {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform var(--dur-3) var(--ease-out);
+}
+.recHead:hover .recBg {
+  transform: scale(1.04);
+}
+.recMatch {
+  font: 500 13px/17px var(--font);
+  color: rgba(255, 255, 255, 0.86);
+  margin-bottom: auto;
+}
+.recMatch b {
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+}
+.recTitle {
+  font: 700 19px/23px var(--font);
+  letter-spacing: -0.02em;
+  margin-top: 14px;
+  padding-right: 44px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.recOwner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-right: 44px;
+  font: 500 13px/17px var(--font);
+  color: rgba(255, 255, 255, 0.9);
+}
+.recOwner > :first-child {
+  flex: none;
+}
+.recPlay {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+.recHead:hover .recPlay,
+.recHead:focus-within .recPlay {
+  opacity: 1;
+  transform: none;
+}
+.recTracks {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+.recRow {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-radius: 10px;
+  cursor: default;
+}
+.recRow:hover {
+  background: var(--fill-4);
+}
+.recRow[aria-disabled] {
+  opacity: 0.38;
+}
+.recArt {
+  position: relative;
+}
+.recArtPlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.42);
+  color: #fff;
+  opacity: 0;
+}
+.recRow:hover .recArtPlay,
+.recArtPlay[data-on] {
+  opacity: 1;
+}
+.recText {
+  min-width: 0;
+}
+.recTrack {
+  font: 500 14px/18px var(--font);
+}
+.recRow[data-current] .recTrack {
+  color: var(--accent-text);
+}
+.recArtist {
+  font: 400 13px/17px var(--font);
+  color: var(--label-2);
+}
+.recTime {
+  font: 400 13px/17px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--label-3);
+}
+
 /* ── Grid ─────────────────────────────────────────────────── */
 .grid {
   display: grid;
@@ -321,6 +466,9 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .recBg {
+    transition: none;
+  }
   .mixGlow,
   .mixBars[data-playing] i,
   .skeleton {

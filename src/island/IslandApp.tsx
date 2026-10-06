@@ -9,7 +9,7 @@ import { EV, type PlayerCommand, type PlayerSnapshot } from '../lib/events'
 import { formatTime } from '../lib/format'
 import { DEFAULT_SETTINGS, type IslandSettings } from '../lib/settings'
 import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
-import { SHAPES, collapseDelay, hitRect, isInteractive, type IslandShape } from './geometry'
+import { COLLAPSE_DELAY, SHAPES, hitRect, isInteractive, type IslandShape } from './geometry'
 import s from './island.module.css'
 
 const spring = { type: 'spring', stiffness: 420, damping: 32, mass: 0.85 } as const
@@ -159,7 +159,7 @@ export function IslandApp() {
     if (inside) {
       if (settingsRef.current.expandOn === 'hover') hoverTimer.current = setTimeout(() => setExpanded(true), 220)
     } else {
-      leaveTimer.current = setTimeout(() => setExpanded(false), collapseDelay(settingsRef.current.expandOn))
+      leaveTimer.current = setTimeout(() => setExpanded(false), COLLAPSE_DELAY)
     }
   }, [])
 

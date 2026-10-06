@@ -5,7 +5,7 @@ import { CardsSkeleton, EmptyState, TrackListSkeleton } from '../components/card
 import { PageHeader } from '../components/PageHeader'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
-import { BlockView, catalogKey } from './Home'
+import { BlockView, NearEnd, catalogKey, useSectionRest } from './Home'
 
 export function Explore() {
   const catalog = useQuery({ queryKey: catalogKey(), queryFn: vk.getCatalog, staleTime: 10 * 60_000 })
@@ -16,6 +16,7 @@ export function Explore() {
     enabled: !!sectionId,
     staleTime: 10 * 60_000,
   })
+  const rest = useSectionRest(sectionId, q.data?.nextFrom)
   const loading = catalog.isLoading || q.isLoading
   const error = catalog.error ?? q.error
 
@@ -48,6 +49,8 @@ export function Explore() {
         />
       )}
       {q.data?.blocks.map((b) => <BlockView key={b.id} block={b} />)}
+      {rest.blocks.map((b) => <BlockView key={b.id} block={b} />)}
+      {rest.more && <NearEnd onChange={rest.setNearEnd} loading={rest.loading} />}
     </>
   )
 }

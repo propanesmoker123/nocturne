@@ -1,12 +1,16 @@
-import type { Block, CatalogSection, Playlist, Track } from './models'
+import type { Block, CatalogSection, Playlist, RecommendedPlaylist, Track } from './models'
 import { normalizePlaylist, normalizeTrack, ownerNamesFrom } from './normalize'
-import type { RawCatalogBlock, RawCatalogResponse, RawCatalogSection } from './types'
+import type { RawCatalogBlock, RawCatalogResponse, RawCatalogSection, RawRecommendedPlaylist } from './types'
 
 interface Lookup {
   tracks: Map<string, Track>
   playlists: Map<string, Playlist>
   mixes: Map<string, { title: string; description?: string }>
+  recommended: Map<string, RawRecommendedPlaylist>
+  photos: Map<number, string>
 }
+
+const HEX_COLOR = /^#[0-9a-f]{3,8}$/i
 
 /** "owner_id" or "owner_id_accesskey" → "owner_id" */
 function baseId(id: string): string {
@@ -23,7 +27,32 @@ function buildLookup(raw: RawCatalogResponse, meId: number): Lookup {
   for (const p of raw.playlists ?? []) playlists.set(`${p.owner_id}_${p.id}`, normalizePlaylist(p, meId, names))
   const mixes = new Map<string, { title: string; description?: string }>()
   for (const m of raw.audio_stream_mixes ?? []) mixes.set(m.id, { title: m.stream_mix?.title ?? 'VK Микс', description: m.description })
-  return { tracks, playlists, mixes }
+  const recommended = new Map<string, RawRecommendedPlaylist>()
+  for (const r of raw.recommended_playlists ?? []) recommended.set(`${r.owner_id}_${r.id}`, r)
+  const photos = new Map<number, string>()
+  for (const p of raw.profiles ?? []) if (p.photo_100) photos.set(p.id, p.photo_100)
+  for (const g of raw.groups ?? []) if (g.photo_100) photos.set(-g.id, g.photo_100)
+  return { tracks, playlists, mixes, recommended, photos }
+}
+
+function resolveTracks(ids: string[] | undefined, lookup: Lookup): Track[] {
+  return (ids ?? []).map((id) => lookup.tracks.get(baseId(id))).filter((t): t is Track => !!t)
+}
+
+function recommendedItem(id: string, lookup: Lookup): RecommendedPlaylist | null {
+  const playlist = lookup.playlists.get(baseId(id))
+  const rec = lookup.recommended.get(baseId(id))
+  if (!playlist || !rec) return null
+  const match = Number(rec.percentage)
+  return {
+    playlist,
+    match: Number.isFinite(match) ? Math.min(Math.max(match, 0), 1) : 0,
+    matchTitle: rec.percentage_title || 'совпадение с вашим вкусом',
+    color: rec.color && HEX_COLOR.test(rec.color) ? rec.color : undefined,
+    background: rec.cover,
+    ownerPhoto: lookup.photos.get(playlist.ownerId),
+    tracks: resolveTracks(rec.audios, lookup),
+  }
 }
 
 function parseBlocks(blocks: RawCatalogBlock[], lookup: Lookup): Block[] {
@@ -38,7 +67,7 @@ function parseBlocks(blocks: RawCatalogBlock[], lookup: Lookup): Block[] {
     }
     const title = header || b.layout?.title || b.title || ''
     if (b.data_type === 'music_audios') {
-      const tracks = (b.audios_ids ?? []).map((id) => lookup.tracks.get(baseId(id))).filter((t): t is Track => !!t)
+      const tracks = resolveTracks(b.audios_ids, lookup)
       if (tracks.length) out.push({ kind: 'tracks', id: b.id, title, tracks, nextFrom: b.next_from, layout })
     } else if (b.data_type === 'music_playlists') {
       const playlists = (b.playlists_ids ?? []).map((id) => lookup.playlists.get(baseId(id))).filter((p): p is Playlist => !!p)
@@ -47,6 +76,9 @@ function parseBlocks(blocks: RawCatalogBlock[], lookup: Lookup): Block[] {
       const mixId = b.audio_stream_mixes_ids?.[0]
       const mix = mixId ? lookup.mixes.get(mixId) : undefined
       if (mixId && mix) out.push({ kind: 'mix', id: b.id, title: mix.title, mixId, description: mix.description, layout })
+    } else if (b.data_type === 'music_recommended_playlists') {
+      const items = (b.playlists_ids ?? []).map((id) => recommendedItem(id, lookup)).filter((r): r is RecommendedPlaylist => !!r)
+      if (items.length) out.push({ kind: 'recommended', id: b.id, title, items, nextFrom: b.next_from, layout })
     }
     header = ''
   }

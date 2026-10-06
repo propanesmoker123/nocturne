@@ -149,6 +149,17 @@ const FRIENDS: RawUser[] = ['Аня Соколова', 'Дима Орлов', '�
   },
 )
 
+const SHARED: RawPlaylist[] = FRIENDS.slice(0, 6).map((f, i) =>
+  playlist(40 + i, f.id, ['onda vibes', 'ночные поезда', 'Gram', 'summer tapes', 'на повторе', 'дождь в городе'][i], 36 + i * 41),
+)
+const SHARED_COLORS = ['#3681FF', '#6E68CF', '#00C8AF', '#DB9F87', '#9ADA34', '#FF83EC']
+
+function glow(seed: number): string {
+  const r = rng(seed * 53 + 5)
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 200'><filter id='b'><feGaussianBlur stdDeviation='34'/></filter><circle cx='${Math.round(260 + r() * 120)}' cy='${Math.round(r() * 80)}' r='120' fill='#fff' opacity='0.32' filter='url(#b)'/><circle cx='${Math.round(r() * 160)}' cy='200' r='90' fill='#000' opacity='0.18' filter='url(#b)'/></svg>`
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 function page<T>(items: T[], params: Record<string, unknown>) {
@@ -166,6 +177,7 @@ function catalogResponse(): RawCatalogResponse {
         {
           id: 'home',
           title: 'Главная',
+          next_from: 'p2',
           blocks: [
             { id: 'mix', data_type: 'audio_stream_mixes', layout: { name: 'audio_stream_mix_interactive' }, audio_stream_mixes_ids: ['common'] },
             { id: 'h1', data_type: 'none', layout: { name: 'header', title: 'Мои треки' } },
@@ -182,6 +194,31 @@ function catalogResponse(): RawCatalogResponse {
     audios: [...MY.slice(0, 18), ...CATALOG.slice(0, 18)].map(withUrl),
     playlists: REC_PLAYLISTS,
     audio_stream_mixes: [{ id: 'common', description: 'Бесконечный поток под ваш вкус', stream_mix: { id: 'common', title: 'VK Микс' } }],
+  }
+}
+
+function homeRestResponse(): RawCatalogResponse {
+  return {
+    section: {
+      id: 'home',
+      title: 'Главная',
+      blocks: [
+        { id: 'h4', data_type: 'none', layout: { name: 'header_extended', title: 'Слушайте друг друга' } },
+        { id: 'shared', data_type: 'music_recommended_playlists', layout: { name: 'large_slider' }, playlists_ids: SHARED.map((p) => `${p.owner_id}_${p.id}`) },
+      ],
+    },
+    audios: CATALOG.slice(0, 18).map(withUrl),
+    playlists: SHARED,
+    profiles: FRIENDS.slice(0, 6),
+    recommended_playlists: SHARED.map((p, i) => ({
+      id: p.id,
+      owner_id: p.owner_id,
+      audios: CATALOG.slice(i * 3, i * 3 + 3).map((a) => `${a.owner_id}_${a.id}`),
+      color: SHARED_COLORS[i],
+      cover: glow(i),
+      percentage: i < 3 ? 0.98 : 0.93,
+      percentage_title: 'совпадение с вашим вкусом',
+    })),
   }
 }
 
@@ -246,14 +283,14 @@ export async function mockCall(method: string, params: Record<string, unknown>):
     case 'audio.getPlaylists':
       return owner === ME ? { count: MY_PLAYLISTS.length, items: MY_PLAYLISTS } : { count: 2, items: REC_PLAYLISTS.slice(0, 2) }
     case 'audio.getPlaylistById':
-      return [...MY_PLAYLISTS, ...REC_PLAYLISTS].find((p) => p.id === Number(params.playlist_id)) ?? REC_PLAYLISTS[0]
+      return [...MY_PLAYLISTS, ...REC_PLAYLISTS, ...SHARED].find((p) => p.id === Number(params.playlist_id)) ?? REC_PLAYLISTS[0]
     case 'audio.searchPlaylists':
     case 'audio.searchAlbums':
       return { count: REC_PLAYLISTS.length, items: REC_PLAYLISTS }
     case 'catalog.getAudio':
       return catalogResponse()
     case 'catalog.getSection':
-      return exploreResponse()
+      return params.section_id === 'home' ? homeRestResponse() : exploreResponse()
     case 'audio.add':
       return 99999
     case 'audio.delete':

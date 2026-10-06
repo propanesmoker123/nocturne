@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { SHAPES, WINDOW, collapseDelay, hitRect, isInteractive } from './geometry'
+import { COLLAPSE_DELAY, SHAPES, WINDOW, hitRect, isInteractive } from './geometry'
 
 describe('island geometry', () => {
   test('every shape fits inside the fixed island window', () => {
@@ -22,9 +22,8 @@ describe('island geometry', () => {
   })
 })
 
-describe('collapseDelay', () => {
-  test('collapses quickly after the cursor leaves in both modes', () => {
-    expect(collapseDelay('click')).toBeLessThanOrEqual(250)
-    expect(collapseDelay('hover')).toBeLessThanOrEqual(350)
+describe('COLLAPSE_DELAY', () => {
+  test('collapses a tenth of a second after the cursor leaves', () => {
+    expect(COLLAPSE_DELAY).toBe(100)
   })
 })
