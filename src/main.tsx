@@ -8,6 +8,7 @@ import { queryClient } from './app/queryClient'
 import { initSession } from './app/session'
 import { askCaptcha } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
+import { startSystemSync } from './app/systemSync'
 import { toast } from './app/toast'
 import { startGlobalHotkeys } from './lib/globalHotkeys'
 import { initSettings, useSettings } from './lib/settings'
@@ -47,6 +48,7 @@ async function boot() {
   await initPlayer()
   const actions = { toggleLike: () => void toggleLibrary(usePlayer.getState().current), showWindow: () => void showMainWindow() }
   startBridges(actions)
+  startSystemSync()
   startGlobalHotkeys({
     playPause: () => usePlayer.getState().toggle(),
     next: () => usePlayer.getState().next(true),

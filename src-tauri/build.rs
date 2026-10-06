@@ -10,6 +10,7 @@ const COMMANDS: &[&str] = &[
     "island_set_hit_rect",
     "island_configure",
     "media_update",
+    "set_close_to_tray",
     "import_wallpaper",
     "app_quit",
 ];

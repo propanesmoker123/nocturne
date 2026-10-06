@@ -30,6 +30,7 @@
     "allow-session-logout",
     "allow-set-user-agent",
     "allow-media-update",
+    "allow-set-close-to-tray",
     "allow-import-wallpaper",
     "allow-app-quit"
   ]
