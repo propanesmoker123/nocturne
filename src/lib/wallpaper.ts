@@ -5,6 +5,26 @@ import { invoke, isTauri } from './tauri'
 const VIDEO = /\.(mp4|webm|mov|m4v)$/i
 export const WALLPAPER_EXTENSIONS = ['mp4', 'webm', 'mov', 'm4v', 'gif', 'jpg', 'jpeg', 'png', 'webp', 'avif']
 
+/** Browser demo keeps picked files in memory only. */
+const demoSaved: string[] = []
+const demoVideo = new Set<string>()
+
+export const wallpaperKind = (src: string): 'video' | 'image' => (VIDEO.test(src) || demoVideo.has(src) ? 'video' : 'image')
+
+/** Imported wallpapers, newest first (they stay until the user deletes them). */
+export async function listWallpapers(): Promise<string[]> {
+  return isTauri() ? invoke<string[]>('list_wallpapers') : [...demoSaved]
+}
+
+export async function deleteWallpaper(src: string): Promise<void> {
+  if (isTauri()) {
+    await invoke('delete_wallpaper', { path: src })
+    return
+  }
+  const i = demoSaved.indexOf(src)
+  if (i >= 0) demoSaved.splice(i, 1)
+}
+
 /** Lets the user choose an image or video; Tauri copies it into the app's wallpaper folder. */
 export async function pickWallpaper(): Promise<WallpaperConfig | null> {
   if (isTauri()) {
@@ -22,7 +42,10 @@ export async function pickWallpaper(): Promise<WallpaperConfig | null> {
     input.onchange = () => {
       const f = input.files?.[0]
       if (!f) return resolve(null)
-      resolve({ kind: VIDEO.test(f.name) ? 'video' : 'image', src: URL.createObjectURL(f) })
+      const src = URL.createObjectURL(f)
+      demoSaved.unshift(src)
+      if (VIDEO.test(f.name)) demoVideo.add(src)
+      resolve({ kind: VIDEO.test(f.name) ? 'video' : 'image', src })
     }
     input.click()
   })

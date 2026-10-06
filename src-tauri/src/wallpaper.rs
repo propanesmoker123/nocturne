@@ -1,5 +1,5 @@
-//! Copies a user-chosen wallpaper into `$APPDATA/wallpapers`, the only folder the asset
-//! protocol may serve. Older imported wallpapers are removed.
+//! Copies user-chosen wallpapers into `$APPDATA/wallpapers`, the only folder the asset
+//! protocol may serve. They stay there (a small gallery in Settings) until the user deletes them.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -41,15 +41,40 @@ pub async fn import_wallpaper(app: AppHandle, path: String) -> Result<String, St
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("Не удалось скопировать: {e}"))?;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p != dest && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("wallpaper-")) {
-                let _ = std::fs::remove_file(p);
-            }
-        }
-    }
     Ok(dest.to_string_lossy().into_owned())
+}
+
+/// A file this module created: `wallpaper-<stamp>.<allowed ext>` directly inside `dir`.
+pub fn is_imported(path: &Path, dir: &Path) -> bool {
+    path.parent() == Some(dir)
+        && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("wallpaper-"))
+        && allowed_extension(path).is_some()
+}
+
+/// Imported wallpapers, newest first.
+#[tauri::command]
+pub fn list_wallpapers(app: AppHandle) -> Result<Vec<String>, String> {
+    let dir = wallpaper_dir(&app)?;
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_imported(p, &dir))
+        .collect();
+    files.sort();
+    files.reverse();
+    Ok(files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+}
+
+/// Deletes one imported wallpaper; anything outside the wallpaper folder is refused.
+#[tauri::command]
+pub fn delete_wallpaper(app: AppHandle, path: String) -> Result<(), String> {
+    let dir = wallpaper_dir(&app)?;
+    let p = PathBuf::from(&path);
+    if !is_imported(&p, &dir) {
+        return Err("Это не сохранённые обои".into());
+    }
+    std::fs::remove_file(&p).map_err(|e| format!("Не удалось удалить: {e}"))
 }
 
 #[cfg(test)]
@@ -60,6 +85,17 @@ mod tests {
     fn accepts_images_and_videos_case_insensitively() {
         assert_eq!(allowed_extension(Path::new("C:/a/b.MP4")).as_deref(), Some("mp4"));
         assert_eq!(allowed_extension(Path::new("x.webp")).as_deref(), Some("webp"));
+    }
+
+    #[test]
+    fn only_imported_files_in_the_folder_count() {
+        let dir = Path::new("C:/data/wallpapers");
+        assert!(is_imported(Path::new("C:/data/wallpapers/wallpaper-1700.mp4"), dir));
+        assert!(!is_imported(Path::new("C:/data/wallpapers/sub/wallpaper-1.mp4"), dir));
+        assert!(!is_imported(Path::new("C:/data/wallpapers/../settings.json"), dir));
+        assert!(!is_imported(Path::new("C:/data/wallpapers/other.png"), dir));
+        assert!(!is_imported(Path::new("C:/data/wallpapers/wallpaper-1.exe"), dir));
+        assert!(!is_imported(Path::new("C:/Windows/wallpaper-1.png"), dir));
     }
 
     #[test]

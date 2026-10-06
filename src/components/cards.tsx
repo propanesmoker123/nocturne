@@ -4,6 +4,7 @@ import { showMenu } from '../app/menu'
 import { useRouter } from '../app/router'
 import { openTrackMenu, playlistMenuItems } from '../app/trackActions'
 import { formatTime, pluralRu } from '../lib/format'
+import { upcoming } from '../player/queue'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
@@ -11,7 +12,7 @@ import type { Playlist, RecommendedPlaylist } from '../vk/models'
 import { toast } from '../app/toast'
 import { Artwork } from './Artwork'
 import { EqualizerBars, Spinner } from './controls'
-import { IconMore, IconPause, IconPlay } from './Icons'
+import { IconForward, IconMore, IconPause, IconPlay } from './Icons'
 import s from './cards.module.css'
 
 export function Section({ title, action, children }: { title: string; action?: { label: string; onClick(): void }; children: ReactNode }) {
@@ -268,41 +269,65 @@ export function CardsSkeleton({ count = 6 }: { count?: number }) {
   )
 }
 
-export function MixHero({ title, description }: { title: string; description?: string }) {
+export function MixHero({ title, description, covers = [] }: { title: string; description?: string; covers?: string[] }) {
   const source = usePlayer((p) => p.source)
   const isPlaying = usePlayer((p) => p.isPlaying)
+  const current = usePlayer((p) => p.current)
+  const queue = usePlayer((p) => p.queue)
   const [busy, setBusy] = useState(false)
   const playingMix = source?.kind === 'mix'
+  const live = playingMix && current ? current : null
+  // Front card first: what plays now and what comes next, or a taste of the catalog.
+  const stack = live ? [live.cover?.m, ...(queue ? upcoming(queue) : []).slice(0, 2).map((t) => t.cover?.m)] : covers.slice(0, 3)
   return (
-    <section className={s.mix} aria-label="VK Микс">
-      <div className={s.mixGlow} />
-      <div>
-        <div className={s.mixKicker}>Бесконечный поток</div>
-        <h2 className={s.mixTitle}>{title.replace(/^Слушать\s+/i, '')}</h2>
-        <p className={s.mixText}>{description ?? 'Подборка, которая подстраивается под то, что вы слушаете.'}</p>
-        <button
-          type="button"
-          className={s.mixPlay}
-          onClick={async () => {
-            if (playingMix) {
-              usePlayer.getState().toggle()
-              return
-            }
-            setBusy(true)
-            await usePlayer.getState().playMix()
-            setBusy(false)
-          }}
-        >
-          {busy ? <Spinner size={18} /> : playingMix && isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}
-          {playingMix && isPlaying ? 'Пауза' : playingMix ? 'Продолжить' : 'Слушать'}
-        </button>
+    <section className={s.mix} aria-label="VK Микс" data-live={(playingMix && isPlaying) || undefined}>
+      <div className={s.mixAura} aria-hidden="true">
+        <i />
+        <i />
+        <i />
       </div>
-      <div className={s.mixBars} data-playing={(playingMix && isPlaying) || undefined} aria-hidden="true">
-        <i />
-        <i />
-        <i />
-        <i />
-        <i />
+      <div className={s.mixBody}>
+        <div className={s.mixKicker}>
+          <span className={s.mixDot} />
+          {live ? 'Сейчас в миксе' : 'Бесконечный поток'}
+        </div>
+        <h2 className={s.mixTitle}>{title.replace(/^Слушать\s+/i, '')}</h2>
+        <p className={`${s.mixText} truncate`}>{live ? `${live.title} — ${live.artist}` : (description ?? 'Подборка, которая подстраивается под то, что вы слушаете.')}</p>
+        <div className={s.mixActions}>
+          <button
+            type="button"
+            className={s.mixPlay}
+            onClick={async () => {
+              if (playingMix) {
+                usePlayer.getState().toggle()
+                return
+              }
+              setBusy(true)
+              await usePlayer.getState().playMix()
+              setBusy(false)
+            }}
+          >
+            {busy ? <Spinner size={18} /> : playingMix && isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}
+            {playingMix && isPlaying ? 'Пауза' : playingMix ? 'Продолжить' : 'Слушать'}
+          </button>
+          {playingMix && (
+            <button type="button" className={s.mixNext} onClick={() => usePlayer.getState().next(true)}>
+              <IconForward size={16} /> Дальше
+            </button>
+          )}
+        </div>
+      </div>
+      <div className={s.mixStack} aria-hidden="true">
+        {[2, 1, 0].map((i) => (
+          <div key={i} className={s.mixCover} data-i={i}>
+            <Artwork src={stack[i]} size="100%" radius={14} seed={`mix-${i}`} style={{ aspectRatio: '1', height: 'auto' }} />
+            {i === 0 && playingMix && isPlaying && (
+              <span className={s.mixEq}>
+                <EqualizerBars playing height={14} color="#fff" />
+              </span>
+            )}
+          </div>
+        ))}
       </div>
     </section>
   )

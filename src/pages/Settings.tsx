@@ -1,4 +1,5 @@
-import { ImagePlus, RotateCcw } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { ImagePlus, Plus, RotateCcw, X } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useSession } from '../app/session'
 import { toast } from '../app/toast'
@@ -12,7 +13,7 @@ import { copyJournal, openJournalFolder } from '../lib/journal'
 import { DEFAULT_HOTKEYS, HOTKEY_LABELS, findDuplicateHotkeys, type HotkeyAction } from '../lib/hotkeys'
 import { ISLAND_MAX_TRANSPARENCY, WALLPAPER_PRESETS, useSettings, type WallpaperConfig } from '../lib/settings'
 import { isTauri } from '../lib/tauri'
-import { pickWallpaper } from '../lib/wallpaper'
+import { deleteWallpaper, listWallpapers, pickWallpaper, wallpaperKind, wallpaperUrl } from '../lib/wallpaper'
 import { useUpdates } from '../lib/updates'
 import { usePlayer } from '../player/store'
 import s from './Settings.module.css'
@@ -47,6 +48,43 @@ function WallpaperSwatch({ active, label, onClick, children }: { active: boolean
       {children}
       <span className={s.swatchLabel}>{label}</span>
     </button>
+  )
+}
+
+/** An imported wallpaper: a live thumbnail, and a cross that deletes the file. */
+function SavedWallpaper({ src, active, onPick, onDelete }: { src: string; active: boolean; onPick(): void; onDelete(): void }) {
+  const url = wallpaperUrl(src)
+  const video = wallpaperKind(src) === 'video'
+  return (
+    <div className={s.saved}>
+      <WallpaperSwatch active={active} label={video ? 'Видео' : 'Картинка'} onClick={onPick}>
+        {video ? (
+          <video className={s.thumb} src={`${url}#t=0.5`} muted preload="metadata" playsInline />
+        ) : (
+          <img className={s.thumb} src={url} alt="" draggable={false} />
+        )}
+      </WallpaperSwatch>
+      <button type="button" className={s.savedDelete} aria-label="Удалить эти обои" title="Удалить" onClick={onDelete}>
+        <X size={12} strokeWidth={2.8} />
+      </button>
+    </div>
+  )
+}
+
+/** Preset swatches, an "automatic" choice and any colour from the system picker. */
+function ColorDots({ value, onChange, auto }: { value: string; onChange(v: string): void; auto: { value: string; label: string; background: string } }) {
+  const custom = value !== auto.value && !ACCENTS.includes(value)
+  return (
+    <div className={s.accentDots}>
+      <button type="button" className={s.accentDot} aria-pressed={value === auto.value} aria-label={auto.label} title={auto.label} style={{ background: auto.background }} onClick={() => onChange(auto.value)} />
+      {ACCENTS.map((c) => (
+        <button key={c} type="button" className={s.accentDot} aria-pressed={value === c} aria-label={c} style={{ background: c }} onClick={() => onChange(c)} />
+      ))}
+      <label className={`${s.accentDot} ${s.customDot}`} data-active={custom || undefined} title="Свой цвет" style={custom ? { background: value } : undefined}>
+        {!custom && <Plus size={14} strokeWidth={2.4} />}
+        <input type="color" className={s.colorInput} aria-label="Свой цвет" value={custom ? value : '#ff375f'} onChange={(e) => onChange(e.target.value)} />
+      </label>
+    </div>
   )
 }
 
@@ -106,6 +144,7 @@ export function SettingsPage() {
   const dupes = new Set(findDuplicateHotkeys(st.hotkeys))
   const wp = st.wallpaper
   const setWallpaper = (w: WallpaperConfig) => st.update({ wallpaper: w })
+  const saved = useQuery({ queryKey: ['wallpapers'], queryFn: listWallpapers, staleTime: Infinity })
 
   return (
     <div className={s.wrap}>
@@ -138,13 +177,31 @@ export function SettingsPage() {
             <WallpaperSwatch active={wp.kind === 'none'} label="Без обоев" onClick={() => setWallpaper({ kind: 'none' })}>
               <span style={{ position: 'absolute', inset: 0, background: '#000' }} />
             </WallpaperSwatch>
+            {(saved.data ?? []).map((src) => (
+              <SavedWallpaper
+                key={src}
+                src={src}
+                active={(wp.kind === 'image' || wp.kind === 'video') && wp.src === src}
+                onPick={() => setWallpaper({ kind: wallpaperKind(src), src })}
+                onDelete={async () => {
+                  try {
+                    await deleteWallpaper(src)
+                    if ((wp.kind === 'image' || wp.kind === 'video') && wp.src === src) setWallpaper({ kind: 'dynamic' })
+                    void saved.refetch()
+                  } catch (e) {
+                    toast(String(e), 'error')
+                  }
+                }}
+              />
+            ))}
             <WallpaperSwatch
-              active={wp.kind === 'image' || wp.kind === 'video'}
-              label={wp.kind === 'video' ? 'Своё видео' : wp.kind === 'image' ? 'Своя картинка' : 'Свой файл…'}
+              active={false}
+              label="Добавить…"
               onClick={async () => {
                 try {
                   const picked = await pickWallpaper()
                   if (picked) setWallpaper(picked)
+                  void saved.refetch()
                 } catch (e) {
                   toast(`Не получилось поставить обои: ${String(e)}`, 'error')
                 }
@@ -167,20 +224,18 @@ export function SettingsPage() {
           </div>
         </Row>
         <Row title="Акцентный цвет" sub={st.accent === 'auto' ? 'Берётся из обложки текущего трека' : 'Фиксированный'}>
-          <div className={s.accentDots}>
-            <button
-              type="button"
-              className={s.accentDot}
-              aria-pressed={st.accent === 'auto'}
-              aria-label="Из обложки"
-              title="Из обложки"
-              style={{ background: 'conic-gradient(#ff375f, #ff9f0a, #30d158, #0a84ff, #bf5af2, #ff375f)' }}
-              onClick={() => st.update({ accent: 'auto' })}
-            />
-            {ACCENTS.map((c) => (
-              <button key={c} type="button" className={s.accentDot} aria-pressed={st.accent === c} aria-label={c} style={{ background: c }} onClick={() => st.update({ accent: c })} />
-            ))}
-          </div>
+          <ColorDots
+            value={st.accent}
+            onChange={(accent) => st.update({ accent })}
+            auto={{ value: 'auto', label: 'Из обложки', background: 'conic-gradient(#ff375f, #ff9f0a, #30d158, #0a84ff, #bf5af2, #ff375f)' }}
+          />
+        </Row>
+        <Row title="Цвет волны" sub={st.waveColor === 'accent' ? 'Как акцентный цвет' : 'Свой цвет для проигранной части'}>
+          <ColorDots
+            value={st.waveColor}
+            onChange={(waveColor) => st.update({ waveColor })}
+            auto={{ value: 'accent', label: 'Как акцент', background: 'var(--accent)' }}
+          />
         </Row>
       </Group>
 

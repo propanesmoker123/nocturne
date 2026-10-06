@@ -65,6 +65,8 @@ pub fn run() {
             media_update,
             tray::set_close_to_tray,
             wallpaper::import_wallpaper,
+            wallpaper::list_wallpapers,
+            wallpaper::delete_wallpaper,
             journal::journal_write,
             journal::journal_tail,
             journal::journal_open_dir,

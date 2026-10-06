@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { RefreshCw, Sparkles } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useScroller } from '../app/scroller'
 import { useSession } from '../app/session'
 import { Button, Spinner } from '../components/controls'
@@ -19,6 +19,20 @@ function greeting(name?: string): string {
   const part = h < 5 ? 'Доброй ночи' : h < 12 ? 'Доброе утро' : h < 18 ? 'Добрый день' : h < 23 ? 'Добрый вечер' : 'Доброй ночи'
   const first = name?.split(' ')[0]
   return first ? `${part}, ${first}` : part
+}
+
+/** A few covers from the recommendations, for the VK Mix card while nothing plays from it. */
+function tasteCovers(blocks: Block[]): string[] {
+  const out: string[] = []
+  for (const b of blocks) {
+    if (b.kind !== 'tracks') continue
+    for (const t of b.tracks) {
+      const c = t.cover?.m
+      if (c && !out.includes(c)) out.push(c)
+      if (out.length === 3) return out
+    }
+  }
+  return out
 }
 
 /** Loads the rest of a paged catalog section once the reader scrolls near its end. */
@@ -100,6 +114,7 @@ export function Home() {
   const q = useQuery({ queryKey: catalogKey(), queryFn: vk.getCatalog, staleTime: 10 * 60_000 })
   const home = q.data?.[0]
   const rest = useSectionRest(home?.id, home?.nextFrom)
+  const mixCovers = useMemo(() => tasteCovers(home?.blocks ?? []), [home])
 
   return (
     <>
@@ -123,7 +138,7 @@ export function Home() {
           }
         />
       )}
-      {home?.blocks.filter((b) => b.kind === 'mix').map((b) => <BlockView key={b.id} block={b} />)}
+      {home?.blocks.map((b) => (b.kind === 'mix' ? <MixHero key={b.id} title={b.title} description={b.description} covers={mixCovers} /> : null))}
       {history.length > 0 && (
         <Section title="Недавно играло">
           <TrackGrid tracks={history.slice(0, 18)} />

@@ -47,6 +47,11 @@ describe('mergeSettings', () => {
     expect(mergeSettings({}).island.locked).toBe(false)
   })
 
+  test('accepts any hex accent and waveform colour, falls back on junk', () => {
+    expect(mergeSettings({ accent: '#12ab9f', waveColor: '#FFAA00' })).toMatchObject({ accent: '#12ab9f', waveColor: '#FFAA00' })
+    expect(mergeSettings({ accent: 'red', waveColor: 'url(x)' })).toMatchObject({ accent: 'auto', waveColor: 'accent' })
+  })
+
   test('keeps island transparency within the readable range', () => {
     expect(mergeSettings({}).island.transparency).toBe(0)
     expect(mergeSettings({ island: { transparency: 0.4 } }).island.transparency).toBe(0.4)

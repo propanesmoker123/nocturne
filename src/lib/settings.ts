@@ -36,6 +36,8 @@ export interface Settings {
   wallpaperDim: number
   /** 'auto' (from artwork) or a hex color */
   accent: string
+  /** Played part of the waveform: 'accent' or a hex color */
+  waveColor: string
   island: IslandSettings
   hotkeys: HotkeyMap
   hotkeysEnabled: boolean
@@ -48,6 +50,7 @@ export const DEFAULT_SETTINGS: Settings = {
   wallpaperBlur: 0,
   wallpaperDim: 0.55,
   accent: 'auto',
+  waveColor: 'accent',
   island: { enabled: true, expandOn: 'hover', visibility: 'always', showOnTrackChange: true, hideInFullscreen: true, monitor: null, position: null, locked: false, transparency: 0 },
   hotkeys: DEFAULT_HOTKEYS,
   hotkeysEnabled: true,
@@ -55,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
   broadcastStatus: false,
 }
 
+const HEX = /^#[0-9a-f]{6}$/i
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d)
 const num = (v: unknown, d: number, min: number, max: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : d)
@@ -90,7 +94,8 @@ export function mergeSettings(saved: unknown): Settings {
     wallpaper: wallpaper(saved.wallpaper),
     wallpaperBlur: num(saved.wallpaperBlur, d.wallpaperBlur, 0, 60),
     wallpaperDim: num(saved.wallpaperDim, d.wallpaperDim, 0, 0.9),
-    accent: typeof saved.accent === 'string' && /^#[0-9a-f]{6}$/i.test(saved.accent) ? saved.accent : 'auto',
+    accent: typeof saved.accent === 'string' && HEX.test(saved.accent) ? saved.accent : 'auto',
+    waveColor: typeof saved.waveColor === 'string' && HEX.test(saved.waveColor) ? saved.waveColor : 'accent',
     island: {
       enabled: bool(isl.enabled, d.island.enabled),
       expandOn: oneOf(isl.expandOn, ['hover', 'click'] as const, d.island.expandOn),
@@ -125,6 +130,7 @@ const pick = (s: SettingsState): Settings => ({
   wallpaperBlur: s.wallpaperBlur,
   wallpaperDim: s.wallpaperDim,
   accent: s.accent,
+  waveColor: s.waveColor,
   island: s.island,
   hotkeys: s.hotkeys,
   hotkeysEnabled: s.hotkeysEnabled,

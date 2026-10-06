@@ -12,6 +12,8 @@ const COMMANDS: &[&str] = &[
     "media_update",
     "set_close_to_tray",
     "import_wallpaper",
+    "list_wallpapers",
+    "delete_wallpaper",
     "journal_write",
     "journal_tail",
     "journal_open_dir",

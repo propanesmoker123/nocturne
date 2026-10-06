@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { useSettings } from '../lib/settings'
 import { resample } from '../player/peaks'
 import { useWaveform } from '../player/waveform'
 import s from './Waveform.module.css'
@@ -24,6 +25,17 @@ const GAP = 1
 const UPPER = 0.68
 const clamp = (v: number) => Math.min(1, Math.max(0, v))
 
+/** Bumps whenever the app accent (a CSS variable on <html>) changes, so the canvas repaints. */
+function useAccentVersion() {
+  const [n, setN] = useState(0)
+  useEffect(() => {
+    const mo = new MutationObserver(() => setN((x) => x + 1))
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
+    return () => mo.disconnect()
+  }, [])
+  return n
+}
+
 /** Seek bar drawn as the track's real waveform, SoundCloud-style, in the app accent. */
 export function WaveformScrubber({ trackKey, value, buffered, height, label, valueText, step = 0.02, disabled, onChange, onCommit }: WaveformProps) {
   const box = useRef<HTMLDivElement>(null)
@@ -33,6 +45,8 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
   const [drag, setDrag] = useState<number | null>(null)
   const [hover, setHover] = useState<number | null>(null)
   const shown = clamp(drag ?? value)
+  const waveColor = useSettings((x) => x.waveColor)
+  const accentVersion = useAccentVersion()
 
   useEffect(() => {
     const el = box.current
@@ -54,7 +68,7 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
     g.clearRect(0, 0, width, height)
 
     const css = getComputedStyle(c)
-    const accent = css.getPropertyValue('--accent').trim() || '#ff375f'
+    const accent = waveColor !== 'accent' ? waveColor : css.getPropertyValue('--accent').trim() || '#ff375f'
     const bars = Math.max(1, Math.floor((width + GAP) / (BAR + GAP)))
     const levels = resample(peaks, bars)
     const upperH = Math.round(height * UPPER)
@@ -74,7 +88,7 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
       g.fillRect(x, upperH + 1, BAR, Math.max(1, lv * lowerH))
     }
     g.globalAlpha = 1
-  }, [peaks, width, height, shown, buffered, hover])
+  }, [peaks, width, height, shown, buffered, hover, waveColor, accentVersion])
 
   const fromEvent = (e: PointerEvent) => {
     const r = box.current!.getBoundingClientRect()

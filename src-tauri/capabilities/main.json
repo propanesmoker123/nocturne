@@ -34,6 +34,8 @@
     "allow-media-update",
     "allow-set-close-to-tray",
     "allow-import-wallpaper",
+    "allow-list-wallpapers",
+    "allow-delete-wallpaper",
     "allow-journal-write",
     "allow-journal-tail",
     "allow-journal-open-dir",
