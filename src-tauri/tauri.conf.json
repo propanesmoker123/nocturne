@@ -32,13 +32,17 @@
       "devCsp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/wallpapers/**"]
+        "scope": [
+          "$APPDATA/wallpapers/**"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -47,7 +51,21 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper" }
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ4OTJDQjcwODc1REIyQTIKUldTaXNsMkhjTXVTMkdwUFRmQnlNNHA2VlJUKzhlUnZ1OGUrY3FwL0tYN3QwWmhLWWZCSUdGSDMK",
+      "endpoints": [
+        "https://github.com/REPLACE_ME/nocturne/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

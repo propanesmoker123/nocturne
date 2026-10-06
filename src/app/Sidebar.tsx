@@ -11,6 +11,8 @@ import { useSession } from './session'
 import { useSheet } from './sheetStore'
 import { myPlaylistsKey, playlistMenuItems } from './trackActions'
 import { showMenu } from './menu'
+import { useUpdates } from '../lib/updates'
+import { Spinner } from '../components/controls'
 
 const ic = { size: 18, strokeWidth: 2 } as const
 
@@ -99,6 +101,22 @@ function PlaylistLinks() {
   )
 }
 
+function UpdateCard() {
+  const { phase, version, progress, install } = useUpdates()
+  if (phase !== 'available' && phase !== 'downloading') return null
+  return (
+    <div className={s.update}>
+      <div className={s.updateText}>
+        <div className={s.updateTitle}>Nocturne {version}</div>
+        <div className={s.updateSub}>{phase === 'downloading' ? `Загружаем… ${Math.round(progress * 100)}%` : 'Доступно обновление'}</div>
+      </div>
+      <button type="button" className={s.updateBtn} disabled={phase === 'downloading'} onClick={() => void install()}>
+        {phase === 'downloading' ? <Spinner size={14} /> : 'Обновить'}
+      </button>
+    </div>
+  )
+}
+
 export function Sidebar() {
   const user = useSession((x) => x.user)
   const push = useRouter((r) => r.push)
@@ -131,6 +149,7 @@ export function Sidebar() {
           <PlaylistLinks />
         </div>
       </div>
+      <UpdateCard />
       <div className={s.footer}>
         <button type="button" className={s.user} onClick={() => push({ name: 'settings' })}>
           {user?.photo ? <img className={s.avatar} src={user.photo} alt="" referrerPolicy="no-referrer" /> : <span className={s.avatar} />}

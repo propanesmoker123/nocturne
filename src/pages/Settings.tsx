@@ -12,6 +12,7 @@ import { DEFAULT_HOTKEYS, HOTKEY_LABELS, findDuplicateHotkeys, type HotkeyAction
 import { WALLPAPER_PRESETS, useSettings, type WallpaperConfig } from '../lib/settings'
 import { isTauri } from '../lib/tauri'
 import { pickWallpaper } from '../lib/wallpaper'
+import { useUpdates } from '../lib/updates'
 import { usePlayer } from '../player/store'
 import s from './Settings.module.css'
 
@@ -58,6 +59,40 @@ function useMonitors() {
     })
   }, [])
   return list
+}
+
+function AboutRow() {
+  const { phase, version, error, check, install } = useUpdates()
+  const [current, setCurrent] = useState('')
+  useEffect(() => {
+    if (!isTauri()) return
+    void import('@tauri-apps/api/app').then((m) => m.getVersion()).then(setCurrent)
+  }, [])
+  const status =
+    phase === 'checking'
+      ? 'Проверяем…'
+      : phase === 'none'
+        ? 'Установлена последняя версия'
+        : phase === 'available'
+          ? `Доступна версия ${version}`
+          : phase === 'downloading'
+            ? 'Загружаем обновление…'
+            : phase === 'error'
+              ? `Не удалось проверить: ${error ?? ''}`.slice(0, 120)
+              : 'Обновления ставятся автоматически по вашему подтверждению'
+  return (
+    <Row title={`Nocturne ${current}`} sub={status}>
+      {phase === 'available' ? (
+        <Button variant="primary" onClick={() => void install()}>
+          Обновить
+        </Button>
+      ) : (
+        <Button disabled={phase === 'checking' || phase === 'downloading' || !isTauri()} onClick={() => void check(true)}>
+          Проверить обновления
+        </Button>
+      )}
+    </Row>
+  )
 }
 
 export function SettingsPage() {
@@ -236,7 +271,7 @@ export function SettingsPage() {
       </Group>
 
       <Group title="О программе" note="Nocturne — неофициальный клиент. Он не связан с VK и работает через вашу веб-сессию vk.ru, как браузер. Если VK изменит веб-версию, часть функций может временно перестать работать.">
-        <Row title="Nocturne" sub="Версия 0.1.0" />
+        <AboutRow />
       </Group>
     </div>
   )

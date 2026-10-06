@@ -42,6 +42,17 @@ npm run tauri build    # установщик в src-tauri/target/release/bundle
 
 Проверки: `npm run typecheck`, `npm test`, `cd src-tauri && cargo test`.
 
+## Обновления
+
+Установленный Nocturne сам проверяет новые версии (при запуске и раз в несколько часов). Когда версия выходит, в сайдбаре появляется «Обновить» — установщик скачивается, проверяется подпись, и приложение перезапускается уже новым. Проверить вручную: «Настройки → О программе».
+
+### Выпуск новой версии (для автора)
+
+1. Один раз: репозиторий на GitHub, адрес `https://github.com/<ник>/<репозиторий>/releases/latest/download/latest.json` в `plugins.updater.endpoints` (`src-tauri/tauri.conf.json`), GitHub CLI (`winget install GitHub.cli`, затем `gh auth login`).
+2. Ключ подписи лежит в `%USERPROFILE%\.tauri
+octurne.key`. **Сделайте копию в надёжном месте**: без него выпустить обновление для уже установленных копий нельзя.
+3. Выпуск: `npm run release -- 0.2.0 "Что нового"` — поднимет версию, соберёт подписанный установщик и опубликует релиз с `latest.json`. Закоммитьте изменённые номера версий.
+
 ## Как это устроено
 
 - **Tauri 2** (Rust) + **React / TypeScript** в WebView2.

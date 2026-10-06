@@ -11,6 +11,7 @@ import { installShortcuts } from './app/shortcuts'
 import { startSystemSync } from './app/systemSync'
 import { toast } from './app/toast'
 import { startGlobalHotkeys } from './lib/globalHotkeys'
+import { startUpdateChecks } from './lib/updates'
 import { initSettings, useSettings } from './lib/settings'
 import { invoke, isTauri } from './lib/tauri'
 import { startBridges } from './player/bridges'
@@ -49,6 +50,7 @@ async function boot() {
   const actions = { toggleLike: () => void toggleLibrary(usePlayer.getState().current), showWindow: () => void showMainWindow() }
   startBridges(actions)
   startSystemSync()
+  startUpdateChecks()
   startGlobalHotkeys({
     playPause: () => usePlayer.getState().toggle(),
     next: () => usePlayer.getState().next(true),
