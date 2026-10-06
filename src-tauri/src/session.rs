@@ -1,21 +1,41 @@
 //! VK web session. A dedicated `vk-session` webview keeps the vk.ru cookies. The web token
-//! is requested *inside* that page (`login.vk.ru/?act=web_token`, exactly like vk.ru does)
-//! and handed back by navigating to `https://nocturne.invalid/session#<json>`, which
-//! `on_navigation` intercepts and cancels. The token lives only in Rust memory.
+//! is requested *inside* that page (`login.vk.ru/?act=web_token`, exactly like vk.ru does);
+//! the script parks the response under a one-time key in page memory and Rust collects it
+//! with `eval_with_callback` (no navigation, so the page is never disturbed). The token
+//! lives only in Rust memory.
 
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tokio::sync::oneshot;
 use url::Url;
 
 pub const SESSION_LABEL: &str = "vk-session";
-pub const MESSAGE_HOST: &str = "nocturne.invalid";
 const IDLE_URL: &str = "https://vk.ru/robots.txt";
 const LOGIN_URL: &str = "https://vk.ru/";
 const WEB_APP_ID: u32 = 6287487;
+/// A page reload of the same URL re-checks the session at most this often.
+const PAGE_RECHECK: Duration = Duration::from_secs(4);
+/// Hard floor between two web_token requests, whatever triggers them.
+const REFRESH_SPACING: Duration = Duration::from_secs(2);
+const POLL_EVERY: Duration = Duration::from_millis(150);
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Debug-build trace for the session flow. Never prints tokens, queries or fragments.
+macro_rules! trace {
+    ($($arg:tt)*) => {
+        if cfg!(debug_assertions) {
+            eprintln!("[session] {}", format!($($arg)*));
+        }
+    };
+}
+
+fn redact(url: &Url) -> String {
+    format!("{}://{}{}", url.scheme(), url.host_str().unwrap_or("?"), url.path())
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WebToken {
@@ -26,8 +46,6 @@ pub struct WebToken {
 
 #[derive(Debug, PartialEq)]
 pub enum SessionMsgError {
-    /// The message was not produced by our current request (ignored, request keeps waiting).
-    NonceMismatch,
     Malformed(String),
     /// The page could not run the request (network/CORS).
     Script(String),
@@ -35,37 +53,66 @@ pub enum SessionMsgError {
     Rejected(String),
 }
 
-/// Parses the navigation that carries the token response. `None` = not our message.
-pub fn parse_session_message(url: &Url, nonce: &str) -> Option<Result<WebToken, SessionMsgError>> {
-    if url.host_str() != Some(MESSAGE_HOST) {
+#[derive(Deserialize)]
+struct Parked {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    body: Option<serde_json::Value>,
+}
+
+/// Parses what the poll script returned: `None` while the request is still in flight.
+pub fn parse_poll_result(raw: &str) -> Option<Result<WebToken, SessionMsgError>> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "null" {
         return None;
     }
-    let raw = url.fragment().unwrap_or("");
-    let decoded = match urlencoding::decode(raw) {
-        Ok(s) => s.into_owned(),
-        Err(e) => return Some(Err(SessionMsgError::Malformed(e.to_string()))),
-    };
-    let env: Envelope = match serde_json::from_str(&decoded) {
+    let parked: Parked = match serde_json::from_str(raw) {
         Ok(v) => v,
         Err(e) => return Some(Err(SessionMsgError::Malformed(e.to_string()))),
     };
-    if env.nonce != nonce {
-        return Some(Err(SessionMsgError::NonceMismatch));
+    if !parked.ok {
+        return Some(Err(SessionMsgError::Script(parked.error.unwrap_or_default())));
     }
-    if !env.ok {
-        return Some(Err(SessionMsgError::Script(env.error.unwrap_or_default())));
-    }
-    let body = env.body.unwrap_or(serde_json::Value::Null);
+    let body = parked.body.unwrap_or(serde_json::Value::Null);
     if body.get("type").and_then(|t| t.as_str()) != Some("okay") {
         let info = body.get("error_info").or_else(|| body.get("error")).map(|v| v.to_string()).unwrap_or_else(|| body.to_string());
         return Some(Err(SessionMsgError::Rejected(info)));
     }
     let data = &body["data"];
     match (data["access_token"].as_str(), data["expires"].as_i64(), data["user_id"].as_i64()) {
-        (Some(token), Some(expires), Some(user_id)) if !token.is_empty() => {
-            Some(Ok(WebToken { access_token: token.to_string(), expires, user_id }))
-        }
+        (Some(token), Some(expires), Some(user_id)) if !token.is_empty() => Some(Ok(WebToken { access_token: token.to_string(), expires, user_id })),
         _ => Some(Err(SessionMsgError::Rejected("okay response without a token".to_string()))),
+    }
+}
+
+/// Lets only genuine page loads (Started → Finished) trigger a session check, and not more
+/// than once per `PAGE_RECHECK` for the same URL. WebView2 reports a spurious "Finished"
+/// without "Started" after cancelled navigations; those must never trigger anything.
+#[derive(Default)]
+pub struct PageLoadGate {
+    started: Option<String>,
+    last: Option<(String, Instant)>,
+}
+
+impl PageLoadGate {
+    pub fn started(&mut self, url: &str) {
+        self.started = Some(url.to_string());
+    }
+
+    pub fn finished(&mut self, url: &str, now: Instant) -> bool {
+        if self.started.as_deref() != Some(url) {
+            return false;
+        }
+        self.started = None;
+        if let Some((last_url, at)) = &self.last {
+            if last_url == url && now.saturating_duration_since(*at) < PAGE_RECHECK {
+                return false;
+            }
+        }
+        self.last = Some((url.to_string(), now));
+        true
     }
 }
 
@@ -84,21 +131,21 @@ pub struct SessionStatus {
     pub user_id: Option<i64>,
 }
 
-struct Pending {
-    nonce: String,
-    tx: oneshot::Sender<Result<WebToken, SessionMsgError>>,
-}
-
 pub struct SessionState {
     token: Mutex<Option<WebToken>>,
     phase: Mutex<Phase>,
-    pending: Mutex<Option<Pending>>,
-    refresh_lock: tokio::sync::Mutex<()>,
+    gate: Mutex<PageLoadGate>,
+    last_refresh: tokio::sync::Mutex<Option<Instant>>,
 }
 
 impl SessionState {
     pub fn new() -> Self {
-        Self { token: Mutex::new(None), phase: Mutex::new(Phase::Pending), pending: Mutex::new(None), refresh_lock: tokio::sync::Mutex::new(()) }
+        Self {
+            token: Mutex::new(None),
+            phase: Mutex::new(Phase::Pending),
+            gate: Mutex::new(PageLoadGate::default()),
+            last_refresh: tokio::sync::Mutex::new(None),
+        }
     }
 
     fn valid_token(&self, margin_secs: i64) -> Option<String> {
@@ -130,30 +177,42 @@ fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+/// Starts the token request in the page and parks the answer under `nonce`.
 fn token_script(nonce: &str) -> String {
     format!(
-        r#"(async () => {{
-  const send = (p) => {{ location.href = 'https://{host}/session#' + encodeURIComponent(JSON.stringify(p)); }};
-  try {{
-    const r = await fetch('https://login.vk.ru/?act=web_token', {{
-      method: 'POST', credentials: 'include',
-      headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
-      body: 'version=1&app_id={app}'
-    }});
-    send({{ nonce: '{nonce}', ok: true, body: await r.json() }});
-  }} catch (e) {{
-    send({{ nonce: '{nonce}', ok: false, error: String(e) }});
-  }}
-}})();"#,
-        host = MESSAGE_HOST,
+        r#"(() => {{
+  const box = (window.__nocturne = window.__nocturne || {{}});
+  fetch('https://login.vk.ru/?act=web_token', {{
+    method: 'POST', credentials: 'include',
+    headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+    body: 'version=1&app_id={app}'
+  }})
+    .then((r) => r.json())
+    .then((body) => {{ box['{nonce}'] = {{ ok: true, body }}; }})
+    .catch((e) => {{ box['{nonce}'] = {{ ok: false, error: String(e) }}; }});
+  return true;
+}})()"#,
         app = WEB_APP_ID,
+        nonce = nonce
+    )
+}
+
+/// Returns the parked answer (and forgets it) or null while it is not there yet.
+fn poll_script(nonce: &str) -> String {
+    format!(
+        r#"(() => {{
+  const box = window.__nocturne;
+  const r = box && box['{nonce}'];
+  if (!r) return null;
+  delete box['{nonce}'];
+  return r;
+}})()"#,
         nonce = nonce
     )
 }
 
 /// Creates the hidden session window. Called once from setup.
 pub fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    let nav_app = app.clone();
     let load_app = app.clone();
     WebviewWindowBuilder::new(app, SESSION_LABEL, WebviewUrl::External(IDLE_URL.parse().expect("idle url")))
         .title("Вход в VK — Nocturne")
@@ -161,30 +220,22 @@ pub fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .resizable(true)
         .visible(false)
         .center()
-        .on_navigation(move |url| on_navigation(&nav_app, url))
         .on_page_load(move |window, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                on_page_loaded(&load_app, &window, payload.url());
+            let url = payload.url();
+            trace!("page load {:?} {}", payload.event(), redact(url));
+            let st = load_app.state::<SessionState>();
+            let Ok(mut gate) = st.gate.lock() else { return };
+            match payload.event() {
+                PageLoadEvent::Started => gate.started(url.as_str()),
+                PageLoadEvent::Finished => {
+                    if gate.finished(url.as_str(), Instant::now()) {
+                        drop(gate);
+                        on_page_loaded(&load_app, &window, url);
+                    }
+                }
             }
         })
         .build()
-}
-
-fn on_navigation(app: &AppHandle, url: &Url) -> bool {
-    if url.host_str() != Some(MESSAGE_HOST) {
-        return true;
-    }
-    let st = app.state::<SessionState>();
-    let Ok(mut slot) = st.pending.lock() else { return false };
-    if let Some(p) = slot.take() {
-        match parse_session_message(url, &p.nonce) {
-            Some(Err(SessionMsgError::NonceMismatch)) | None => *slot = Some(p),
-            Some(res) => {
-                let _ = p.tx.send(res);
-            }
-        }
-    }
-    false
 }
 
 fn is_vk_page(url: &Url) -> bool {
@@ -225,23 +276,53 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
     });
 }
 
-/// Requests a fresh web token through the session page. Serialized by `refresh_lock`.
+async fn eval_value(window: &WebviewWindow, script: String) -> Result<String, String> {
+    let (tx, rx) = oneshot::channel::<String>();
+    let slot = Mutex::new(Some(tx));
+    window
+        .eval_with_callback(script, move |raw| {
+            if let Some(tx) = slot.lock().ok().and_then(|mut g| g.take()) {
+                let _ = tx.send(raw);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    tokio::time::timeout(Duration::from_secs(3), rx).await.map_err(|_| "eval timeout".to_string())?.map_err(|_| "eval dropped".to_string())
+}
+
+/// Requests a fresh web token through the session page. Serialized and spaced out so a
+/// misbehaving trigger can never hammer login.vk.ru.
 pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
     let st = app.state::<SessionState>();
-    let _guard = st.refresh_lock.lock().await;
+    let mut last = st.last_refresh.lock().await;
+    let wait = crate::vk::wait_before(*last, Instant::now(), REFRESH_SPACING);
+    if !wait.is_zero() {
+        tokio::time::sleep(wait).await;
+    }
+    *last = Some(Instant::now());
+
     let window = app.get_webview_window(SESSION_LABEL).ok_or("session window missing")?;
     let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let (tx, rx) = oneshot::channel();
-    st.pending.lock().map_err(|_| "poisoned")?.replace(Pending { nonce: nonce.clone(), tx });
-    window.eval(token_script(&nonce)).map_err(|e| e.to_string())?;
-    let res = match tokio::time::timeout(Duration::from_secs(15), rx).await {
-        Ok(Ok(r)) => r.map_err(|e| format!("{e:?}")),
-        Ok(Err(_)) => Err("cancelled".to_string()),
-        Err(_) => {
-            st.pending.lock().ok().and_then(|mut g| g.take());
-            Err("timeout".to_string())
+    eval_value(&window, token_script(&nonce)).await?;
+    let deadline = Instant::now() + REFRESH_TIMEOUT;
+    let res = loop {
+        tokio::time::sleep(POLL_EVERY).await;
+        if Instant::now() > deadline {
+            break Err("timeout".to_string());
+        }
+        let raw = match eval_value(&window, poll_script(&nonce)).await {
+            Ok(raw) => raw,
+            Err(e) => break Err(e),
+        };
+        if let Some(r) = parse_poll_result(&raw) {
+            break r.map_err(|e| format!("{e:?}"));
         }
     };
+    drop(last);
+
+    match &res {
+        Ok(t) => trace!("token ok for user {} (expires in {}s)", t.user_id, t.expires - now_secs()),
+        Err(e) => trace!("token failed: {e}"),
+    }
     if let Ok(tok) = &res {
         let was_ready = st.status().state == Phase::Ready;
         if let Ok(mut g) = st.token.lock() {
@@ -264,9 +345,6 @@ pub async fn get_token(app: &AppHandle) -> Result<String, String> {
     if st.status().state == Phase::None {
         return Err("not logged in".to_string());
     }
-    if let Some(t) = st.valid_token(90) {
-        return Ok(t);
-    }
     refresh(app).await.map(|t| t.access_token)
 }
 
@@ -277,6 +355,7 @@ pub fn session_status(st: tauri::State<'_, SessionState>) -> SessionStatus {
 
 #[tauri::command]
 pub fn session_login(app: AppHandle) -> Result<(), String> {
+    trace!("login requested");
     let w = app.get_webview_window(SESSION_LABEL).ok_or("session window missing")?;
     w.navigate(LOGIN_URL.parse().expect("login url")).map_err(|e| e.to_string())?;
     w.center().ok();
@@ -298,65 +377,80 @@ pub async fn session_logout(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct Envelope {
-    nonce: String,
-    ok: bool,
-    #[serde(default)]
-    error: Option<String>,
-    #[serde(default)]
-    body: Option<serde_json::Value>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn msg(json: &str) -> Url {
-        Url::parse(&format!("https://nocturne.invalid/session#{}", urlencoding::encode(json))).unwrap()
-    }
-
     #[test]
-    fn ignores_other_hosts() {
-        assert_eq!(parse_session_message(&Url::parse("https://vk.ru/feed").unwrap(), "n1"), None);
+    fn pending_while_nothing_is_parked() {
+        assert_eq!(parse_poll_result("null"), None);
+        assert_eq!(parse_poll_result(""), None);
     }
 
     #[test]
     fn parses_an_okay_token_response() {
-        let url = msg(r#"{"nonce":"n1","ok":true,"body":{"type":"okay","data":{"access_token":"tok","expires":1791268053,"user_id":42,"logout_hash":"h"}}}"#);
-        assert_eq!(
-            parse_session_message(&url, "n1"),
-            Some(Ok(WebToken { access_token: "tok".into(), expires: 1791268053, user_id: 42 }))
-        );
-    }
-
-    #[test]
-    fn rejects_a_foreign_nonce() {
-        let url = msg(r#"{"nonce":"other","ok":true,"body":{"type":"okay","data":{"access_token":"tok","expires":1,"user_id":1}}}"#);
-        assert_eq!(parse_session_message(&url, "n1"), Some(Err(SessionMsgError::NonceMismatch)));
+        let raw = r#"{"ok":true,"body":{"type":"okay","data":{"access_token":"tok","expires":1791268053,"user_id":42,"logout_hash":"h"}}}"#;
+        assert_eq!(parse_poll_result(raw), Some(Ok(WebToken { access_token: "tok".into(), expires: 1791268053, user_id: 42 })));
     }
 
     #[test]
     fn maps_error_bodies_to_rejected() {
-        let url = msg(r#"{"nonce":"n1","ok":true,"body":{"type":"error","error_code":5,"error_info":"not authorized"}}"#);
-        assert!(matches!(parse_session_message(&url, "n1"), Some(Err(SessionMsgError::Rejected(_)))));
+        let raw = r#"{"ok":true,"body":{"type":"error","error_info":"unauthorized"}}"#;
+        assert!(matches!(parse_poll_result(raw), Some(Err(SessionMsgError::Rejected(_)))));
     }
 
     #[test]
     fn maps_script_failures() {
-        let url = msg(r#"{"nonce":"n1","ok":false,"error":"TypeError: Failed to fetch"}"#);
-        assert_eq!(parse_session_message(&url, "n1"), Some(Err(SessionMsgError::Script("TypeError: Failed to fetch".into()))));
+        let raw = r#"{"ok":false,"error":"TypeError: Failed to fetch"}"#;
+        assert_eq!(parse_poll_result(raw), Some(Err(SessionMsgError::Script("TypeError: Failed to fetch".into()))));
     }
 
     #[test]
     fn reports_malformed_payloads() {
-        let url = Url::parse("https://nocturne.invalid/session#%7Bbroken").unwrap();
-        assert!(matches!(parse_session_message(&url, "n1"), Some(Err(SessionMsgError::Malformed(_)))));
+        assert!(matches!(parse_poll_result("{broken"), Some(Err(SessionMsgError::Malformed(_)))));
     }
 
     #[test]
     fn okay_without_token_is_rejected() {
-        let url = msg(r#"{"nonce":"n1","ok":true,"body":{"type":"okay","data":{"user_id":42}}}"#);
-        assert!(matches!(parse_session_message(&url, "n1"), Some(Err(SessionMsgError::Rejected(_)))));
+        let raw = r#"{"ok":true,"body":{"type":"okay","data":{"user_id":42}}}"#;
+        assert!(matches!(parse_poll_result(raw), Some(Err(SessionMsgError::Rejected(_)))));
+    }
+
+    #[test]
+    fn gate_ignores_finished_without_started() {
+        let mut g = PageLoadGate::default();
+        assert!(!g.finished("https://vk.ru/robots.txt", Instant::now()));
+    }
+
+    #[test]
+    fn gate_allows_a_genuine_load_once() {
+        let mut g = PageLoadGate::default();
+        let t0 = Instant::now();
+        g.started("https://vk.ru/robots.txt");
+        assert!(g.finished("https://vk.ru/robots.txt", t0));
+        // WebView2's spurious Finished after a cancelled navigation:
+        assert!(!g.finished("https://vk.ru/robots.txt", t0 + Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn gate_rate_limits_reloads_of_the_same_url() {
+        let mut g = PageLoadGate::default();
+        let t0 = Instant::now();
+        g.started("https://vk.ru/feed");
+        assert!(g.finished("https://vk.ru/feed", t0));
+        g.started("https://vk.ru/feed");
+        assert!(!g.finished("https://vk.ru/feed", t0 + Duration::from_secs(1)));
+        g.started("https://vk.ru/feed");
+        assert!(g.finished("https://vk.ru/feed", t0 + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn gate_lets_a_different_url_through_immediately() {
+        let mut g = PageLoadGate::default();
+        let t0 = Instant::now();
+        g.started("https://vk.ru/");
+        assert!(g.finished("https://vk.ru/", t0));
+        g.started("https://vk.ru/feed");
+        assert!(g.finished("https://vk.ru/feed", t0 + Duration::from_millis(300)));
     }
 }
