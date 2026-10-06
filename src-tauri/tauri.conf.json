@@ -61,7 +61,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ4OTJDQjcwODc1REIyQTIKUldTaXNsMkhjTXVTMkdwUFRmQnlNNHA2VlJUKzhlUnZ1OGUrY3FwL0tYN3QwWmhLWWZCSUdGSDMK",
       "endpoints": [
-        "https://github.com/REPLACE_ME/nocturne/releases/latest/download/latest.json"
+        "https://github.com/propanesmoker123/nocturne/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

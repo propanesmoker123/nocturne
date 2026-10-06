@@ -3,6 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './app/App'
+import { applyDemoHash } from './app/demo'
 import { toggleLibrary } from './app/library'
 import { queryClient } from './app/queryClient'
 import { initSession } from './app/session'
@@ -45,8 +46,9 @@ async function boot() {
     </StrictMode>,
   )
 
-  void initSession()
+  await initSession()
   await initPlayer()
+  void applyDemoHash()
   const actions = { toggleLike: () => void toggleLibrary(usePlayer.getState().current), showWindow: () => void showMainWindow() }
   startBridges(actions)
   startSystemSync()
