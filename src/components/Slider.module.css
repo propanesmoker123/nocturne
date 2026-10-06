@@ -1,0 +1,64 @@
+.slider {
+  --track: 5px;
+  --track-active: 9px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 22px;
+  width: 100%;
+  touch-action: none;
+  cursor: default;
+}
+.slider[data-size='sm'] {
+  --track: 4px;
+  --track-active: 7px;
+}
+.slider[data-size='lg'] {
+  --track: 7px;
+  --track-active: 12px;
+  height: 28px;
+}
+.track {
+  position: relative;
+  width: 100%;
+  height: var(--track);
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+  transition: height var(--dur-3) cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.slider:hover .track,
+.slider[data-dragging] .track {
+  height: var(--track-active);
+}
+.buffered,
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+}
+.buffered {
+  background: rgba(255, 255, 255, 0.16);
+}
+.fill {
+  background: rgba(255, 255, 255, 0.72);
+  transition: background-color var(--dur-2) var(--ease-out);
+}
+.slider:hover .fill,
+.slider[data-dragging] .fill {
+  background: #fff;
+}
+.slider[data-tone='accent'] .fill {
+  background: var(--accent);
+}
+.slider[data-disabled] {
+  opacity: 0.35;
+  pointer-events: none;
+}
+.slider:focus-visible {
+  box-shadow: none;
+}
+.slider:focus-visible .track {
+  outline: 2px solid color-mix(in oklab, var(--accent) 70%, transparent);
+  outline-offset: 3px;
+}

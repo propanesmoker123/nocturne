@@ -1,0 +1,103 @@
+/* Nocturne design tokens — iOS dark system palette, materials and type scale. */
+
+:root {
+  color-scheme: dark;
+
+  /* Ground */
+  --bg: #000;
+  --bg-elevated: #1c1c1e;
+  --bg-elevated-2: #2c2c2e;
+  --bg-elevated-3: #3a3a3c;
+
+  /* Labels */
+  --label: #fff;
+  --label-2: rgba(235, 235, 245, 0.62);
+  --label-3: rgba(235, 235, 245, 0.34);
+  --label-4: rgba(235, 235, 245, 0.18);
+
+  /* Fills & separators */
+  --fill-1: rgba(120, 120, 128, 0.36);
+  --fill-2: rgba(120, 120, 128, 0.32);
+  --fill-3: rgba(118, 118, 128, 0.24);
+  --fill-4: rgba(118, 118, 128, 0.16);
+  --separator: rgba(84, 84, 88, 0.6);
+  --separator-soft: rgba(84, 84, 88, 0.32);
+  --hairline: 0.5px;
+
+  /* System colors (dark appearance) */
+  --sys-red: #ff453a;
+  --sys-orange: #ff9f0a;
+  --sys-yellow: #ffd60a;
+  --sys-green: #30d158;
+  --sys-teal: #40cbe0;
+  --sys-blue: #0a84ff;
+  --sys-indigo: #5e5ce6;
+  --sys-purple: #bf5af2;
+  --sys-pink: #ff375f;
+
+  /* Accent — overwritten at runtime from the playing artwork */
+  --accent: #ff375f;
+  --accent-soft: color-mix(in oklab, var(--accent) 22%, transparent);
+  --accent-text: color-mix(in oklab, var(--accent) 70%, #fff);
+
+  /* Materials: tint + blur. Only used where content scrolls under chrome. */
+  --mat-thin: rgba(30, 30, 32, 0.42);
+  --mat-regular: rgba(30, 30, 32, 0.58);
+  --mat-thick: rgba(26, 26, 28, 0.74);
+  --mat-chrome: rgba(22, 22, 24, 0.82);
+  --mat-blur: blur(30px) saturate(180%);
+  --mat-blur-strong: blur(50px) saturate(190%);
+  --mat-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.09);
+
+  /* Type */
+  --font: 'Inter Variable', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --t-large: 700 34px/41px var(--font);
+  --t-title1: 700 28px/34px var(--font);
+  --t-title2: 700 22px/28px var(--font);
+  --t-title3: 600 19px/24px var(--font);
+  --t-headline: 600 15px/20px var(--font);
+  --t-body: 400 15px/20px var(--font);
+  --t-callout: 400 14px/19px var(--font);
+  --t-subhead: 400 13px/18px var(--font);
+  --t-footnote: 400 12px/16px var(--font);
+  --t-caption: 500 11px/13px var(--font);
+  --track-large: -0.022em;
+  --track-title: -0.017em;
+  --track-body: -0.006em;
+
+  /* Shape */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl: 22px;
+  --r-pill: 999px;
+
+  /* Depth */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 14px rgba(0, 0, 0, 0.22);
+  --shadow-2: 0 10px 30px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-art: 0 22px 48px -14px rgba(0, 0, 0, 0.7), 0 6px 14px -4px rgba(0, 0, 0, 0.45);
+  --shadow-float: 0 18px 50px -10px rgba(0, 0, 0, 0.65), 0 4px 16px rgba(0, 0, 0, 0.35);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-1: 120ms;
+  --dur-2: 220ms;
+  --dur-3: 380ms;
+
+  /* Layout */
+  --sidebar-w: 248px;
+  --titlebar-h: 44px;
+  --player-h: 76px;
+  --gutter: 32px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+  }
+}

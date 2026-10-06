@@ -1,0 +1,289 @@
+/* Icon button: SF-style hit target with a quiet hover fill and a press squish */
+.iconButton {
+  display: inline-grid;
+  place-items: center;
+  width: var(--size, 34px);
+  height: var(--size, 34px);
+  border-radius: var(--r-pill);
+  color: var(--label);
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    transform var(--dur-2) var(--ease-out),
+    color var(--dur-1) var(--ease-out),
+    opacity var(--dur-1) var(--ease-out);
+}
+.iconButton:hover {
+  background: var(--fill-4);
+}
+.iconButton:active {
+  transform: scale(0.88);
+  transition-duration: 60ms;
+}
+.iconButton[data-plain] {
+  background: none;
+}
+.iconButton[data-plain]:hover {
+  color: #fff;
+  opacity: 0.85;
+}
+.iconButton[data-active] {
+  color: var(--accent-text);
+}
+.iconButton:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+/* Pill button */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 18px;
+  border-radius: var(--r-pill);
+  font: var(--t-headline);
+  letter-spacing: var(--track-body);
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    transform var(--dur-2) var(--ease-out),
+    filter var(--dur-1) var(--ease-out);
+}
+.button:active {
+  transform: scale(0.95);
+  transition-duration: 60ms;
+}
+.button:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.button[data-variant='primary'] {
+  background: var(--accent);
+  color: #fff;
+}
+.button[data-variant='primary']:hover {
+  filter: brightness(1.1);
+}
+.button[data-variant='tinted'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.button[data-variant='tinted']:hover {
+  background: color-mix(in oklab, var(--accent) 30%, transparent);
+}
+.button[data-variant='gray'] {
+  background: var(--fill-3);
+  color: var(--label);
+}
+.button[data-variant='gray']:hover {
+  background: var(--fill-2);
+}
+.button[data-variant='danger'] {
+  background: color-mix(in oklab, var(--sys-red) 18%, transparent);
+  color: var(--sys-red);
+}
+.button[data-size='lg'] {
+  height: 44px;
+  padding: 0 24px;
+  font-size: 16px;
+}
+
+/* iOS switch */
+.switch {
+  position: relative;
+  width: 44px;
+  height: 27px;
+  flex: none;
+  border-radius: var(--r-pill);
+  background: var(--fill-1);
+  transition: background-color var(--dur-2) var(--ease-out);
+}
+.switch[aria-checked='true'] {
+  background: var(--sys-green);
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18), 0 1px 1px rgba(0, 0, 0, 0.16);
+  transition: transform var(--dur-3) cubic-bezier(0.34, 1.4, 0.64, 1), width var(--dur-2) var(--ease-out);
+}
+.switch:active::after {
+  width: 28px;
+}
+.switch[aria-checked='true']::after {
+  transform: translateX(17px);
+}
+.switch[aria-checked='true']:active::after {
+  transform: translateX(12px);
+}
+
+/* Segmented control */
+.segmented {
+  display: inline-flex;
+  position: relative;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--fill-3);
+  isolation: isolate;
+}
+.segment {
+  position: relative;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 7px;
+  font: 500 13px/28px var(--font);
+  color: var(--label);
+  white-space: nowrap;
+  z-index: 1;
+}
+.segment[aria-selected='false'] {
+  color: var(--label-2);
+}
+.segment[aria-selected='false']:hover {
+  color: var(--label);
+}
+.segmentThumb {
+  position: absolute;
+  inset: 0;
+  border-radius: 7px;
+  background: #636366;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12), 0 3px 1px rgba(0, 0, 0, 0.04);
+  z-index: -1;
+}
+
+/* Activity indicator (iOS spokes) */
+.spinner {
+  position: relative;
+  display: inline-block;
+  width: var(--size, 20px);
+  height: var(--size, 20px);
+}
+.spinner i {
+  position: absolute;
+  left: 46%;
+  top: 0;
+  width: 8%;
+  height: 27%;
+  border-radius: 2px;
+  background: currentColor;
+  transform-origin: 50% 185%;
+  animation: spoke 0.9s linear infinite;
+  opacity: 0.15;
+}
+@keyframes spoke {
+  0% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0.15;
+  }
+}
+
+/* Equalizer bars */
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: var(--gap, 2px);
+  height: var(--h, 14px);
+  color: var(--eq-color, var(--accent));
+}
+.eq i {
+  width: var(--w, 3px);
+  height: 100%;
+  border-radius: 1.5px;
+  background: currentColor;
+  transform-origin: bottom;
+  transform: scaleY(0.3);
+}
+.eq[data-playing] i {
+  animation: eq 0.9s var(--ease-in-out) infinite alternate;
+}
+.eq[data-playing] i:nth-child(2) {
+  animation-duration: 0.7s;
+  animation-delay: -0.35s;
+}
+.eq[data-playing] i:nth-child(3) {
+  animation-duration: 1.05s;
+  animation-delay: -0.6s;
+}
+.eq[data-playing] i:nth-child(4) {
+  animation-duration: 0.8s;
+  animation-delay: -0.2s;
+}
+@keyframes eq {
+  0% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+  100% {
+    transform: scaleY(0.45);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eq[data-playing] i {
+    animation: none;
+    transform: scaleY(0.6);
+  }
+  .spinner i {
+    animation-duration: 2.4s;
+  }
+}
+
+/* Artwork */
+.art {
+  position: relative;
+  flex: none;
+  width: var(--size);
+  height: var(--size);
+  border-radius: var(--radius, var(--r-sm));
+  overflow: hidden;
+  background: var(--bg-elevated-2);
+}
+.art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  pointer-events: none;
+}
+.art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+.art img[data-loaded] {
+  opacity: 1;
+}
+.artFallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.55);
+}
+.artFallback svg {
+  width: 42%;
+  height: 42%;
+}
+.artMosaic {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  height: 100%;
+}
+.artMosaic img {
+  opacity: 1;
+}
