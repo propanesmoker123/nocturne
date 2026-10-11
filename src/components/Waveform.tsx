@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { useSettings } from '../lib/settings'
 import { resample } from '../player/peaks'
-import { useWaveform } from '../player/waveform'
+import { useWaveform } from '../player/waveformStore'
 import s from './Waveform.module.css'
 
 interface WaveformProps {
@@ -17,6 +17,8 @@ interface WaveformProps {
   disabled?: boolean
   onChange?: (v: number) => void
   onCommit?: (v: number) => void
+  /** Played-part colour; by default the waveform setting or the app accent. */
+  color?: string
 }
 
 const BAR = 2
@@ -37,7 +39,7 @@ function useAccentVersion() {
 }
 
 /** Seek bar drawn as the track's real waveform, SoundCloud-style, in the app accent. */
-export function WaveformScrubber({ trackKey, value, buffered, height, label, valueText, step = 0.02, disabled, onChange, onCommit }: WaveformProps) {
+export function WaveformScrubber({ trackKey, value, buffered, height, label, valueText, step = 0.02, disabled, onChange, onCommit, color }: WaveformProps) {
   const box = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const peaks = useWaveform((w) => (w.key === trackKey ? w.peaks : null))
@@ -68,7 +70,7 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
     g.clearRect(0, 0, width, height)
 
     const css = getComputedStyle(c)
-    const accent = waveColor !== 'accent' ? waveColor : css.getPropertyValue('--accent').trim() || '#ff375f'
+    const accent = color ?? (waveColor !== 'accent' ? waveColor : css.getPropertyValue('--accent').trim() || '#ff375f')
     const bars = Math.max(1, Math.floor((width + GAP) / (BAR + GAP)))
     const levels = resample(peaks, bars)
     const upperH = Math.round(height * UPPER)
@@ -88,7 +90,7 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
       g.fillRect(x, upperH + 1, BAR, Math.max(1, lv * lowerH))
     }
     g.globalAlpha = 1
-  }, [peaks, width, height, shown, buffered, hover, waveColor, accentVersion])
+  }, [peaks, width, height, shown, buffered, hover, waveColor, accentVersion, color])
 
   const fromEvent = (e: PointerEvent) => {
     const r = box.current!.getBoundingClientRect()

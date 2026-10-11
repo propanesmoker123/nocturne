@@ -26,6 +26,8 @@ export interface IslandSettings {
   locked: boolean
   /** 0 = solid black, up to ISLAND_MAX_TRANSPARENCY = mostly see-through. */
   transparency: number
+  /** A thin track-progress line along the bottom of the compact island. */
+  showProgress: boolean
 }
 
 export const ISLAND_MAX_TRANSPARENCY = 0.7
@@ -51,7 +53,7 @@ export const DEFAULT_SETTINGS: Settings = {
   wallpaperDim: 0.55,
   accent: 'auto',
   waveColor: 'accent',
-  island: { enabled: true, expandOn: 'hover', visibility: 'always', showOnTrackChange: true, hideInFullscreen: true, monitor: null, position: null, locked: false, transparency: 0 },
+  island: { enabled: true, expandOn: 'hover', visibility: 'always', showOnTrackChange: true, hideInFullscreen: true, monitor: null, position: null, locked: false, transparency: 0, showProgress: true },
   hotkeys: DEFAULT_HOTKEYS,
   hotkeysEnabled: true,
   closeToTray: true,
@@ -109,6 +111,7 @@ export function mergeSettings(saved: unknown): Settings {
           : null,
       locked: bool(isl.locked, d.island.locked),
       transparency: num(isl.transparency, d.island.transparency, 0, ISLAND_MAX_TRANSPARENCY),
+      showProgress: bool(isl.showProgress, d.island.showProgress),
     },
     hotkeys,
     hotkeysEnabled: bool(saved.hotkeysEnabled, d.hotkeysEnabled),

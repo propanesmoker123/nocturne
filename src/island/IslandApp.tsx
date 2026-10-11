@@ -5,11 +5,13 @@ import { Artwork } from '../components/Artwork'
 import { EqualizerBars, IconButton, Spinner } from '../components/controls'
 import { IconBackward, IconCheck, IconForward, IconPause, IconPlay, IconPlus, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
-import { EV, type PlayerCommand, type PlayerSnapshot } from '../lib/events'
+import { WaveformScrubber } from '../components/Waveform'
+import { EV, type IslandWave, type PlayerCommand, type PlayerSnapshot } from '../lib/events'
 import { formatTime } from '../lib/format'
 import { DEFAULT_SETTINGS, type IslandSettings } from '../lib/settings'
 import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
-import { COLLAPSE_DELAY, SHAPES, hitRect, isInteractive, type IslandShape } from './geometry'
+import { useWaveform } from '../player/waveformStore'
+import { COLLAPSE_DELAY, SHAPES, VOLUME_HUD_MS, hitRect, isInteractive, pickShape, volumeChanged } from './geometry'
 import s from './island.module.css'
 
 const spring = { type: 'spring', stiffness: 420, damping: 32, mass: 0.85 } as const
@@ -68,7 +70,17 @@ function useLivePosition(st: PlayerSnapshot | null, active: boolean) {
   return Math.min(st.duration || Infinity, st.position + extra)
 }
 
-function Expanded({ st, accent, locked, moved }: { st: PlayerSnapshot; accent: string; locked: boolean; moved: boolean }) {
+/** Thin track progress along the bottom of the compact pill; ticks on its own so the island itself stays still. */
+function MiniProgress({ st, duration }: { st: PlayerSnapshot; duration: number }) {
+  const live = useLivePosition(st, true)
+  return (
+    <span className={s.miniProgress} aria-hidden="true">
+      <i style={{ transform: `scaleX(${duration ? Math.min(1, live / duration) : 0})` }} />
+    </span>
+  )
+}
+
+function Expanded({ st, accent, locked, moved, waveColor }: { st: PlayerSnapshot; accent: string; locked: boolean; moved: boolean; waveColor: string | null }) {
   const t = st.track!
   const live = useLivePosition(st, true)
   const [drag, setDrag] = useState<number | null>(null)
@@ -117,10 +129,15 @@ function Expanded({ st, accent, locked, moved }: { st: PlayerSnapshot; accent: s
       </div>
       <div className={s.time}>
         <span>{formatTime(pos)}</span>
-        <Slider
-          size="sm"
+        <WaveformScrubber
+          trackKey={t.key}
+          height={30}
           label="Позиция трека"
           value={d ? pos / d : 0}
+          buffered={1}
+          step={5 / Math.max(d, 1)}
+          valueText={(v) => formatTime(v * d)}
+          color={waveColor ?? accent}
           onChange={(v) => setDrag(v * d)}
           onCommit={(v) => {
             setDrag(null)
@@ -161,6 +178,10 @@ export function IslandApp() {
   const [expanded, setExpanded] = useState(false)
   const [peek, setPeek] = useState(false)
   const [flash, setFlash] = useState<'added' | 'removed' | null>(null)
+  const [volumeHud, setVolumeHud] = useState(false)
+  const [waveColor, setWaveColor] = useState<string | null>(null)
+  const volumeTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const prevVolume = useRef<{ volume: number; muted: boolean } | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const leaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const peekTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -184,10 +205,23 @@ export function IslandApp() {
       listen<PlayerSnapshot>(EV.playerState, (e) => setSt(e.payload)),
       listen<IslandSettings>(EV.islandSettings, (e) => setSettings(e.payload)),
       listen<{ inside: boolean }>(EV.islandHover, (e) => onHover(e.payload.inside)),
+      listen<IslandWave>(EV.islandWave, (e) => {
+        const { key, peaks, color } = e.payload
+        useWaveform.setState({ key, peaks: peaks ? Float32Array.from(peaks) : null })
+        setWaveColor(color)
+      }),
     ]
     offs.push(watchMoves())
     void emitTo('main', EV.requestState)
     return () => offs.forEach((p) => void p.then((off) => off()))
+  }, [onHover])
+
+  // Browser dev only: island.html#demo plays a fake track (the import is dropped from release builds)
+  useEffect(() => {
+    if (!import.meta.env.DEV || isTauri() || location.hash !== '#demo') return
+    let stop = () => {}
+    void import('./demo').then((m) => (stop = m.startIslandDemo({ state: setSt, settings: setSettings, hover: onHover, wave: setWaveColor })))
+    return () => stop()
   }, [onHover])
 
   // Peek for a moment when the track changes; flash a badge when it is added/removed.
@@ -207,8 +241,20 @@ export function IslandApp() {
     prevLiked.current = liked
   }, [st?.track?.key, st?.track?.liked, settings.showOnTrackChange])
 
+  // Volume HUD: a moment of «🔊 ▬▬▬▭ 60 %» whenever the volume or mute changes (hotkeys, wheel, slider)
+  useEffect(() => {
+    if (!st) return
+    const next = { volume: st.volume, muted: st.muted }
+    if (volumeChanged(prevVolume.current, next)) {
+      setVolumeHud(true)
+      clearTimeout(volumeTimer.current)
+      volumeTimer.current = setTimeout(() => setVolumeHud(false), VOLUME_HUD_MS)
+    }
+    prevVolume.current = next
+  }, [st?.volume, st?.muted])
+
   const hasTrack = !!st?.track
-  const shape: IslandShape = expanded && hasTrack ? 'expanded' : (peek || flash) && hasTrack ? 'peek' : 'compact'
+  const shape = pickShape({ hasTrack, expanded, peek: !!(peek || flash), volume: volumeHud })
 
   useEffect(() => {
     void invoke('island_configure', {
@@ -234,6 +280,8 @@ export function IslandApp() {
   const t = st.track
   const accent = st.accent ?? '#ff375f'
   const size = SHAPES[shape]
+  const duration = st.duration || t.duration
+  const volumePct = Math.round((st.muted ? 0 : st.volume) * 100)
 
   const onWheel = (e: WheelEvent) => send({ type: 'volumeBy', value: e.deltaY < 0 ? 0.05 : -0.05 })
 
@@ -252,6 +300,16 @@ export function IslandApp() {
             <motion.div key="compact" className={s.compact} {...fade}>
               <Artwork className={s.compactArt} src={t.cover} size={24} radius={7} seed={t.key} />
               <StatusGlyph st={st} accent={accent} size={14} />
+              {settings.showProgress && <MiniProgress st={st} duration={duration} />}
+            </motion.div>
+          )}
+          {shape === 'volume' && (
+            <motion.div key="volume" className={s.volumeHud} {...fade} role="status" aria-label={`Громкость ${volumePct} %`}>
+              <IconSpeaker size={16} level={st.muted || st.volume === 0 ? 0 : st.volume < 0.34 ? 1 : st.volume < 0.67 ? 2 : 3} />
+              <span className={s.volumeBar}>
+                <i style={{ transform: `scaleX(${st.muted ? 0 : st.volume})` }} />
+              </span>
+              <span className={s.volumePct}>{st.muted ? 'без звука' : `${volumePct} %`}</span>
             </motion.div>
           )}
           {shape === 'peek' && (
@@ -270,7 +328,7 @@ export function IslandApp() {
               )}
             </motion.div>
           )}
-          {shape === 'expanded' && <Expanded key="expanded" st={st} accent={accent} locked={settings.locked} moved={!!settings.position} />}
+          {shape === 'expanded' && <Expanded key="expanded" st={st} accent={accent} locked={settings.locked} moved={!!settings.position} waveColor={waveColor} />}
         </AnimatePresence>
       </motion.div>
     </div>

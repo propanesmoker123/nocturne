@@ -1,8 +1,9 @@
 import { artworkAccent, toCss } from '../lib/color'
-import { EV, type PlayerCommand, type PlayerSnapshot } from '../lib/events'
+import { EV, type IslandWave, type PlayerCommand, type PlayerSnapshot } from '../lib/events'
 import { useSettings, type IslandSettings } from '../lib/settings'
 import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
 import { usePlayer, type PlayerState } from './store'
+import { useWaveform } from './waveformStore'
 
 let accent: string | null = null
 let artworkColor: string | null = null
@@ -175,8 +176,27 @@ export function startBridges(actions: BridgeActions) {
     const { position, locked } = e.payload
     useSettings.getState().updateIsland({ ...(position !== undefined ? { position } : {}), ...(locked !== undefined ? { locked } : {}) })
   })
+  // The island draws the same waveform: send it whenever it fills in (at most ~3 times a second)
+  let waveTimer: ReturnType<typeof setTimeout> | undefined
+  const pushWave = () => {
+    clearTimeout(waveTimer)
+    const { key, peaks } = useWaveform.getState()
+    const color = useSettings.getState().waveColor
+    const wave: IslandWave = { key, peaks: peaks ? Array.from(peaks, (v) => Math.round(v * 1000) / 1000) : null, color: color === 'accent' ? null : color }
+    void emitTo('island', EV.islandWave, wave)
+  }
+  const pushWaveSoon = () => {
+    clearTimeout(waveTimer)
+    waveTimer = setTimeout(pushWave, 300)
+  }
+  useWaveform.subscribe(pushWaveSoon)
+  useSettings.subscribe((st, prev) => {
+    if (st.waveColor !== prev.waveColor) pushWave()
+  })
+
   void listen(EV.requestState, () => {
     pushIslandSettings()
     pushIsland()
+    pushWave()
   })
 }

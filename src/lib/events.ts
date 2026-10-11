@@ -8,6 +8,8 @@ export const EV = {
   islandHover: 'island:hover',
   islandSettings: 'island:settings',
   islandSet: 'island:set',
+  /** Waveform of the current track for the island (main → island). */
+  islandWave: 'island:wave',
   sessionReady: 'session:ready',
   sessionLoggedOut: 'session:logged-out',
 } as const
@@ -21,6 +23,13 @@ export interface IslandTrack {
   explicit: boolean
   liked: boolean
   duration: number
+}
+
+export interface IslandWave {
+  key: string | null
+  peaks: number[] | null
+  /** The user's waveform colour, or null to follow the accent. */
+  color: string | null
 }
 
 export interface PlayerSnapshot {

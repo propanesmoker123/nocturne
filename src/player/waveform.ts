@@ -1,19 +1,14 @@
 import Hls, { type BufferAppendingData } from 'hls.js'
-import { create } from 'zustand'
 import { journal } from '../lib/journal'
 import { accumulate, isComplete, newAcc, toPeaks, type PeakAcc } from './peaks'
+import { useWaveform } from './waveformStore'
 
 /**
  * Real waveform of the current track. hls.js already downloads, decrypts and remuxes the
  * stream for playback; we copy each appended audio fragment, decode it off the main path at
  * a low sample rate and fold its loudness into time bins. Nothing is downloaded twice.
  */
-interface WaveformState {
-  key: string | null
-  peaks: Float32Array | null
-}
-
-export const useWaveform = create<WaveformState>(() => ({ key: null, peaks: null }))
+export { useWaveform }
 
 const CACHE_SIZE = 40
 const cache = new Map<string, Float32Array>()

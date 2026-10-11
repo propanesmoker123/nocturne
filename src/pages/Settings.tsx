@@ -288,6 +288,9 @@ export function SettingsPage() {
             />
           </div>
         </Row>
+        <Row title="Показывать прогресс трека" sub="Тонкая полоска внизу свёрнутого островка">
+          <Switch label="Показывать прогресс трека" checked={st.island.showProgress} onChange={(v) => st.updateIsland({ showProgress: v })} />
+        </Row>
         <Row title="Показывать при смене трека">
           <Switch label="Показывать при смене трека" checked={st.island.showOnTrackChange} onChange={(v) => st.updateIsland({ showOnTrackChange: v })} />
         </Row>
