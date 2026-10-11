@@ -1,27 +1,45 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
-    <linearGradient id="bg" x1="0.1" y1="0" x2="0.9" y2="1">
-      <stop offset="0" stop-color="#1B0B3A"/>
-      <stop offset="0.5" stop-color="#5B1A78"/>
-      <stop offset="1" stop-color="#FF3D6E"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16123A"/>
+      <stop offset="0.55" stop-color="#0E0B24"/>
+      <stop offset="1" stop-color="#07060E"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0.28" cy="0.22" r="0.75">
-      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
-    </radialGradient>
-    <mask id="moon">
-      <rect width="1024" height="1024" fill="#000"/>
-      <circle cx="392" cy="505" r="236" fill="#fff"/>
-      <circle cx="498" cy="420" r="200" fill="#000"/>
-    </mask>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="80"/>
+    </filter>
+    <filter id="glow" x="-30%" y="-60%" width="160%" height="220%">
+      <feGaussianBlur stdDeviation="28"/>
+    </filter>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7C8CFF"/>
+      <stop offset="0.5" stop-color="#FF5C8A"/>
+      <stop offset="1" stop-color="#FFB86B"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <stop offset="0.4" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.12"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="48" y="48" width="928" height="928" rx="228"/></clipPath>
   </defs>
-  <rect x="48" y="48" width="928" height="928" rx="210" fill="url(#bg)"/>
-  <rect x="48" y="48" width="928" height="928" rx="210" fill="url(#glow)"/>
-  <rect width="1024" height="1024" fill="#FFFFFF" mask="url(#moon)"/>
-  <g fill="#FFFFFF">
-    <rect x="636" y="572" width="44" height="168" rx="22" opacity="0.95"/>
-    <rect x="706" y="452" width="44" height="288" rx="22" opacity="0.95"/>
-    <rect x="776" y="520" width="44" height="220" rx="22" opacity="0.95"/>
-    <rect x="846" y="620" width="44" height="120" rx="22" opacity="0.95"/>
+  <g clip-path="url(#tile)">
+    <rect x="48" y="48" width="928" height="928" fill="url(#bg)"/>
+    <circle cx="250" cy="230" r="330" fill="#4B5CFF" opacity="0.55" filter="url(#soft)"/>
+    <circle cx="800" cy="820" r="360" fill="#FF3D7F" opacity="0.5" filter="url(#soft)"/>
+    <!-- the wave: one breath of sound, quiet at the ends -->
+    <path d="M214 512 C 290 512, 316 380, 392 380 S 470 644, 548 644 S 626 336, 704 336 S 770 512, 810 512"
+          fill="none" stroke="url(#wave)" stroke-width="96" stroke-linecap="round" opacity="0.85" filter="url(#glow)"/>
+    <path d="M214 512 C 290 512, 316 380, 392 380 S 470 644, 548 644 S 626 336, 704 336 S 770 512, 810 512"
+          fill="none" stroke="url(#wave)" stroke-width="76" stroke-linecap="round"/>
+    <path d="M214 512 C 290 512, 316 380, 392 380 S 470 644, 548 644 S 626 336, 704 336 S 770 512, 810 512"
+          fill="none" stroke="url(#sheen)" stroke-width="76" stroke-linecap="round" opacity="0.7"/>
+    <!-- a night star -->
+    <path d="M772 214 Q 780 262 828 270 Q 780 278 772 326 Q 764 278 716 270 Q 764 262 772 214 Z" fill="#FFFFFF" opacity="0.95"/>
   </g>
+  <rect x="49.5" y="49.5" width="925" height="925" rx="226.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
 </svg>
