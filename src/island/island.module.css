@@ -35,25 +35,85 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 12px 0 6px;
+  isolation: isolate;
 }
-/* Thin track progress along the bottom of the compact pill (setting «Показывать прогресс трека») */
-.miniProgress {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 2px;
-  height: 2px;
-  border-radius: 1px;
-  background: rgba(255, 255, 255, 0.14);
-  overflow: hidden;
-  pointer-events: none;
-}
-.miniProgress i {
+/* Track position on the compact pill, in the style chosen in settings */
+.progressFill {
   position: absolute;
   inset: 0;
+  z-index: -1;
   background: var(--accent);
+  opacity: 0.24;
   transform-origin: left;
   transition: transform 250ms linear;
+  pointer-events: none;
+}
+.progressOutline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.progressOutline path,
+.ringValue {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  transition: stroke-dasharray 250ms linear;
+}
+.progressOutline path {
+  stroke-width: 1.5;
+}
+.ring {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: -2px;
+}
+.ring > svg {
+  position: absolute;
+  inset: 0;
+  width: 28px;
+  height: 28px;
+}
+.ringTrack {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.14);
+}
+.ringTrack,
+.ringValue {
+  stroke-width: 1.6;
+}
+.progressBar {
+  position: relative;
+  flex: 1;
+  height: 3px;
+  margin: 0 12px;
+}
+.progressBar i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 250ms linear;
+}
+.progressBar i::after {
+  content: '';
+  position: absolute;
+  right: -3px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: #fff;
 }
 
 /* Volume HUD: speaker, level, percent */

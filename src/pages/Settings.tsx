@@ -11,7 +11,7 @@ import { PRESETS, PresetLayer } from '../components/Wallpaper'
 import { useHotkeyStatus } from '../lib/globalHotkeys'
 import { copyJournal, openJournalFolder } from '../lib/journal'
 import { DEFAULT_HOTKEYS, HOTKEY_LABELS, findDuplicateHotkeys, type HotkeyAction } from '../lib/hotkeys'
-import { ISLAND_MAX_TRANSPARENCY, WALLPAPER_PRESETS, useSettings, type WallpaperConfig } from '../lib/settings'
+import { ISLAND_MAX_TRANSPARENCY, WALLPAPER_PRESETS, useSettings, type IslandProgress, type WallpaperConfig } from '../lib/settings'
 import { isTauri } from '../lib/tauri'
 import { deleteWallpaper, listWallpapers, pickWallpaper, wallpaperKind, wallpaperUrl } from '../lib/wallpaper'
 import { useUpdates } from '../lib/updates'
@@ -288,8 +288,14 @@ export function SettingsPage() {
             />
           </div>
         </Row>
-        <Row title="Показывать прогресс трека" sub="Тонкая полоска внизу свёрнутого островка">
-          <Switch label="Показывать прогресс трека" checked={st.island.showProgress} onChange={(v) => st.updateIsland({ showProgress: v })} />
+        <Row title="Прогресс трека" sub="Как свёрнутый островок показывает, сколько прошло">
+          <select className={s.select} value={st.island.progress} onChange={(e) => st.updateIsland({ progress: e.target.value as IslandProgress })}>
+            <option value="ring">Рамка вокруг обложки</option>
+            <option value="outline">Контур островка</option>
+            <option value="fill">Мягкая заливка</option>
+            <option value="bar">Полоска посередине</option>
+            <option value="off">Не показывать</option>
+          </select>
         </Row>
         <Row title="Показывать при смене трека">
           <Switch label="Показывать при смене трека" checked={st.island.showOnTrackChange} onChange={(v) => st.updateIsland({ showOnTrackChange: v })} />

@@ -8,7 +8,7 @@ import { Slider } from '../components/Slider'
 import { WaveformScrubber } from '../components/Waveform'
 import { EV, type IslandWave, type PlayerCommand, type PlayerSnapshot } from '../lib/events'
 import { formatTime } from '../lib/format'
-import { DEFAULT_SETTINGS, type IslandSettings } from '../lib/settings'
+import { DEFAULT_SETTINGS, type IslandProgress, type IslandSettings } from '../lib/settings'
 import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
 import { useWaveform } from '../player/waveformStore'
 import { COLLAPSE_DELAY, SHAPES, VOLUME_HUD_MS, hitRect, isInteractive, pickShape, volumeChanged } from './geometry'
@@ -70,13 +70,49 @@ function useLivePosition(st: PlayerSnapshot | null, active: boolean) {
   return Math.min(st.duration || Infinity, st.position + extra)
 }
 
-/** Thin track progress along the bottom of the compact pill; ticks on its own so the island itself stays still. */
-function MiniProgress({ st, duration }: { st: PlayerSnapshot; duration: number }) {
-  const live = useLivePosition(st, true)
+/** Rounded rectangle traced clockwise from the middle of its top edge, so progress starts where the eye expects. */
+function roundedPath(x: number, y: number, w: number, h: number, r: number) {
+  return `M ${x + w / 2} ${y} H ${x + w - r} A ${r} ${r} 0 0 1 ${x + w} ${y + r} V ${y + h - r} A ${r} ${r} 0 0 1 ${x + w - r} ${y + h} H ${x + r} A ${r} ${r} 0 0 1 ${x} ${y + h - r} V ${y + r} A ${r} ${r} 0 0 1 ${x + r} ${y} Z`
+}
+
+const PILL = SHAPES.compact
+const PILL_PATH = roundedPath(0.75, 0.75, PILL.w - 1.5, PILL.h - 1.5, PILL.h / 2 - 0.75)
+const RING_PATH = roundedPath(1, 1, 26, 26, 9)
+
+/** The compact pill: cover, status and the track position in the chosen style; ticks on its own so the island stays still. */
+function CompactBody({ st, accent, style, duration }: { st: PlayerSnapshot; accent: string; style: IslandProgress; duration: number }) {
+  const t = st.track!
+  const live = useLivePosition(st, style !== 'off')
+  const p = duration ? Math.min(1, live / duration) : 0
+  const dash = { strokeDasharray: `${(p * 100).toFixed(2)} 100`, opacity: p > 0 ? 1 : 0 }
+  const ring = style === 'ring'
+  const art = <Artwork className={s.compactArt} src={t.cover} size={ring ? 20 : 24} radius={ring ? 6 : 7} seed={t.key} />
   return (
-    <span className={s.miniProgress} aria-hidden="true">
-      <i style={{ transform: `scaleX(${duration ? Math.min(1, live / duration) : 0})` }} />
-    </span>
+    <>
+      {style === 'fill' && <span className={s.progressFill} style={{ transform: `scaleX(${p})` }} aria-hidden="true" />}
+      {style === 'outline' && (
+        <svg className={s.progressOutline} viewBox={`0 0 ${PILL.w} ${PILL.h}`} aria-hidden="true">
+          <path d={PILL_PATH} pathLength={100} style={dash} />
+        </svg>
+      )}
+      {ring ? (
+        <span className={s.ring}>
+          <svg viewBox="0 0 28 28" aria-hidden="true">
+            <path className={s.ringTrack} d={RING_PATH} />
+            <path className={s.ringValue} d={RING_PATH} pathLength={100} style={dash} />
+          </svg>
+          {art}
+        </span>
+      ) : (
+        art
+      )}
+      {style === 'bar' && (
+        <span className={s.progressBar} aria-hidden="true">
+          <i style={{ width: `${p * 100}%`, opacity: p > 0 ? 1 : 0 }} />
+        </span>
+      )}
+      <StatusGlyph st={st} accent={accent} size={14} />
+    </>
   )
 }
 
@@ -298,9 +334,7 @@ export function IslandApp() {
         <AnimatePresence initial={false} mode="popLayout">
           {shape === 'compact' && (
             <motion.div key="compact" className={s.compact} {...fade}>
-              <Artwork className={s.compactArt} src={t.cover} size={24} radius={7} seed={t.key} />
-              <StatusGlyph st={st} accent={accent} size={14} />
-              {settings.showProgress && <MiniProgress st={st} duration={duration} />}
+              <CompactBody st={st} accent={accent} style={settings.progress} duration={duration} />
             </motion.div>
           )}
           {shape === 'volume' && (

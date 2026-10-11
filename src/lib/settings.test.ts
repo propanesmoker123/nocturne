@@ -60,10 +60,10 @@ describe('mergeSettings', () => {
     expect(mergeSettings({ accent: 'red', waveColor: 'url(x)' })).toMatchObject({ accent: 'auto', waveColor: 'accent' })
   })
 
-  test('track progress on the compact island: on by default, can be turned off', () => {
-    expect(mergeSettings({}).island.showProgress).toBe(true)
-    expect(mergeSettings({ island: { showProgress: false } }).island.showProgress).toBe(false)
-    expect(mergeSettings({ island: { showProgress: 'no' } }).island.showProgress).toBe(true)
+  test('track progress on the compact island: a ring around the cover by default, any known style or off', () => {
+    expect(mergeSettings({}).island.progress).toBe('ring')
+    for (const style of ['off', 'ring', 'outline', 'fill', 'bar'] as const) expect(mergeSettings({ island: { progress: style } }).island.progress).toBe(style)
+    expect(mergeSettings({ island: { progress: 'rainbow' } }).island.progress).toBe('ring')
   })
 
   test('keeps island transparency within the readable range', () => {
