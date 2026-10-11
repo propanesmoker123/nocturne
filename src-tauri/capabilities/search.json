@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "search",
+  "description": "Quick search window: sends what is typed to main and shows what main found",
+  "windows": ["search"],
+  "permissions": ["core:event:default", "allow-search-hide"]
+}

@@ -31,6 +31,14 @@ describe('mergeSettings', () => {
     expect('bogus' in s.hotkeys).toBe(false)
   })
 
+  test('a newly added hotkey never takes a combination the user already gave to another action', () => {
+    const s = mergeSettings({ hotkeys: { toggleLike: 'ctrl+alt+f' } })
+    expect(s.hotkeys.toggleLike).toBe('ctrl+alt+f')
+    expect(s.hotkeys.quickSearch).toBe('')
+    expect(mergeSettings({ hotkeys: {} }).hotkeys.quickSearch).toBe('Ctrl+Alt+F')
+    expect(mergeSettings({ hotkeys: { quickSearch: 'Ctrl+Alt+K' } }).hotkeys.quickSearch).toBe('Ctrl+Alt+K')
+  })
+
   test('validates the wallpaper config', () => {
     expect(mergeSettings({ wallpaper: { kind: 'preset', preset: 'ocean' } }).wallpaper).toEqual({ kind: 'preset', preset: 'ocean' })
     expect(mergeSettings({ wallpaper: { kind: 'preset', preset: 'nope' } }).wallpaper).toEqual(DEFAULT_SETTINGS.wallpaper)

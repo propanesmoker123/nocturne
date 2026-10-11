@@ -66,6 +66,7 @@ describe('DEFAULT_HOTKEYS', () => {
       repeat: 'Ctrl+Alt+R',
       toggleIsland: 'Ctrl+Alt+I',
       toggleWindow: 'Ctrl+Alt+M',
+      quickSearch: 'Ctrl+Alt+F',
     })
   })
 

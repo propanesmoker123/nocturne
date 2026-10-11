@@ -88,8 +88,11 @@ export function mergeSettings(saved: unknown): Settings {
   if (!isObj(saved)) return d
   const hk = isObj(saved.hotkeys) ? saved.hotkeys : {}
   const hotkeys = { ...d.hotkeys }
+  const taken = new Set(Object.values(hk).filter((v): v is string => typeof v === 'string').map((v) => v.toLowerCase()))
   for (const action of Object.keys(d.hotkeys) as HotkeyAction[]) {
     if (typeof hk[action] === 'string') hotkeys[action] = hk[action] as string
+    // An action added in an update must not grab a combination the user already gave to another one
+    else if (taken.has(hotkeys[action].toLowerCase())) hotkeys[action] = ''
   }
   const isl = isObj(saved.island) ? saved.island : {}
   return {

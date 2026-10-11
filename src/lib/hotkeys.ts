@@ -11,6 +11,7 @@ export type HotkeyAction =
   | 'repeat'
   | 'toggleIsland'
   | 'toggleWindow'
+  | 'quickSearch'
 
 export type HotkeyMap = Record<HotkeyAction, string>
 
@@ -27,6 +28,7 @@ export const DEFAULT_HOTKEYS: HotkeyMap = {
   repeat: 'Ctrl+Alt+R',
   toggleIsland: 'Ctrl+Alt+I',
   toggleWindow: 'Ctrl+Alt+M',
+  quickSearch: 'Ctrl+Alt+F',
 }
 
 export const HOTKEY_LABELS: Record<HotkeyAction, string> = {
@@ -42,6 +44,7 @@ export const HOTKEY_LABELS: Record<HotkeyAction, string> = {
   repeat: 'Повтор',
   toggleIsland: 'Показать / скрыть остров',
   toggleWindow: 'Показать / скрыть приложение',
+  quickSearch: 'Быстрый поиск поверх окон',
 }
 
 export interface KeyLike {

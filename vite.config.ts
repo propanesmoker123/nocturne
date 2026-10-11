@@ -22,6 +22,7 @@ export default defineConfig({
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
         island: resolve(import.meta.dirname, 'island.html'),
+        search: resolve(import.meta.dirname, 'search.html'),
       },
     },
   },

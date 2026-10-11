@@ -6,7 +6,7 @@ import { App } from './app/App'
 import { applyDemoHash } from './app/demo'
 import { toggleLibrary } from './app/library'
 import { queryClient } from './app/queryClient'
-import { initSession } from './app/session'
+import { initSession, useSession } from './app/session'
 import { askCaptcha } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
 import { startSystemSync } from './app/systemSync'
@@ -17,6 +17,7 @@ import { startUpdateChecks } from './lib/updates'
 import { initSettings, useSettings } from './lib/settings'
 import { invoke, isTauri } from './lib/tauri'
 import { startBridges } from './player/bridges'
+import { openQuickSearch, startQuickSearch } from './quicksearch/bridge'
 import { initPlayer, usePlayer } from './player/store'
 import { setCaptchaHandler } from './vk/api'
 
@@ -53,6 +54,7 @@ async function boot() {
   void applyDemoHash()
   const actions = { toggleLike: () => void toggleLibrary(usePlayer.getState().current), showWindow: () => void showMainWindow() }
   startBridges(actions)
+  startQuickSearch()
   startSystemSync()
   startUpdateChecks()
   startGlobalHotkeys({
@@ -72,6 +74,8 @@ async function boot() {
       toast(enabled ? 'Остров включён' : 'Остров скрыт', 'info')
     },
     toggleWindow: () => void showMainWindow(true),
+    // Signed out there is nothing to search: bring up the sign-in screen instead
+    quickSearch: () => (useSession.getState().phase === 'ready' ? openQuickSearch() : void showMainWindow()),
   })
 }
 

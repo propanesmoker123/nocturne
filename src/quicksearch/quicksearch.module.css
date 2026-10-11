@@ -1,0 +1,220 @@
+/* The window is bigger than the panel: the clear margin carries the shadow and closes on click. */
+.stage {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 24px;
+}
+
+.panel {
+  width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 20px;
+  background:
+    radial-gradient(110% 120% at 0% 0%, color-mix(in oklab, var(--accent) 15%, transparent), transparent 55%),
+    rgba(24, 24, 28, 0.97);
+  box-shadow:
+    0 28px 64px -18px rgba(0, 0, 0, 0.75),
+    0 8px 22px rgba(0, 0, 0, 0.38),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.13);
+}
+
+.field {
+  flex: none;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  height: 60px;
+  padding: 0 18px 0 20px;
+}
+.fieldIcon {
+  color: var(--label-2);
+}
+.input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--label);
+  font: 500 19px/24px var(--font);
+  letter-spacing: -0.01em;
+  caret-color: var(--accent);
+  user-select: text;
+}
+.input::placeholder {
+  color: var(--label-3);
+}
+.input::selection {
+  background: color-mix(in oklab, var(--accent) 45%, transparent);
+}
+
+.kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+  font: 600 11px/1 var(--font);
+  color: var(--label-2);
+}
+
+.list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 8px 8px;
+  border-top: 0.5px solid rgba(255, 255, 255, 0.08);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+.header {
+  padding: 12px 12px 6px;
+  font: 600 11px/14px var(--font);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--label-3);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto 40px;
+  align-items: center;
+  gap: 12px;
+  height: 54px;
+  padding: 0 12px 0 8px;
+  border-radius: 12px;
+}
+.row[data-selected] {
+  background: color-mix(in oklab, var(--accent) 22%, rgba(255, 255, 255, 0.05));
+}
+.row[data-disabled] {
+  opacity: 0.38;
+}
+.cover {
+  position: relative;
+  width: 40px;
+  height: 40px;
+}
+.current {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.5);
+}
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font: 600 14px/18px var(--font);
+  color: var(--label);
+}
+.subtitle {
+  font-weight: 500;
+  color: var(--label-3);
+}
+.artist {
+  font: 400 12.5px/16px var(--font);
+  color: var(--label-2);
+}
+.trunc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.explicit {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  font: 700 9.5px/1 var(--font);
+  color: rgba(255, 255, 255, 0.8);
+}
+.duration {
+  text-align: right;
+  font: 500 12px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--label-3);
+}
+.nextBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px 0 8px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.1);
+  font: 600 12px/1 var(--font);
+  color: var(--label);
+}
+.nextBtn:hover {
+  background: rgba(255, 255, 255, 0.17);
+}
+.queued {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 600 12px/1 var(--font);
+  color: var(--accent-text);
+}
+
+.empty {
+  padding: 22px 20px 24px;
+  border-top: 0.5px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+  font: 400 13.5px/18px var(--font);
+  color: var(--label-2);
+}
+.note {
+  padding: 10px 12px 2px;
+  font: 400 12px/16px var(--font);
+  color: var(--sys-orange);
+}
+
+.footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 38px;
+  padding: 0 20px;
+  border-top: 0.5px solid rgba(255, 255, 255, 0.08);
+  font: 500 11.5px/1 var(--font);
+  color: var(--label-3);
+  white-space: nowrap;
+}
+.footer > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.footer .kbd {
+  height: 18px;
+  min-width: 18px;
+  padding: 0 5px;
+  font-size: 10.5px;
+}
+.footerEnd {
+  margin-left: auto;
+}

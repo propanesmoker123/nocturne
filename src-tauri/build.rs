@@ -9,6 +9,8 @@ const COMMANDS: &[&str] = &[
     "set_user_agent",
     "island_set_hit_rect",
     "island_configure",
+    "search_open",
+    "search_hide",
     "media_update",
     "set_close_to_tray",
     "import_wallpaper",

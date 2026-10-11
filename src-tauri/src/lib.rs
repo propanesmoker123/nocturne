@@ -6,6 +6,7 @@ mod media;
 mod tray;
 mod wallpaper;
 mod proxy;
+mod quicksearch;
 mod session;
 mod vk;
 
@@ -62,6 +63,8 @@ pub fn run() {
             http::set_user_agent,
             island::island_set_hit_rect,
             island::island_configure,
+            quicksearch::search_open,
+            quicksearch::search_hide,
             media_update,
             tray::set_close_to_tray,
             wallpaper::import_wallpaper,
@@ -72,30 +75,34 @@ pub fn run() {
             journal::journal_open_dir,
             app_quit,
         ])
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                match window.label() {
-                    session::SESSION_LABEL | island::LABEL => {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => match window.label() {
+                session::SESSION_LABEL | island::LABEL | quicksearch::LABEL => {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                "main" => {
+                    if tray::close_to_tray() {
                         api.prevent_close();
                         let _ = window.hide();
+                    } else {
+                        window.app_handle().exit(0);
                     }
-                    "main" => {
-                        if tray::close_to_tray() {
-                            api.prevent_close();
-                            let _ = window.hide();
-                        } else {
-                            window.app_handle().exit(0);
-                        }
-                    }
-                    _ => {}
                 }
+                _ => {}
+            },
+            // The quick search panel goes away as soon as the user clicks anywhere else
+            WindowEvent::Focused(false) if window.label() == quicksearch::LABEL => {
+                let _ = window.hide();
             }
+            _ => {}
         })
         .setup(|app| {
             journal::init(app.handle());
             session::create_window(app.handle())?;
             island::create_window(app.handle())?;
             island::start(app.handle());
+            quicksearch::create_window(app.handle())?;
             tray::create(app.handle())?;
             #[cfg(windows)]
             media::init(app.handle());
