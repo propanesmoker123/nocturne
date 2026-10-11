@@ -252,9 +252,9 @@ export function IslandApp() {
     return () => offs.forEach((p) => void p.then((off) => off()))
   }, [onHover])
 
-  // Browser dev only: island.html#demo plays a fake track (the import is dropped from release builds)
+  // Browser dev only: island.html#demo plays a fake track, #demo-open shows it expanded (dropped from release builds)
   useEffect(() => {
-    if (!import.meta.env.DEV || isTauri() || location.hash !== '#demo') return
+    if (!import.meta.env.DEV || isTauri() || !location.hash.startsWith('#demo')) return
     let stop = () => {}
     void import('./demo').then((m) => (stop = m.startIslandDemo({ state: setSt, settings: setSettings, hover: onHover, wave: setWaveColor })))
     return () => stop()

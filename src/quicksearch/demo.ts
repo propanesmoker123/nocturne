@@ -1,4 +1,5 @@
 import type { QuickResults, QuickTrack } from '../lib/events'
+import { cover } from '../vk/mock'
 import type { QuickTransport } from './QuickSearchApp'
 
 const t = (key: string, title: string, artist: string, duration: number, extra: Partial<QuickTrack> = {}): QuickTrack => ({
@@ -8,6 +9,7 @@ const t = (key: string, title: string, artist: string, duration: number, extra: 
   duration,
   explicit: false,
   playable: true,
+  cover: cover(key.length * 7 + key.charCodeAt(key.length - 1)),
   ...extra,
 })
 

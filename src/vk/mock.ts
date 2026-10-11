@@ -21,7 +21,7 @@ function rng(seed: number) {
   }
 }
 
-function cover(seed: number): string {
+export function cover(seed: number): string {
   const r = rng(seed * 97 + 13)
   const a = PALETTE[Math.floor(r() * PALETTE.length)]
   const b = PALETTE[Math.floor(r() * PALETTE.length)]

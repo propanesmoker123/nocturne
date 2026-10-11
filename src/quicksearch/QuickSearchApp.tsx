@@ -162,14 +162,19 @@ export function QuickSearchApp() {
     }
   }, [onResults, onOpen])
 
-  // Browser dev only: search.html#demo answers from a fake library (dropped from release builds)
+  // Browser dev only: search.html#demo answers from a fake library, #demo=query types it in (dropped from release builds)
   useEffect(() => {
-    if (!import.meta.env.DEV || isTauri() || location.hash !== '#demo') return
+    if (!import.meta.env.DEV || isTauri() || !location.hash.startsWith('#demo')) return
     void import('./demo').then((m) => {
       transport.current = m.demoTransport(onResults)
       onOpen()
+      const typed = decodeURIComponent(location.hash.split('=')[1] ?? '')
+      if (typed) {
+        setQ(typed)
+        sendQuery(typed)
+      }
     })
-  }, [onResults, onOpen])
+  }, [onResults, onOpen, sendQuery])
 
   useEffect(() => {
     list.current?.querySelector('[data-selected]')?.scrollIntoView({ block: 'nearest' })

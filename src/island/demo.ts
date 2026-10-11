@@ -1,6 +1,7 @@
 import type { PlayerSnapshot } from '../lib/events'
 import { DEFAULT_SETTINGS, type IslandSettings } from '../lib/settings'
 import { useWaveform } from '../player/waveformStore'
+import { cover } from '../vk/mock'
 
 interface DemoApi {
   state: (st: PlayerSnapshot) => void
@@ -17,7 +18,7 @@ export function startIslandDemo(api: DemoApi): () => void {
   document.documentElement.style.setProperty('background', 'linear-gradient(135deg, #3a4a6b, #8a6f8f 55%, #d9a77a)', 'important')
   const duration = 214
   let snap: PlayerSnapshot = {
-    track: { key: 'demo_1', title: 'Ночной город', artist: 'Nocturne Demo', explicit: false, liked: true, duration },
+    track: { key: 'demo_1', title: 'Ночной город', artist: 'Северный ветер', cover: cover(7), coverLarge: cover(7), explicit: false, liked: true, duration },
     isPlaying: true,
     isLoading: false,
     position: 42,
@@ -46,6 +47,7 @@ export function startIslandDemo(api: DemoApi): () => void {
 
   api.settings(settings)
   api.state(snap)
+  if (location.hash === '#demo-open') setTimeout(() => api.hover(true), 100)
   ;(window as unknown as { islandDemo: unknown }).islandDemo = {
     volume: (v: number) => push({ volume: v, muted: false }),
     mute: () => push({ muted: !snap.muted }),

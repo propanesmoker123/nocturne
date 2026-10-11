@@ -4,7 +4,7 @@ import * as vk from '../vk/api'
 import { useRouter, type Route } from './router'
 import { useUi } from './ui'
 
-/** Browser demo only: `#/library`, `#/settings`, `#/playlists`, `#np` open a screen directly (for docs screenshots). */
+/** Browser demo only: `#/library`, `#/settings`, `#/playlists`, `#np` (now playing), `#playing` (home with a track on) open a screen directly (for docs screenshots). */
 export async function applyDemoHash() {
   if (isTauri()) return
   const hash = location.hash.replace(/^#\/?/, '')
@@ -20,9 +20,10 @@ export async function applyDemoHash() {
     useRouter.getState().push(routes[hash])
     return
   }
-  if (hash === 'np') {
+  if (hash === 'np' || hash === 'playing') {
     const page = await vk.getTracks(vk.getMeId(), 0, 30)
+    if (hash === 'playing') usePlayer.setState({ history: page.items.slice(8, 26) })
     usePlayer.getState().playList(page.items, 4, { shuffle: false })
-    useUi.getState().openNowPlaying('queue')
+    if (hash === 'np') useUi.getState().openNowPlaying('queue')
   }
 }
