@@ -220,7 +220,7 @@ export function TrackGrid({ tracks, onNearEnd }: { tracks: Track[]; onNearEnd?: 
   }, [onNearEnd])
   return (
     <div className={c.carousel}>
-      <div ref={strip} className={s.gridScroller}>
+      <div ref={strip} className={s.gridScroller} style={tracks.length < 3 ? { gridTemplateRows: `repeat(${tracks.length}, 60px)` } : undefined}>
         {tracks.map((t, i) => (
           <div
             key={`${t.key}-${i}`}

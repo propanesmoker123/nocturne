@@ -69,7 +69,8 @@ class Capture {
     const audio = await decoder().decodeAudioData(whole.buffer.slice(whole.byteOffset, whole.byteOffset + whole.byteLength) as ArrayBuffer)
     if (!this.alive) return
     const channels = Array.from({ length: Math.min(audio.numberOfChannels, 2) }, (_, i) => audio.getChannelData(i))
-    accumulate(this.acc, channels, audio.sampleRate, start, this.duration)
+    // A whole file knows its own length better than the track metadata does
+    accumulate(this.acc, channels, audio.sampleRate, start, this.container === 'file' ? audio.duration : this.duration)
     const peaks = toPeaks(this.acc)
     useWaveform.setState({ key: this.key, peaks })
     if (isComplete(this.acc)) {
