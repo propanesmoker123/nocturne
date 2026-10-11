@@ -180,7 +180,12 @@ function catalogResponse(): RawCatalogResponse {
           next_from: 'p2',
           blocks: [
             { id: 'mix', data_type: 'audio_stream_mixes', layout: { name: 'audio_stream_mix_interactive' }, audio_stream_mixes_ids: ['common'] },
-            { id: 'h1', data_type: 'none', layout: { name: 'header', title: 'Мои треки' } },
+            {
+              id: 'h1',
+              data_type: 'none',
+              layout: { name: 'header', title: 'Мои треки' },
+              actions: [{ action: { type: 'open_section' }, section_id: 'my_all', title: 'Показать все' }],
+            },
             { id: 'my', data_type: 'music_audios', layout: { name: 'triple_stacked_slider' }, audios_ids: ids(MY.slice(0, 18)) },
             { id: 'h2', data_type: 'none', layout: { name: 'header_extended', title: 'Собрано алгоритмами' } },
             { id: 'recp', data_type: 'music_playlists', layout: { name: 'recomms_slider' }, playlists_ids: REC_PLAYLISTS.map((p) => `${p.owner_id}_${p.id}`) },
@@ -194,6 +199,14 @@ function catalogResponse(): RawCatalogResponse {
     audios: [...MY.slice(0, 18), ...CATALOG.slice(0, 18)].map(withUrl),
     playlists: REC_PLAYLISTS,
     audio_stream_mixes: [{ id: 'common', description: 'Бесконечный поток под ваш вкус', stream_mix: { id: 'common', title: 'VK Микс' } }],
+  }
+}
+
+/** «Показать все» under «Мои треки»: the whole library in one block. */
+function myTracksSection(): RawCatalogResponse {
+  return {
+    section: { id: 'my_all', title: 'Мои треки', blocks: [{ id: 'all', data_type: 'music_audios', layout: { name: 'list' }, audios_ids: MY.map((a) => `${a.owner_id}_${a.id}`) }] },
+    audios: MY.map(withUrl),
   }
 }
 
@@ -290,6 +303,7 @@ export async function mockCall(method: string, params: Record<string, unknown>):
     case 'catalog.getAudio':
       return catalogResponse()
     case 'catalog.getSection':
+      if (params.section_id === 'my_all') return myTracksSection()
       return params.section_id === 'home' ? homeRestResponse() : exploreResponse()
     case 'audio.add':
       return 99999

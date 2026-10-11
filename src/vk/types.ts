@@ -99,6 +99,8 @@ export interface RawCatalogBlock {
   playlists_ids?: string[]
   audio_stream_mixes_ids?: string[]
   next_from?: string
+  /** Header buttons; «Показать все» opens a section with the whole list. */
+  actions?: { action?: { type?: string }; section_id?: string; title?: string }[]
 }
 
 export interface RawCatalogSection {

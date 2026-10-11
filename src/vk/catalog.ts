@@ -58,17 +58,23 @@ function recommendedItem(id: string, lookup: Lookup): RecommendedPlaylist | null
 function parseBlocks(blocks: RawCatalogBlock[], lookup: Lookup): Block[] {
   const out: Block[] = []
   let header = ''
+  let more: string | undefined
   for (const b of blocks) {
     const layout = b.layout?.name
     if (b.data_type === 'none') {
-      if (layout === 'header' || layout === 'header_extended') header = b.layout?.title ?? b.title ?? ''
-      else if (layout === 'separator') header = ''
+      if (layout === 'header' || layout === 'header_extended') {
+        header = b.layout?.title ?? b.title ?? ''
+        more = b.actions?.find((a) => a.action?.type === 'open_section' && a.section_id)?.section_id
+      } else if (layout === 'separator') {
+        header = ''
+        more = undefined
+      }
       continue
     }
     const title = header || b.layout?.title || b.title || ''
     if (b.data_type === 'music_audios') {
       const tracks = resolveTracks(b.audios_ids, lookup)
-      if (tracks.length) out.push({ kind: 'tracks', id: b.id, title, tracks, nextFrom: b.next_from, layout })
+      if (tracks.length) out.push({ kind: 'tracks', id: b.id, title, tracks, nextFrom: b.next_from, layout, ...(more ? { more } : {}) })
     } else if (b.data_type === 'music_playlists') {
       const playlists = (b.playlists_ids ?? []).map((id) => lookup.playlists.get(baseId(id))).filter((p): p is Playlist => !!p)
       if (playlists.length) out.push({ kind: 'playlists', id: b.id, title, playlists, nextFrom: b.next_from, layout })
@@ -81,6 +87,20 @@ function parseBlocks(blocks: RawCatalogBlock[], lookup: Lookup): Block[] {
       if (items.length) out.push({ kind: 'recommended', id: b.id, title, items, nextFrom: b.next_from, layout })
     }
     header = ''
+    more = undefined
+  }
+  return out
+}
+
+/** `base` plus the tracks of `more` it does not have yet, keeping order, at most `limit` in all. */
+export function appendTracks<T extends { key: string }>(base: T[], more: T[], limit: number): T[] {
+  const seen = new Set(base.map((t) => t.key))
+  const out = base.slice(0, limit)
+  for (const t of more) {
+    if (out.length >= limit) break
+    if (seen.has(t.key)) continue
+    seen.add(t.key)
+    out.push(t)
   }
   return out
 }

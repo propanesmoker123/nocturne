@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { parseCatalog, parseSection } from './catalog'
+import { appendTracks, parseCatalog, parseSection } from './catalog'
 import type { RawAudio, RawCatalogResponse, RawPlaylist } from './types'
 
 const audio = (owner: number, id: number): RawAudio => ({
@@ -25,7 +25,12 @@ const response: RawCatalogResponse = {
         blocks: [
           { id: 'b0', data_type: 'audio_stream_mixes', layout: { name: 'audio_stream_mix_interactive' }, audio_stream_mixes_ids: ['common'] },
           { id: 'b1', data_type: 'none', layout: { name: 'separator' } },
-          { id: 'b2', data_type: 'none', layout: { name: 'header', title: 'Мои треки' } },
+          {
+            id: 'b2',
+            data_type: 'none',
+            layout: { name: 'header', title: 'Мои треки' },
+            actions: [{ action: { type: 'open_section' }, section_id: 'ALL_MINE', title: 'Показать все' }],
+          },
           { id: 'b3', data_type: 'music_audios', layout: { name: 'triple_stacked_slider' }, audios_ids: ['1_11', '1_12', '1_999'], next_from: 'more' },
           { id: 'b4', data_type: 'none', layout: { name: 'header_extended', title: 'Собрано алгоритмами' } },
           { id: 'b5', data_type: 'music_playlists', layout: { name: 'recomms_slider' }, playlists_ids: ['1_-21', '-5_3'] },
@@ -155,5 +160,21 @@ describe('recommended playlists ("Слушайте друг друга")', () =>
   test('skips playlists VK sent no match for', () => {
     const block = parseSection(raw, 1).blocks[0]
     expect(block.kind === 'recommended' && block.items.map((i) => i.playlist.id)).toEqual([48, 9])
+  })
+})
+
+describe('longer track strips', () => {
+  test("a header's «Показать все» section belongs to the block right under it", () => {
+    const [home] = parseCatalog(response, 1)
+    const mine = home.blocks.find((b) => b.kind === 'tracks' && b.title === 'Мои треки')!
+    expect(mine.more).toBe('ALL_MINE')
+    expect(home.blocks.filter((b) => b.more).length).toBe(1)
+  })
+
+  test('more tracks are appended once, in order, up to a limit', () => {
+    const t = (k: string) => ({ key: k }) as never
+    const keys = (list: { key: string }[]) => list.map((x) => x.key)
+    expect(keys(appendTracks([t('a'), t('b')], [t('b'), t('c'), t('a'), t('d')], 10))).toEqual(['a', 'b', 'c', 'd'])
+    expect(keys(appendTracks([t('a')], [t('b'), t('c'), t('d')], 3))).toEqual(['a', 'b', 'c'])
   })
 })

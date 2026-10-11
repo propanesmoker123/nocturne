@@ -77,6 +77,8 @@ interface BlockBase {
   title: string
   nextFrom?: string
   layout?: string
+  /** «Показать все»: the catalog section holding the whole list behind this block. */
+  more?: string
 }
 
 export type Block =

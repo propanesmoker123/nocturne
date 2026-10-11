@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { RefreshCw, Sparkles } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useScroller } from '../app/scroller'
 import { useSession } from '../app/session'
 import { Button, Spinner } from '../components/controls'
@@ -10,6 +10,7 @@ import { TrackGrid } from '../components/TrackList'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
+import { appendTracks } from '../vk/catalog'
 import type { Block } from '../vk/models'
 
 export const catalogKey = () => ['catalog', vk.getMeId()] as const
@@ -77,6 +78,42 @@ export function NearEnd({ onChange, loading }: { onChange(near: boolean): void; 
   )
 }
 
+/** A strip never needs the whole library: enough to browse, not to slow the page. */
+const STRIP_LIMIT = 150
+
+/** VK sends a dozen tracks per block; scrolling towards the end reads the block's «Показать все» section. */
+function TracksBlock({ block }: { block: Extract<Block, { kind: 'tracks' }> }) {
+  const [tracks, setTracks] = useState(block.tracks)
+  const list = useRef(block.tracks)
+  const paging = useRef<{ next?: string; busy: boolean; done: boolean }>({ busy: false, done: !block.more })
+  useEffect(() => {
+    list.current = block.tracks
+    setTracks(block.tracks)
+    paging.current = { busy: false, done: !block.more }
+  }, [block])
+  const loadMore = useCallback(() => {
+    const p = paging.current
+    if (p.busy || p.done || !block.more) return
+    p.busy = true
+    vk.getSection(block.more, p.next)
+      .then((section) => {
+        const found = section.blocks.flatMap((b) => (b.kind === 'tracks' ? b.tracks : []))
+        const next = appendTracks(list.current, found, STRIP_LIMIT)
+        p.next = section.nextFrom
+        p.done = !section.nextFrom || next.length === list.current.length || next.length >= STRIP_LIMIT
+        list.current = next
+        setTracks(next)
+      })
+      .catch(() => (p.done = true))
+      .finally(() => (p.busy = false))
+  }, [block.more])
+  return (
+    <Section title={block.title || 'Треки'}>
+      <TrackGrid tracks={tracks} onNearEnd={block.more ? loadMore : undefined} />
+    </Section>
+  )
+}
+
 export function BlockView({ block }: { block: Block }) {
   if (block.kind === 'mix') return <MixHero title={block.title} description={block.description} />
   if (block.kind === 'recommended') {
@@ -90,13 +127,7 @@ export function BlockView({ block }: { block: Block }) {
       </Section>
     )
   }
-  if (block.kind === 'tracks') {
-    return (
-      <Section title={block.title || 'Треки'}>
-        <TrackGrid tracks={block.tracks} />
-      </Section>
-    )
-  }
+  if (block.kind === 'tracks') return <TracksBlock block={block} />
   return (
     <Section title={block.title || 'Плейлисты'}>
       <Carousel card={block.layout === 'large_slider' ? 216 : 176}>
@@ -141,7 +172,7 @@ export function Home() {
       {home?.blocks.map((b) => (b.kind === 'mix' ? <MixHero key={b.id} title={b.title} description={b.description} covers={mixCovers} /> : null))}
       {history.length > 0 && (
         <Section title="Недавно играло">
-          <TrackGrid tracks={history.slice(0, 18)} />
+          <TrackGrid tracks={history.slice(0, 60)} />
         </Section>
       )}
       {home?.blocks.filter((b) => b.kind !== 'mix').map((b) => <BlockView key={b.id} block={b} />)}
