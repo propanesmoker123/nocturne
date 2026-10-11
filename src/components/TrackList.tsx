@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { memo, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import { isInLibrary, toggleLibrary } from '../app/library'
 import { useRouter } from '../app/router'
 import { useScroller } from '../app/scroller'
@@ -9,6 +9,8 @@ import { usePlayer } from '../player/store'
 import type { Playlist, Track } from '../vk/models'
 import { Artwork } from './Artwork'
 import { EqualizerBars, IconButton } from './controls'
+import c from './cards.module.css'
+import { EdgeArrows, useHorizontalScroll } from './HScroll'
 import { IconCheck, IconMore, IconPlay, IconPlus } from './Icons'
 import s from './TrackList.module.css'
 
@@ -204,37 +206,44 @@ export function TrackGrid({ tracks }: { tracks: Track[] }) {
   const currentKey = usePlayer((p) => p.current?.key)
   const isPlaying = usePlayer((p) => p.isPlaying)
   const play = (i: number) => usePlayer.getState().playList(tracks, i)
+  const strip = useRef<HTMLDivElement>(null)
+  const scroll = useHorizontalScroll(strip)
+  const { refresh } = scroll
+  useEffect(refresh, [tracks, refresh])
   return (
-    <div className={s.gridScroller}>
-      {tracks.map((t, i) => (
-        <div
-          key={`${t.key}-${i}`}
-          className={s.cell}
-          data-current={t.key === currentKey || undefined}
-          data-disabled={!t.playable || undefined}
-          onDoubleClick={() => t.playable && play(i)}
-          onContextMenu={(e) => openTrackMenu(e, t, { list: tracks, index: i })}
-        >
-          <div className={s.cellArt}>
-            <Artwork src={t.cover?.s} size={48} radius={8} seed={t.key} />
-            {t.playable && (
-              <button type="button" className={s.playHover} aria-label={`Играть «${t.title}»`} onClick={() => play(i)}>
-                {t.key === currentKey && isPlaying ? <EqualizerBars playing height={14} color="#fff" /> : <IconPlay size={18} />}
-              </button>
-            )}
-          </div>
-          <div className={s.text}>
-            <div className={s.title}>
-              <span className="truncate">{t.title}</span>
-              {t.explicit && <span className={s.explicit}>E</span>}
+    <div className={c.carousel}>
+      <div ref={strip} className={s.gridScroller}>
+        {tracks.map((t, i) => (
+          <div
+            key={`${t.key}-${i}`}
+            className={s.cell}
+            data-current={t.key === currentKey || undefined}
+            data-disabled={!t.playable || undefined}
+            onDoubleClick={() => t.playable && play(i)}
+            onContextMenu={(e) => openTrackMenu(e, t, { list: tracks, index: i })}
+          >
+            <div className={s.cellArt}>
+              <Artwork src={t.cover?.s} size={48} radius={8} seed={t.key} />
+              {t.playable && (
+                <button type="button" className={s.playHover} aria-label={`Играть «${t.title}»`} onClick={() => play(i)}>
+                  {t.key === currentKey && isPlaying ? <EqualizerBars playing height={14} color="#fff" /> : <IconPlay size={18} />}
+                </button>
+              )}
             </div>
-            <div className={`${s.artists} truncate`}>{t.artist}</div>
+            <div className={s.text}>
+              <div className={s.title}>
+                <span className="truncate">{t.title}</span>
+                {t.explicit && <span className={s.explicit}>E</span>}
+              </div>
+              <div className={`${s.artists} truncate`}>{t.artist}</div>
+            </div>
+            <IconButton className={s.hoverOnly} size={28} label="Ещё" onClick={(e) => openTrackMenu(e, t, { list: tracks, index: i })}>
+              <IconMore size={16} />
+            </IconButton>
           </div>
-          <IconButton className={s.hoverOnly} size={28} label="Ещё" onClick={(e) => openTrackMenu(e, t, { list: tracks, index: i })}>
-            <IconMore size={16} />
-          </IconButton>
-        </div>
-      ))}
+        ))}
+      </div>
+      <EdgeArrows scroll={scroll} middle />
     </div>
   )
 }

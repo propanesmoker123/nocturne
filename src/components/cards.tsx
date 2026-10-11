@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { showMenu } from '../app/menu'
 import { useRouter } from '../app/router'
@@ -12,6 +12,7 @@ import type { Playlist, RecommendedPlaylist } from '../vk/models'
 import { toast } from '../app/toast'
 import { Artwork } from './Artwork'
 import { EqualizerBars, Spinner } from './controls'
+import { EdgeArrows, useHorizontalScroll } from './HScroll'
 import { IconForward, IconMore, IconPause, IconPlay } from './Icons'
 import s from './cards.module.css'
 
@@ -33,25 +34,15 @@ export function Section({ title, action, children }: { title: string; action?: {
 
 export function Carousel({ children, card = 176 }: { children: ReactNode; card?: number }) {
   const ref = useRef<HTMLDivElement>(null)
-  const [edges, setEdges] = useState({ start: true, end: false })
-  const update = () => {
-    const el = ref.current
-    if (!el) return
-    setEdges({ start: el.scrollLeft < 4, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 4 })
-  }
-  useEffect(update, [children])
-  const scroll = (dir: 1 | -1) => ref.current?.scrollBy({ left: dir * ref.current.clientWidth * 0.85, behavior: 'smooth' })
+  const scroll = useHorizontalScroll(ref)
+  const { refresh } = scroll
+  useEffect(refresh, [children, refresh])
   return (
     <div className={s.carousel} style={{ ['--card' as string]: `${card}px` } as CSSProperties}>
-      <button type="button" className={`${s.arrow} ${s.prev}`} aria-label="Назад" disabled={edges.start} onClick={() => scroll(-1)}>
-        <ChevronLeft size={20} strokeWidth={2.4} />
-      </button>
-      <div ref={ref} className={s.track} onScroll={update}>
+      <div ref={ref} className={s.track}>
         {children}
       </div>
-      <button type="button" className={`${s.arrow} ${s.next}`} aria-label="Вперёд" disabled={edges.end} onClick={() => scroll(1)}>
-        <ChevronRight size={20} strokeWidth={2.4} />
-      </button>
+      <EdgeArrows scroll={scroll} />
     </div>
   )
 }

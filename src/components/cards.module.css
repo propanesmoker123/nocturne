@@ -67,6 +67,11 @@
 .prev {
   left: -14px;
 }
+/* For strips that are not square cards (track grids): centred on the strip's height */
+.arrowMiddle {
+  top: 50%;
+  margin-top: -18px;
+}
 .next {
   right: -14px;
 }
