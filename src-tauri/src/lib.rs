@@ -1,3 +1,4 @@
+mod clipboard;
 mod http;
 mod island;
 mod journal;
@@ -65,6 +66,7 @@ pub fn run() {
             island::island_configure,
             quicksearch::search_open,
             quicksearch::search_hide,
+            clipboard::clipboard_invite_code,
             media_update,
             tray::set_close_to_tray,
             wallpaper::import_wallpaper,

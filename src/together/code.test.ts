@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { findCode, generateCode, inviteText, normalizeCode, roomIdFor } from './code'
+import { generateCode, inviteText, normalizeCode, roomIdFor } from './code'
 
 const FORMAT = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/
 
@@ -19,11 +19,8 @@ describe('invite codes', () => {
     expect(normalizeCode('K7QM-2XFD-9WRA-HT4U')).toBe(null)
   })
 
-  test('a code is found inside a forwarded message, but not in ordinary words', () => {
-    expect(findCode(inviteText('K7QM-2XFD-9WRA-HT4C'))).toBe('K7QM-2XFD-9WRA-HT4C')
-    expect(findCode('держи: k7qm-2xfd-9wra-ht4c ;)')).toBe('K7QM-2XFD-9WRA-HT4C')
-    expect(findCode('abcdefghijklmnop')).toBe(null)
-    expect(findCode('просто текст')).toBe(null)
+  test('the invite carries the code in its grouped form (the app picks it out of the clipboard)', () => {
+    expect(inviteText('K7QM-2XFD-9WRA-HT4C')).toBe('Слушаем вместе в Nocturne. Код: K7QM-2XFD-9WRA-HT4C')
   })
 
   test('the room id comes from the code, whatever way it was typed, and reveals nothing of it', async () => {

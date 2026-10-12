@@ -11,6 +11,7 @@ const COMMANDS: &[&str] = &[
     "island_configure",
     "search_open",
     "search_hide",
+    "clipboard_invite_code",
     "media_update",
     "set_close_to_tray",
     "import_wallpaper",

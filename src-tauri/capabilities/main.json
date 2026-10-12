@@ -33,6 +33,7 @@
     "allow-set-user-agent",
     "allow-media-update",
     "allow-search-open",
+    "allow-clipboard-invite-code",
     "allow-set-close-to-tray",
     "allow-import-wallpaper",
     "allow-list-wallpapers",

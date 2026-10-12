@@ -26,12 +26,6 @@ export function normalizeCode(input: string): string | null {
   return group(raw)
 }
 
-/** A code inside any text (a forwarded invite); only the grouped form counts, so plain words never match. */
-export function findCode(text: string): string | null {
-  const m = text.match(/(?:^|[^0-9a-z])([0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})(?![0-9a-z])/i)
-  return m ? normalizeCode(m[1]) : null
-}
-
 export const inviteText = (code: string) => `Слушаем вместе в Nocturne. Код: ${code}`
 
 /** What the relays see instead of the code: the first 16 hex digits of its SHA-256. */

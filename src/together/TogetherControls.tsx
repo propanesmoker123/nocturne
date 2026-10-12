@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import { toast } from '../app/toast'
 import { Button, IconButton, Spinner } from '../components/controls'
-import { findCode, inviteText } from './code'
+import { invoke, isTauri } from '../lib/tauri'
+import { inviteText, normalizeCode } from './code'
 import type { ListenerState } from './protocol'
 import { TOGETHER_ERRORS, clearTogetherError, joinSession, leaveSession, startHosting, useTogether } from './session'
 import s from './together.module.css'
@@ -57,15 +58,19 @@ function Start({ onJoin }: { onJoin(): void }) {
 
 function Join({ onBack }: { onBack(): void }) {
   const [code, setCode] = useState('')
+  const [fromClipboard, setFromClipboard] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => {
     input.current?.focus()
-    // A copied invite fills itself in
-    navigator.clipboard
-      ?.readText()
-      .then((text) => {
-        const found = findCode(text)
-        if (found) setCode((c) => c || found)
+    // A copied invite fills itself in. The app reads the clipboard natively and hands over only
+    // the code, so there is no browser prompt and nothing else that was copied is seen here.
+    if (!isTauri()) return
+    invoke<string | null>('clipboard_invite_code')
+      .then((raw) => {
+        const found = raw && normalizeCode(raw)
+        if (!found) return
+        setCode((c) => c || found)
+        setFromClipboard(true)
       })
       .catch(() => {})
   }, [])
@@ -86,10 +91,12 @@ function Join({ onBack }: { onBack(): void }) {
         aria-label="Код из приглашения"
         onChange={(e) => {
           setCode(e.target.value)
+          setFromClipboard(false)
           if (useTogether.getState().error) clearTogetherError()
         }}
         onKeyDown={(e) => e.key === 'Enter' && submit()}
       />
+      {fromClipboard && <p className={s.hint}>Код взят из скопированного приглашения</p>}
       <ErrorLine />
       <div className={s.actions}>
         <Button variant="primary" onClick={submit} disabled={!code.trim()}>
