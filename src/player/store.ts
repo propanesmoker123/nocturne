@@ -5,7 +5,7 @@ import { debouncedSaver, loadJSON } from '../lib/persist'
 import * as vk from '../vk/api'
 import type { Track } from '../vk/models'
 import { engine } from './engine'
-import { dedupeAppend, needsFreshUrl, prevAction } from './logic'
+import { dedupeAppend, heardBetween, heardEnough, needsFreshUrl, prevAction } from './logic'
 import * as Q from './queue'
 import { beginWaveform, captureSource } from './waveform'
 
@@ -93,6 +93,8 @@ function preloadCovers(t: Track | undefined) {
 let loadToken = 0
 let loadedKey: string | null = null
 let consecutiveFailures = 0
+/** How much of the current load was really heard: it reaches «Недавние» only past half. */
+let heard = { key: '', seconds: 0, last: 0, recorded: false }
 const retried = new Set<string>()
 const sessionSaver = debouncedSaver('session', 1200)
 const historySaver = debouncedSaver('history', 2000)
@@ -129,6 +131,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       return
     }
     set({ current: t, position: startAt, duration: t.duration, buffered: 0, isLoading: autoplay })
+    heard = { key: t.key, seconds: 0, last: startAt, recorded: false }
     preloadCovers(Q.upcoming(q)[0])
     let track = t
     if (needsFreshUrl(t, Date.now())) {
@@ -170,20 +173,32 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
   // Engine → store
   engine.onSource = captureSource
-  engine.on('time', () => set({ position: engine.position, duration: engine.duration || get().current?.duration || 0, buffered: engine.buffered }))
+  const addToHistory = (t: Track) => {
+    if (get().history[0]?.key === t.key) return
+    const history = [t, ...get().history.filter((h) => h.key !== t.key)].slice(0, 200)
+    set({ history })
+    historySaver.save(history)
+  }
+
+  engine.on('time', () => {
+    const position = engine.position
+    const duration = engine.duration || get().current?.duration || 0
+    set({ position, duration, buffered: engine.buffered })
+    const cur = get().current
+    if (!cur || cur.key !== heard.key) return
+    if (engine.playing) heard.seconds += heardBetween(heard.last, position)
+    heard.last = position
+    if (!heard.recorded && heardEnough(heard.seconds, duration)) {
+      heard.recorded = true
+      addToHistory(cur)
+    }
+  })
   engine.on('state', () => set({ isPlaying: engine.playing }))
   engine.on('loading', () => {
     const waiting = engine.waiting
     set({ isLoading: waiting })
     const cur = get().current
-    if (!waiting && engine.playing && cur) {
-      consecutiveFailures = 0
-      const history = [cur, ...get().history.filter((h) => h.key !== cur.key)].slice(0, 200)
-      if (get().history[0]?.key !== cur.key) {
-        set({ history })
-        historySaver.save(history)
-      }
-    }
+    if (!waiting && engine.playing && cur) consecutiveFailures = 0
   })
   engine.on('ended', () => get().next(false))
   engine.on('error', () => {

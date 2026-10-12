@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { Track } from '../vk/models'
 import { createQueue } from './queue'
-import { dedupeAppend, needsFreshUrl, prevAction, remainingSeconds, volumeToGain } from './logic'
+import { dedupeAppend, heardBetween, heardEnough, needsFreshUrl, prevAction, remainingSeconds, volumeToGain } from './logic'
 
 const t = (id: number, over: Partial<Track> = {}): Track => ({
   id,
@@ -68,5 +68,21 @@ describe('remainingSeconds', () => {
 
   test('is zero without a queue', () => {
     expect(remainingSeconds(null, 0)).toBe(0)
+  })
+})
+
+describe('what counts as listened (for «Недавние»)', () => {
+  test('only the small forward steps of playback count; seeking either way does not', () => {
+    expect(heardBetween(10, 10.25)).toBeCloseTo(0.25)
+    expect(heardBetween(10, 11.5)).toBeCloseTo(1.5)
+    expect(heardBetween(10, 95)).toBe(0)
+    expect(heardBetween(95, 10)).toBe(0)
+    expect(heardBetween(10, 10)).toBe(0)
+  })
+
+  test('a track goes into history once half of it was heard', () => {
+    expect(heardEnough(99, 200)).toBe(false)
+    expect(heardEnough(100, 200)).toBe(true)
+    expect(heardEnough(10, 0)).toBe(false)
   })
 })

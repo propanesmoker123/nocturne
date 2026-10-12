@@ -12,7 +12,7 @@ export function Recent() {
     <>
       <PageHeader
         title="Недавние"
-        subtitle={history.length ? 'Последние 200 треков, которые вы слушали в Nocturne' : undefined}
+        subtitle={history.length ? 'Последние 200 треков, которые вы дослушали в Nocturne хотя бы до половины' : undefined}
         actions={
           history.length > 0 && (
             <Button
@@ -27,7 +27,7 @@ export function Recent() {
         }
       />
       {history.length === 0 ? (
-        <EmptyState icon={<Clock3 size={26} />} title="История пуста" text="Здесь появятся треки, которые вы слушаете." />
+        <EmptyState icon={<Clock3 size={26} />} title="История пуста" text="Здесь появятся треки, которые вы дослушаете хотя бы до половины." />
       ) : (
         <TrackList tracks={history} />
       )}

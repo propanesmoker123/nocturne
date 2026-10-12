@@ -40,3 +40,16 @@ export function remainingSeconds(q: QueueState<Track> | null, position: number):
   if (!cur) return 0
   return Math.max(0, cur.duration - position) + upcoming(q).reduce((sum, t) => sum + t.duration, 0)
 }
+
+/** Seconds really heard between two time updates: ordinary playback steps only, never a seek. */
+export function heardBetween(prev: number, now: number): number {
+  const d = now - prev
+  return d > 0 && d < 2 ? d : 0
+}
+
+/** Share of a track that must be heard before it goes into «Недавние». */
+export const HISTORY_SHARE = 0.5
+
+export function heardEnough(heard: number, duration: number): boolean {
+  return duration > 0 && heard >= duration * HISTORY_SHARE
+}
