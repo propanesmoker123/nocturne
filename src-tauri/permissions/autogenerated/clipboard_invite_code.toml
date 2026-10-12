@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clipboard-invite-code"
+description = "Enables the clipboard_invite_code command without any pre-configured scope."
+commands.allow = ["clipboard_invite_code"]
+
+[[permission]]
+identifier = "deny-clipboard-invite-code"
+description = "Denies the clipboard_invite_code command without any pre-configured scope."
+commands.deny = ["clipboard_invite_code"]
