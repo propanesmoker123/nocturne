@@ -10,7 +10,8 @@ import { generateCode, normalizeCode, roomIdFor } from './code'
 import { decide, expectedPosition, sameSongAs, wireKey, type FollowAction, type HostState } from './follow'
 import { parseMessage, type ListenerState, type Message, type Role, type WireTrack } from './protocol'
 import { RateLimit, admit } from './rules'
-import { openTrystero, type OpenTransport, type Transport } from './transport'
+import { openRelays } from './relay'
+import type { OpenTransport, Transport } from './transport'
 
 /**
  * Listening together. The host's player is the source of truth: every change (track, play/pause,
@@ -18,13 +19,12 @@ import { openTrystero, type OpenTransport, type Transport } from './transport'
  * own pause stays theirs; play catches up with the host; picking other music ends the session.
  */
 
-export type TogetherError = 'code' | 'relays' | 'nobody' | 'direct' | 'full'
+export type TogetherError = 'code' | 'relays' | 'nobody' | 'full'
 
 export const TOGETHER_ERRORS: Record<TogetherError, string> = {
   code: 'Код — 16 букв и цифр, как в приглашении',
   relays: 'Нет связи для поиска собеседников. Проверьте интернет',
   nobody: 'По этому коду никого нет — проверьте код или попросите ведущего начать заново',
-  direct: 'Сеть у кого-то из вас не пускает прямые соединения (так бывает в мобильном интернете). Попробуйте другую сеть',
   full: 'Комната заполнена: уже 5 слушателей',
 }
 
@@ -51,7 +51,7 @@ const IDLE: Omit<TogetherState, 'error'> = { phase: 'idle', role: null, code: nu
 
 export const useTogether = create<TogetherState>(() => ({ ...IDLE, error: null }))
 
-let openTransport: OpenTransport = openTrystero
+let openTransport: OpenTransport = openRelays
 /** Tests and the browser demo can put another network underneath. */
 export const setTransportFactory = (f: OpenTransport) => void (openTransport = f)
 
@@ -240,7 +240,6 @@ export async function joinSession(input: string) {
   useTogether.setState({ ...IDLE, phase: 'connecting', role: 'listener', code, error: null })
 
   let hostPeer: string | null = null
-  let sawDirect = false
   let lastSeq = -1
   let host: HostState | null = null
   let followingKey: string | null = null
@@ -402,7 +401,6 @@ export async function joinSession(input: string) {
         },
         onError: (e) => {
           if (e === 'full') end('full')
-          else if (e === 'direct') sawDirect = true
         },
       },
     )
@@ -424,7 +422,7 @@ export async function joinSession(input: string) {
     r,
     async () => {
       if (hostPeer) return
-      const error: TogetherError = !(await transport.relaysUp()) ? 'relays' : sawDirect ? 'direct' : 'nobody'
+      const error: TogetherError = !(await transport.relaysUp()) ? 'relays' : 'nobody'
       end(error)
     },
     NOBODY_MS,
