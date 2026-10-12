@@ -1,0 +1,85 @@
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tile {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: 94px;
+  padding: 12px 0 8px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.32);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+}
+.tile:hover {
+  background: rgba(0, 0, 0, 0.45);
+}
+.tile[aria-checked='true'] {
+  box-shadow:
+    0 0 0 2px #000,
+    0 0 0 4px var(--accent);
+}
+.mini {
+  width: 78px;
+  height: 22px;
+  overflow: visible;
+}
+.label {
+  font: 600 11px/14px var(--font);
+  color: var(--label-2);
+}
+.tile[aria-checked='true'] .label {
+  color: var(--label);
+}
+
+.stroke {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+}
+.fill {
+  fill: var(--accent);
+  opacity: 0.3;
+}
+.dot {
+  fill: #fff;
+}
+.eq rect {
+  fill: var(--accent);
+}
+
+/* On hover the tile plays: the progress runs once round, so the style is seen in motion */
+.tile:hover .stroke {
+  animation: run 2.4s linear infinite;
+}
+.tile:hover .fill {
+  transform-origin: left;
+  animation: grow 2.4s linear infinite;
+}
+.tile:hover .dot {
+  opacity: 0;
+}
+@keyframes run {
+  from {
+    stroke-dasharray: 0 100;
+  }
+  to {
+    stroke-dasharray: 100 0;
+  }
+}
+@keyframes grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tile:hover .stroke,
+  .tile:hover .fill {
+    animation: none;
+  }
+}

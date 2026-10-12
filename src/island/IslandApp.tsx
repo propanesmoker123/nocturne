@@ -12,6 +12,7 @@ import { DEFAULT_SETTINGS, type IslandProgress, type IslandSettings } from '../l
 import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
 import { useWaveform } from '../player/waveformStore'
 import { COLLAPSE_DELAY, SHAPES, VOLUME_HUD_MS, hitRect, isInteractive, pickShape, volumeChanged } from './geometry'
+import { roundedPath } from './shapes'
 import s from './island.module.css'
 
 const spring = { type: 'spring', stiffness: 420, damping: 32, mass: 0.85 } as const
@@ -68,11 +69,6 @@ function useLivePosition(st: PlayerSnapshot | null, active: boolean) {
   if (!st) return 0
   const extra = st.isPlaying ? Math.max(0, now - st.at) / 1000 : 0
   return Math.min(st.duration || Infinity, st.position + extra)
-}
-
-/** Rounded rectangle traced clockwise from the middle of its top edge, so progress starts where the eye expects. */
-function roundedPath(x: number, y: number, w: number, h: number, r: number) {
-  return `M ${x + w / 2} ${y} H ${x + w - r} A ${r} ${r} 0 0 1 ${x + w} ${y + r} V ${y + h - r} A ${r} ${r} 0 0 1 ${x + w - r} ${y + h} H ${x + r} A ${r} ${r} 0 0 1 ${x} ${y + h - r} V ${y + r} A ${r} ${r} 0 0 1 ${x + r} ${y} Z`
 }
 
 const PILL = SHAPES.compact

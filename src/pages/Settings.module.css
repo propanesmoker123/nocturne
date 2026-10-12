@@ -38,6 +38,13 @@
   flex: 1;
   min-width: 0;
 }
+/* A row whose control is wide (picture tiles): the control goes under the title */
+.rowStacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding-bottom: 14px;
+}
 .rowTitle {
   font: 500 14px/19px var(--font);
 }

@@ -11,11 +11,12 @@ import { PRESETS, PresetLayer } from '../components/Wallpaper'
 import { useHotkeyStatus } from '../lib/globalHotkeys'
 import { copyJournal, openJournalFolder } from '../lib/journal'
 import { DEFAULT_HOTKEYS, HOTKEY_LABELS, findDuplicateHotkeys, type HotkeyAction } from '../lib/hotkeys'
-import { ISLAND_MAX_TRANSPARENCY, WALLPAPER_PRESETS, useSettings, type IslandProgress, type WallpaperConfig } from '../lib/settings'
+import { ISLAND_MAX_TRANSPARENCY, WALLPAPER_PRESETS, useSettings, type WallpaperConfig } from '../lib/settings'
 import { isTauri } from '../lib/tauri'
 import { deleteWallpaper, listWallpapers, pickWallpaper, wallpaperKind, wallpaperUrl } from '../lib/wallpaper'
 import { useUpdates } from '../lib/updates'
 import { usePlayer } from '../player/store'
+import { IslandProgressPicker } from '../components/IslandProgressPicker'
 import s from './Settings.module.css'
 
 const ACCENTS = ['#ff375f', '#ff453a', '#ff9f0a', '#ffd60a', '#30d158', '#40cbe0', '#0a84ff', '#5e5ce6', '#bf5af2']
@@ -30,9 +31,9 @@ function Group({ title, children, note }: { title: string; children: ReactNode; 
   )
 }
 
-function Row({ title, sub, children }: { title: string; sub?: ReactNode; children?: ReactNode }) {
+function Row({ title, sub, stacked, children }: { title: string; sub?: ReactNode; stacked?: boolean; children?: ReactNode }) {
   return (
-    <div className={s.row}>
+    <div className={stacked ? `${s.row} ${s.rowStacked}` : s.row}>
       <div className={s.rowText}>
         <div className={s.rowTitle}>{title}</div>
         {sub && <div className={s.rowSub}>{sub}</div>}
@@ -288,14 +289,8 @@ export function SettingsPage() {
             />
           </div>
         </Row>
-        <Row title="Прогресс трека" sub="Как свёрнутый островок показывает, сколько прошло">
-          <select className={s.select} value={st.island.progress} onChange={(e) => st.updateIsland({ progress: e.target.value as IslandProgress })}>
-            <option value="ring">Рамка вокруг обложки</option>
-            <option value="outline">Контур островка</option>
-            <option value="fill">Мягкая заливка</option>
-            <option value="bar">Полоска посередине</option>
-            <option value="off">Не показывать</option>
-          </select>
+        <Row title="Прогресс трека" sub="Как свёрнутый островок показывает, сколько прошло" stacked>
+          <IslandProgressPicker value={st.island.progress} onChange={(progress) => st.updateIsland({ progress })} />
         </Row>
         <Row title="Показывать при смене трека">
           <Switch label="Показывать при смене трека" checked={st.island.showOnTrackChange} onChange={(v) => st.updateIsland({ showOnTrackChange: v })} />
