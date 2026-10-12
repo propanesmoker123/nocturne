@@ -109,3 +109,8 @@ export function move<T>(q: QueueState<T>, from: number, to: number): QueueState<
 export function upcoming<T>(q: QueueState<T>): T[] {
   return q.order.slice(q.pos + 1).map((i) => q.items[i])
 }
+
+/** The whole queue in play order, each track marked as already played, playing now or still to come. */
+export function allInOrder<T>(q: QueueState<T>): { orderPos: number; item: T; part: 'played' | 'current' | 'next' }[] {
+  return q.order.map((i, orderPos) => ({ orderPos, item: q.items[i], part: orderPos < q.pos ? 'played' : orderPos === q.pos ? 'current' : 'next' }))
+}

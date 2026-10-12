@@ -1,16 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import {
-  append,
-  createQueue,
-  current,
-  insertNext,
-  move,
-  next,
-  prev,
-  removeAt,
-  setShuffle,
-  upcoming,
-} from './queue'
+import { allInOrder, append, createQueue, current, insertNext, move, next, prev, removeAt, setShuffle, upcoming } from './queue'
 
 const ok = () => true
 
@@ -143,5 +132,22 @@ describe('queue editing', () => {
     const q = move(createQueue(['a', 'b', 'c'], 0, false, 'off'), 0, 2)
     expect(current(q)).toBe('a')
     expect(q.pos).toBe(2)
+  })
+})
+
+describe('allInOrder', () => {
+  test('the whole queue in play order, marked as played, current or still to come', () => {
+    const q = { ...createQueue(['a', 'b', 'c', 'd'], 0, false, 'off'), pos: 2 }
+    expect(allInOrder(q)).toEqual([
+      { orderPos: 0, item: 'a', part: 'played' },
+      { orderPos: 1, item: 'b', part: 'played' },
+      { orderPos: 2, item: 'c', part: 'current' },
+      { orderPos: 3, item: 'd', part: 'next' },
+    ])
+  })
+
+  test('follows the shuffled order, not the list order', () => {
+    const q = { items: ['a', 'b', 'c'], order: [2, 0, 1], pos: 0, shuffle: true, repeat: 'off' as const }
+    expect(allInOrder(q).map((r) => r.item)).toEqual(['c', 'a', 'b'])
   })
 })

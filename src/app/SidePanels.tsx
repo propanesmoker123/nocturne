@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Artwork } from '../components/Artwork'
-import { IconButton, Spinner } from '../components/controls'
+import { EqualizerBars, IconButton, Spinner } from '../components/controls'
 import { IconLyrics } from '../components/Icons'
 import { formatTime, pluralRu } from '../lib/format'
 import { remainingSeconds } from '../player/logic'
-import { upcoming } from '../player/queue'
+import { allInOrder } from '../player/queue'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
 import type { Track } from '../vk/models'
@@ -45,91 +45,114 @@ function stableKeys(tracks: Track[]): string[] {
   })
 }
 
+/** One continuous list in play order: what already played (dimmed), what plays now, what comes next. */
 export function QueuePanel() {
   const queue = usePlayer((p) => p.queue)
   const source = usePlayer((p) => p.source)
+  const isPlaying = usePlayer((p) => p.isPlaying)
   const { jumpTo, removeFromQueue, moveInQueue } = usePlayer.getState()
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dropAt, setDropAt] = useState<number | null>(null)
+  const nowLabel = useRef<HTMLLIElement>(null)
+  const scrolledOnce = useRef(false)
 
-  const rest = queue ? upcoming(queue) : []
-  if (!queue || rest.length === 0) {
+  const rows = useMemo(() => (queue ? allInOrder(queue) : []), [queue])
+  const keys = useMemo(() => stableKeys(rows.map((r) => r.item)), [rows])
+  const pos = queue?.pos ?? -1
+
+  // Open on the current track (what played is above it); follow it when the track changes
+  useEffect(() => {
+    nowLabel.current?.scrollIntoView({ block: 'start', behavior: scrolledOnce.current ? 'smooth' : 'auto' })
+    scrolledOnce.current = true
+  }, [pos])
+
+  if (!queue || rows.length === 0) {
     return (
       <div className={s.empty}>
-        <span>{source?.kind === 'mix' ? 'VK Микс подбирает следующие треки…' : 'Очередь закончилась'}</span>
+        <span>Очередь пуста</span>
       </div>
     )
   }
-  const [nextUp, ...later] = rest
-  const base = queue.pos + 1
-  const keys = stableKeys(later)
+  const upcomingCount = rows.length - pos - 1
 
   return (
     <>
-      <QueueHeader label={source?.label ?? 'Очередь'} count={rest.length} />
-      <button type="button" className={s.nextUp} onClick={() => jumpTo(base)} style={{ width: 'calc(100% - 16px)', textAlign: 'left' }}>
-        <Artwork src={nextUp.cover?.m} size={64} radius={8} seed={nextUp.key} />
-        <div className={s.rowText}>
-          <div className={s.nextLabel}>Следующий</div>
-          <div className={`${s.rowTitle} truncate`}>{nextUp.title}</div>
-          <div className={`${s.rowArtist} truncate`}>{nextUp.artist}</div>
-        </div>
-      </button>
+      <QueueHeader label={source?.label ?? 'Очередь'} count={rows.length} />
       <ol className={s.list}>
-        {later.map((t, i) => {
-          const orderPos = base + 1 + i
+        {rows.map(({ orderPos, item: t, part }, i) => {
+          const next = part === 'next'
           return (
-            <li
-              key={keys[i]}
-              className={s.row}
-              tabIndex={0}
-              draggable
-              title="Играть"
-              data-dragging={dragFrom === orderPos || undefined}
-              data-drop-target={dropAt === orderPos && dragFrom !== orderPos ? true : undefined}
-              onDragStart={(e) => {
-                e.dataTransfer.effectAllowed = 'move'
-                setDragFrom(orderPos)
-              }}
-              onDragOver={(e) => {
-                e.preventDefault()
-                setDropAt(orderPos)
-              }}
-              onDragEnd={() => {
-                setDragFrom(null)
-                setDropAt(null)
-              }}
-              onDrop={(e) => {
-                e.preventDefault()
-                if (dragFrom !== null && dragFrom !== orderPos) moveInQueue(dragFrom, orderPos)
-                setDragFrom(null)
-                setDropAt(null)
-              }}
-              onClick={() => jumpTo(orderPos)}
-              onKeyDown={(e) => e.key === 'Enter' && jumpTo(orderPos)}
-            >
-              <Artwork src={t.cover?.s} size={40} radius={6} seed={t.key} />
-              <div className={s.rowText}>
-                <div className={`${s.rowTitle} truncate`}>{t.title}</div>
-                <div className={`${s.rowArtist} truncate`}>{t.artist}</div>
-              </div>
-              <div className={s.rowEnd}>
-                <span className={s.duration}>{formatTime(t.duration)}</span>
-                <IconButton
-                  className={s.removeBtn}
-                  size={26}
-                  label="Убрать из очереди"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    removeFromQueue(orderPos)
-                  }}
-                >
-                  <X size={15} strokeWidth={2.2} />
-                </IconButton>
-              </div>
-            </li>
+            <Fragment key={keys[i]}>
+              {(i === 0 && part === 'played') && <li className={s.groupLabel}>Уже играло</li>}
+              {part === 'current' && (
+                <li ref={nowLabel} className={s.groupLabel}>
+                  Сейчас играет
+                </li>
+              )}
+              {next && orderPos === pos + 1 && <li className={s.groupLabel}>Далее</li>}
+              <li
+                className={s.row}
+                tabIndex={0}
+                draggable={next}
+                title={part === 'current' ? undefined : 'Играть'}
+                data-played={part === 'played' || undefined}
+                data-current={part === 'current' || undefined}
+                data-dragging={dragFrom === orderPos || undefined}
+                data-drop-target={next && dropAt === orderPos && dragFrom !== orderPos ? true : undefined}
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'move'
+                  setDragFrom(orderPos)
+                }}
+                onDragOver={(e) => {
+                  if (!next || dragFrom === null) return
+                  e.preventDefault()
+                  setDropAt(orderPos)
+                }}
+                onDragEnd={() => {
+                  setDragFrom(null)
+                  setDropAt(null)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  if (next && dragFrom !== null && dragFrom !== orderPos) moveInQueue(dragFrom, orderPos)
+                  setDragFrom(null)
+                  setDropAt(null)
+                }}
+                onClick={() => part !== 'current' && jumpTo(orderPos)}
+                onKeyDown={(e) => e.key === 'Enter' && part !== 'current' && jumpTo(orderPos)}
+              >
+                <Artwork src={t.cover?.s} size={40} radius={6} seed={t.key} />
+                <div className={s.rowText}>
+                  <div className={`${s.rowTitle} truncate`}>{t.title}</div>
+                  <div className={`${s.rowArtist} truncate`}>{t.artist}</div>
+                </div>
+                <div className={s.rowEnd}>
+                  {part === 'current' ? (
+                    <EqualizerBars playing={isPlaying} height={14} />
+                  ) : (
+                    <span className={s.duration}>{formatTime(t.duration)}</span>
+                  )}
+                  {next && (
+                    <IconButton
+                      className={s.removeBtn}
+                      size={26}
+                      label="Убрать из очереди"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        removeFromQueue(orderPos)
+                      }}
+                    >
+                      <X size={15} strokeWidth={2.2} />
+                    </IconButton>
+                  )}
+                </div>
+              </li>
+            </Fragment>
           )
         })}
+        {upcomingCount === 0 && (
+          <li className={s.endNote}>{source?.kind === 'mix' ? 'VK Микс подбирает следующие треки…' : 'Дальше в очереди ничего нет'}</li>
+        )}
       </ol>
     </>
   )

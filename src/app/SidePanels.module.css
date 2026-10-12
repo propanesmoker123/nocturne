@@ -39,6 +39,31 @@
 .row:hover {
   background: rgba(255, 255, 255, 0.08);
 }
+.row[data-played] {
+  opacity: 0.5;
+}
+.row[data-played]:hover {
+  opacity: 0.85;
+}
+.row[data-current] {
+  background: color-mix(in oklab, var(--accent) 22%, rgba(255, 255, 255, 0.04));
+  cursor: default;
+}
+.groupLabel {
+  /* clear of the sticky «Очередь» header when scrolled to */
+  scroll-margin-top: 52px;
+  padding: 14px 10px 6px;
+  font: 600 11px/14px var(--font);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+}
+.endNote {
+  padding: 18px 10px 8px;
+  font: 400 13px/18px var(--font);
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
 .row[data-dragging] {
   opacity: 0.4;
 }
@@ -71,21 +96,6 @@
 }
 .row:hover .duration {
   display: none;
-}
-.nextUp {
-  margin: 0 8px 8px;
-  padding: 12px;
-  display: grid;
-  grid-template-columns: 64px 1fr;
-  gap: 14px;
-  align-items: center;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.08);
-}
-.nextLabel {
-  font: 600 11px/14px var(--font);
-  color: rgba(255, 255, 255, 0.5);
-  margin-bottom: 3px;
 }
 
 /* Lyrics */
