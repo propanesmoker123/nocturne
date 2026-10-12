@@ -114,7 +114,6 @@ export function QuickSearchApp() {
   const sent = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const input = useRef<HTMLInputElement>(null)
-  const panel = useRef<HTMLDivElement>(null)
   const list = useRef<HTMLDivElement>(null)
 
   const rows = useMemo(() => (res ? buildRows(res.own, res.others) : []), [res])
@@ -143,13 +142,8 @@ export function QuickSearchApp() {
     el.focus()
     el.select()
     if (el.value.trim().length >= MIN_QUERY) sendQuery(el.value)
-    panel.current?.animate(
-      [
-        { opacity: 0, transform: 'translateY(-8px) scale(0.985)' },
-        { opacity: 1, transform: 'none' },
-      ],
-      { duration: 150, easing: 'cubic-bezier(.2,.8,.2,1)' },
-    )
+    // No entrance animation: Windows shows the window with its last frame already on screen,
+    // so fading in from transparent would flash the panel away and back.
   }, [sendQuery])
 
   useEffect(() => {
@@ -212,7 +206,7 @@ export function QuickSearchApp() {
         if (e.target === e.currentTarget) transport.current.hide()
       }}
     >
-      <div ref={panel} className={s.panel} role="dialog" aria-label="Быстрый поиск">
+      <div className={s.panel} role="dialog" aria-label="Быстрый поиск">
         <div className={s.field}>
           <Search size={20} strokeWidth={2.2} className={s.fieldIcon} aria-hidden="true" />
           <input
