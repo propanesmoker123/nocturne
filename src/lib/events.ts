@@ -53,6 +53,8 @@ export interface PlayerSnapshot {
   shuffle: boolean
   repeat: RepeatMode
   accent: string | null
+  /** Listening together: the island shows who leads or how many follow. */
+  together: { role: 'host' | 'listener'; listeners: number; hostName: string | null } | null
 }
 
 export type PlayerCommand =

@@ -149,6 +149,24 @@
   color: rgba(255, 255, 255, 0.8);
 }
 
+/* Right end of the compact pill: the together mark and the play status */
+.compactEnd {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.togetherIcon {
+  color: var(--accent);
+}
+.together {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  font: 600 11.5px/15px var(--font);
+  color: var(--accent);
+}
+
 .compactArt {
   border-radius: 7px;
 }

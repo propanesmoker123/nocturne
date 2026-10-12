@@ -29,6 +29,7 @@ export function startIslandDemo(api: DemoApi): () => void {
     shuffle: false,
     repeat: 'off',
     accent: '#ff375f',
+    together: null,
   }
   let settings: IslandSettings = { ...DEFAULT_SETTINGS.island }
   const position = () => (snap.isPlaying ? snap.position + (Date.now() - snap.at) / 1000 : snap.position)
@@ -53,6 +54,7 @@ export function startIslandDemo(api: DemoApi): () => void {
     mute: () => push({ muted: !snap.muted }),
     playing: (on: boolean) => push({ isPlaying: on }),
     seek: (sec: number) => push({ position: sec }),
+    together: (t: PlayerSnapshot['together']) => push({ together: t }),
     hover: api.hover,
     waveColor: api.wave,
     settings: (patch: Partial<IslandSettings>) => {

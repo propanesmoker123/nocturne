@@ -6,6 +6,7 @@ import { Slider } from '../components/Slider'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
 import { usePlayer } from '../player/store'
+import { TogetherBanner, TogetherButton, useControlledBy } from '../together/TogetherControls'
 import { isInLibrary, toggleLibrary } from './library'
 import s from './MiniPlayer.module.css'
 import { useRouter } from './router'
@@ -22,6 +23,7 @@ export function Scrubber({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
   const buffered = usePlayer((p) => p.buffered)
   const seek = usePlayer((p) => p.seek)
   const trackKey = usePlayer((p) => p.current?.key)
+  const controlledBy = useControlledBy()
   const [drag, setDrag] = useState<number | null>(null)
   const shown = drag ?? position
   return (
@@ -33,7 +35,7 @@ export function Scrubber({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
         label="Позиция трека"
         value={duration ? position / duration : 0}
         buffered={duration ? buffered / duration : 0}
-        disabled={!trackKey || !duration}
+        disabled={!trackKey || !duration || !!controlledBy}
         step={5 / Math.max(duration, 1)}
         valueText={(v) => formatTime(v * duration)}
         onChange={(v) => setDrag(v * duration)}
@@ -60,10 +62,14 @@ export function MiniPlayer() {
   const nowPlayingTab = useUi((u) => (u.nowPlaying ? u.tab : null))
   const push = useRouter((r) => r.push)
   const liked = current ? isInLibrary(current) : false
+  // Listening together, the host seeks and skips; the listener keeps pause and volume
+  const controlledBy = useControlledBy()
+  const locked = !current || !!controlledBy
 
   return (
     <div className={s.wrap}>
       <div className={s.bar} role="region" aria-label="Плеер">
+        <TogetherBanner />
         <div className={s.meta}>
           {current ? (
             <>
@@ -97,16 +103,16 @@ export function MiniPlayer() {
 
         <div className={s.center}>
           <div className={s.transport}>
-            <IconButton size={32} plain active={shuffle} label={shuffle ? 'Выключить перемешивание' : 'Перемешать'} onClick={toggleShuffle} disabled={!current}>
+            <IconButton size={32} plain active={shuffle} label={shuffle ? 'Выключить перемешивание' : 'Перемешать'} onClick={toggleShuffle} disabled={locked}>
               <IconShuffle size={17} />
             </IconButton>
-            <IconButton size={36} plain label="Предыдущий" onClick={prev} disabled={!current}>
+            <IconButton size={36} plain label="Предыдущий" onClick={prev} disabled={locked}>
               <IconBackward size={22} />
             </IconButton>
             <IconButton className={s.play} size={40} plain label={isPlaying ? 'Пауза' : 'Играть'} onClick={toggle} disabled={!current}>
               {isLoading && isPlaying ? <Spinner size={20} /> : isPlaying ? <IconPause size={26} /> : <IconPlay size={26} />}
             </IconButton>
-            <IconButton size={36} plain label="Следующий" onClick={() => next(true)} disabled={!current}>
+            <IconButton size={36} plain label="Следующий" onClick={() => next(true)} disabled={locked}>
               <IconForward size={22} />
             </IconButton>
             <IconButton
@@ -115,7 +121,7 @@ export function MiniPlayer() {
               active={repeat !== 'off'}
               label={repeat === 'off' ? 'Повторять очередь' : repeat === 'all' ? 'Повторять трек' : 'Не повторять'}
               onClick={cycleRepeat}
-              disabled={!current}
+              disabled={locked}
             >
               <IconRepeat size={17} one={repeat === 'one'} />
             </IconButton>
@@ -124,6 +130,7 @@ export function MiniPlayer() {
         </div>
 
         <div className={s.right}>
+          <TogetherButton />
           <IconButton size={32} label="Текст песни" active={nowPlayingTab === 'lyrics'} onClick={() => toggleNowPlaying('lyrics')} disabled={!current}>
             <IconLyrics size={18} />
           </IconButton>

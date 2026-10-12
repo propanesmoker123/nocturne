@@ -3,6 +3,7 @@ import { EV, type IslandWave, type PlayerCommand, type PlayerSnapshot } from '..
 import { useSettings, type IslandSettings } from '../lib/settings'
 import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
 import { usePlayer, type PlayerState } from './store'
+import { useTogether } from '../together/session'
 import { useWaveform } from './waveformStore'
 
 let accent: string | null = null
@@ -24,7 +25,14 @@ function snapshot(s: PlayerState): PlayerSnapshot {
     shuffle: s.shuffle,
     repeat: s.repeat,
     accent,
+    together: togetherSnapshot(),
   }
+}
+
+function togetherSnapshot(): PlayerSnapshot['together'] {
+  const t = useTogether.getState()
+  if (!t.role || t.phase === 'connecting') return null
+  return { role: t.role, listeners: t.listeners.length, hostName: t.hostName }
 }
 
 export interface BridgeActions {
@@ -154,6 +162,10 @@ export function startBridges(actions: BridgeActions) {
         pushSmtc(s)
       }
     }
+  })
+
+  useTogether.subscribe((t, prev) => {
+    if (t.role !== prev.role || t.phase !== prev.phase || t.hostName !== prev.hostName || t.listeners.length !== prev.listeners.length) pushIsland()
   })
 
   // Heartbeat keeps the island's interpolation honest while playing.

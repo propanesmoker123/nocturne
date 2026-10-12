@@ -40,7 +40,8 @@ export interface PlayerState {
   repeat: Q.RepeatMode
   history: Track[]
 
-  playList(tracks: Track[], index: number, opts?: { shuffle?: boolean; source?: QueueSource }): void
+  /** `startAt` (seconds) and `paused` start the first track somewhere other than the top, or without playing. */
+  playList(tracks: Track[], index: number, opts?: { shuffle?: boolean; source?: QueueSource; startAt?: number; paused?: boolean }): void
   playMix(): Promise<void>
   toggle(): void
   play(): void
@@ -63,6 +64,26 @@ export interface PlayerState {
 }
 
 const isPlayable = (t: Track) => t.playable
+
+/** What a press on the player means to someone else steering it (listening together). */
+export type PlayerIntent = 'pick' | 'skip' | 'seek' | 'mode' | 'pause' | 'resume'
+let guard: ((intent: PlayerIntent) => boolean) | null = null
+
+/**
+ * Lets the listen-together session see, refuse or reroute what the person does with the player:
+ * a listener's seeks and skips are refused, their pause stays theirs, play catches up with the host,
+ * and picking other music ends the session. `null` removes it.
+ */
+export function setPlayerGuard(g: ((intent: PlayerIntent) => boolean) | null) {
+  guard = g
+}
+const allow = (intent: PlayerIntent) => !guard || guard(intent)
+
+/** The position the audio is really at, without waiting for the next time update. */
+export function livePosition(): number {
+  const { current, position } = usePlayer.getState()
+  return current && loadedKey === current.key ? engine.position : position
+}
 
 /** Warm the image cache for the next track so the queue card and player swap covers instantly. */
 function preloadCovers(t: Track | undefined) {
@@ -194,7 +215,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     history: [],
 
     playList(tracks, index, opts) {
-      if (!tracks.length) return
+      if (!tracks.length || !allow('pick')) return
       const shuffle = opts?.shuffle ?? get().shuffle
       const start = opts?.shuffle ? Math.floor(Math.random() * tracks.length) : index
       const queue = Q.createQueue(tracks, start, shuffle, get().repeat)
@@ -209,7 +230,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
         }
         set({ queue: n })
       }
-      void loadCurrent(true)
+      void loadCurrent(!opts?.paused, opts?.startAt ?? 0)
     },
 
     async playMix() {
@@ -225,6 +246,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     toggle() {
       const cur = get().current
       if (!cur) return
+      if (!allow(loadedKey === cur.key && engine.playing ? 'pause' : 'resume')) return
       if (loadedKey !== cur.key) {
         void loadCurrent(true, get().position)
         return
@@ -235,18 +257,19 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     play() {
       const cur = get().current
-      if (!cur) return
+      if (!cur || !allow('resume')) return
       if (loadedKey !== cur.key) void loadCurrent(true, get().position)
       else engine.play()
     },
 
     pause() {
+      if (!allow('pause')) return
       engine.pause()
     },
 
     next(manual = true) {
       const q = get().queue
-      if (!q) return
+      if (!q || (manual && !allow('skip'))) return
       const n = Q.next(q, isPlayable, manual)
       if (!n) {
         if (get().source?.kind === 'mix') {
@@ -275,7 +298,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     prev() {
       const q = get().queue
-      if (!q) return
+      if (!q || !allow('skip')) return
       if (prevAction(engine.position) === 'restart') {
         engine.seek(0)
         return
@@ -291,7 +314,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     seek(sec) {
       const cur = get().current
-      if (!cur) return
+      if (!cur || !allow('seek')) return
       if (loadedKey !== cur.key) {
         set({ position: sec })
         return
@@ -322,12 +345,14 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     toggleShuffle() {
+      if (!allow('mode')) return
       const shuffle = !get().shuffle
       const q = get().queue
       set({ shuffle, queue: q ? Q.setShuffle(q, shuffle) : q })
     },
 
     cycleRepeat() {
+      if (!allow('mode')) return
       const order: Q.RepeatMode[] = ['off', 'all', 'one']
       const repeat = order[(order.indexOf(get().repeat) + 1) % order.length]
       const q = get().queue
@@ -364,7 +389,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     jumpTo(orderPos) {
       const q = get().queue
-      if (!q || orderPos < 0 || orderPos >= q.order.length) return
+      if (!q || orderPos < 0 || orderPos >= q.order.length || !allow('pick')) return
       set({ queue: { ...q, pos: orderPos } })
       void loadCurrent(true)
     },

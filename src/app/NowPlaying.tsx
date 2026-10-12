@@ -8,6 +8,7 @@ import { Slider } from '../components/Slider'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
 import { usePlayer } from '../player/store'
+import { useControlledBy } from '../together/TogetherControls'
 import { isInLibrary, toggleLibrary } from './library'
 import s from './NowPlaying.module.css'
 import { useRouter } from './router'
@@ -33,6 +34,7 @@ function BigScrubber() {
   const buffered = usePlayer((p) => p.buffered)
   const seek = usePlayer((p) => p.seek)
   const trackKey = usePlayer((p) => p.current?.key)
+  const controlledBy = useControlledBy()
   const [drag, setDrag] = useState<number | null>(null)
   const shown = drag ?? position
   return (
@@ -43,7 +45,7 @@ function BigScrubber() {
         label="Позиция трека"
         value={duration ? position / duration : 0}
         buffered={duration ? buffered / duration : 0}
-        disabled={!duration}
+        disabled={!duration || !!controlledBy}
         step={5 / Math.max(duration, 1)}
         valueText={(v) => formatTime(v * duration)}
         onChange={(v) => setDrag(v * duration)}
@@ -77,6 +79,7 @@ export function NowPlaying() {
   const volume = usePlayer((p) => p.volume)
   const muted = usePlayer((p) => p.muted)
   const { toggle, next, prev, toggleShuffle, cycleRepeat, setVolume } = usePlayer.getState()
+  const controlledBy = useControlledBy()
   const push = useRouter((r) => r.push)
   const [sideOpen, setSideOpen] = useState(false)
 
@@ -158,19 +161,19 @@ export function NowPlaying() {
                 <BigScrubber />
 
                 <div className={s.transport}>
-                  <IconButton size={40} plain active={shuffle} label="Перемешать" onClick={toggleShuffle}>
+                  <IconButton size={40} plain active={shuffle} label="Перемешать" onClick={toggleShuffle} disabled={!!controlledBy}>
                     <IconShuffle size={21} />
                   </IconButton>
-                  <IconButton size={56} plain label="Предыдущий" onClick={prev}>
+                  <IconButton size={56} plain label="Предыдущий" onClick={prev} disabled={!!controlledBy}>
                     <IconBackward size={36} />
                   </IconButton>
                   <IconButton className={s.big} size={64} plain label={isPlaying ? 'Пауза' : 'Играть'} onClick={toggle}>
                     {isLoading && isPlaying ? <Spinner size={30} /> : isPlaying ? <IconPause size={46} /> : <IconPlay size={46} />}
                   </IconButton>
-                  <IconButton size={56} plain label="Следующий" onClick={() => next(true)}>
+                  <IconButton size={56} plain label="Следующий" onClick={() => next(true)} disabled={!!controlledBy}>
                     <IconForward size={36} />
                   </IconButton>
-                  <IconButton size={40} plain active={repeat !== 'off'} label="Повтор" onClick={cycleRepeat}>
+                  <IconButton size={40} plain active={repeat !== 'off'} label="Повтор" onClick={cycleRepeat} disabled={!!controlledBy}>
                     <IconRepeat size={21} one={repeat === 'one'} />
                   </IconButton>
                 </div>

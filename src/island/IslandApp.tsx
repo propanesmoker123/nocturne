@@ -1,4 +1,4 @@
-import { LocateFixed, Minus, Pin, PinOff } from 'lucide-react'
+import { LocateFixed, Minus, Pin, PinOff, Users } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState, type WheelEvent } from 'react'
 import { Artwork } from '../components/Artwork'
@@ -107,7 +107,10 @@ function CompactBody({ st, accent, style, duration }: { st: PlayerSnapshot; acce
           <i style={{ width: `${p * 100}%`, opacity: p > 0 ? 1 : 0 }} />
         </span>
       )}
-      <StatusGlyph st={st} accent={accent} size={14} />
+      <span className={s.compactEnd}>
+        {st.together && <Users size={13} strokeWidth={2.4} className={s.togetherIcon} aria-label="Слушаете вместе" />}
+        <StatusGlyph st={st} accent={accent} size={14} />
+      </span>
     </>
   )
 }
@@ -137,6 +140,12 @@ function Expanded({ st, accent, locked, moved, waveColor }: { st: PlayerSnapshot
             {t.explicit && <span className={s.explicit}>E</span>}
           </div>
           <div className={`${s.artist} truncate`}>{t.artist}</div>
+          {st.together && (
+            <div className={`${s.together} truncate`}>
+              <Users size={12} strokeWidth={2.4} aria-hidden="true" />
+              {st.together.role === 'listener' ? `Вместе с ${st.together.hostName ?? 'ведущим'}` : `Слушают вместе: ${st.together.listeners}`}
+            </div>
+          )}
         </div>
         <div className={s.topActions}>
           <IconButton
