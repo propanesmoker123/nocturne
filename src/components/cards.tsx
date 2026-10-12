@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react'
+import { ChevronRight, Plus } from 'lucide-react'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { showMenu } from '../app/menu'
 import { useRouter } from '../app/router'
@@ -16,11 +16,31 @@ import { EdgeArrows, useHorizontalScroll } from './HScroll'
 import { IconForward, IconMore, IconPause, IconPlay } from './Icons'
 import s from './cards.module.css'
 
-export function Section({ title, action, children }: { title: string; action?: { label: string; onClick(): void }; children: ReactNode }) {
+/** `onOpen` turns the title into a link to the full list, marked with a chevron. */
+export function Section({
+  title,
+  action,
+  onOpen,
+  children,
+}: {
+  title: string
+  action?: { label: string; onClick(): void }
+  onOpen?: () => void
+  children: ReactNode
+}) {
   return (
     <section className={s.section}>
       <div className={s.sectionHead}>
-        <h2 className={s.sectionTitle}>{title}</h2>
+        <h2 className={s.sectionTitle}>
+          {onOpen ? (
+            <button type="button" className={s.sectionLink} onClick={onOpen} title="Все треки">
+              {title}
+              <ChevronRight size={22} strokeWidth={2.6} aria-hidden="true" />
+            </button>
+          ) : (
+            title
+          )}
+        </h2>
         {action && (
           <button type="button" className={s.sectionAction} onClick={action.onClick}>
             {action.label}

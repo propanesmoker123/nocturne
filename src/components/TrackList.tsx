@@ -202,8 +202,7 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
 }
 
 /** Three-row horizontal grid used for catalog "stacked slider" blocks. */
-/** `onNearEnd` fires while the user scrolls within about a screen of the strip's end, to load more. */
-export function TrackGrid({ tracks, onNearEnd }: { tracks: Track[]; onNearEnd?: () => void }) {
+export function TrackGrid({ tracks }: { tracks: Track[] }) {
   const currentKey = usePlayer((p) => p.current?.key)
   const isPlaying = usePlayer((p) => p.isPlaying)
   const play = (i: number) => usePlayer.getState().playList(tracks, i)
@@ -211,13 +210,6 @@ export function TrackGrid({ tracks, onNearEnd }: { tracks: Track[]; onNearEnd?: 
   const scroll = useHorizontalScroll(strip)
   const { refresh } = scroll
   useEffect(refresh, [tracks, refresh])
-  useEffect(() => {
-    const el = strip.current
-    if (!el || !onNearEnd) return
-    const check = () => el.scrollWidth - el.scrollLeft - el.clientWidth < el.clientWidth * 1.5 && onNearEnd()
-    el.addEventListener('scroll', check, { passive: true })
-    return () => el.removeEventListener('scroll', check)
-  }, [onNearEnd])
   return (
     <div className={c.carousel}>
       <div ref={strip} className={s.gridScroller} style={tracks.length < 3 ? { gridTemplateRows: `repeat(${tracks.length}, 60px)` } : undefined}>

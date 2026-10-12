@@ -14,6 +14,22 @@
   letter-spacing: var(--track-title);
   margin: 0;
 }
+.sectionLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.sectionLink svg {
+  color: var(--label-3);
+  transition:
+    transform 160ms ease,
+    color 160ms ease;
+}
+.sectionLink:hover svg,
+.sectionLink:focus-visible svg {
+  color: var(--label);
+  transform: translateX(3px);
+}
 .sectionAction {
   font: 500 14px/18px var(--font);
   color: var(--accent-text);

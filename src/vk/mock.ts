@@ -189,7 +189,12 @@ function catalogResponse(): RawCatalogResponse {
             { id: 'my', data_type: 'music_audios', layout: { name: 'triple_stacked_slider' }, audios_ids: ids(MY.slice(0, 18)) },
             { id: 'h2', data_type: 'none', layout: { name: 'header_extended', title: 'Собрано алгоритмами' } },
             { id: 'recp', data_type: 'music_playlists', layout: { name: 'recomms_slider' }, playlists_ids: REC_PLAYLISTS.map((p) => `${p.owner_id}_${p.id}`) },
-            { id: 'h3', data_type: 'none', layout: { name: 'header', title: 'Похоже на «Кварц»' } },
+            {
+              id: 'h3',
+              data_type: 'none',
+              layout: { name: 'header', title: 'Похоже на «Кварц»' },
+              actions: [{ action: { type: 'open_section' }, section_id: 'similar_all', title: 'Показать все' }],
+            },
             { id: 'sim', data_type: 'music_audios', layout: { name: 'triple_stacked_slider' }, audios_ids: ids(CATALOG.slice(0, 18)) },
           ],
         },
@@ -207,6 +212,20 @@ function myTracksSection(): RawCatalogResponse {
   return {
     section: { id: 'my_all', title: 'Мои треки', blocks: [{ id: 'all', data_type: 'music_audios', layout: { name: 'list' }, audios_ids: MY.map((a) => `${a.owner_id}_${a.id}`) }] },
     audios: MY.map(withUrl),
+  }
+}
+
+/** «Показать все» under «Похоже на…»: the catalog in two pages, to exercise paging. */
+function similarSection(startFrom: string): RawCatalogResponse {
+  const list = startFrom === 'p2' ? CATALOG.slice(40) : CATALOG.slice(0, 40)
+  return {
+    section: {
+      id: 'similar_all',
+      title: 'Похоже на «Кварц»',
+      next_from: startFrom === 'p2' ? undefined : 'p2',
+      blocks: [{ id: 'sim_all', data_type: 'music_audios', layout: { name: 'list' }, audios_ids: list.map((a) => `${a.owner_id}_${a.id}`) }],
+    },
+    audios: list.map(withUrl),
   }
 }
 
@@ -304,6 +323,7 @@ export async function mockCall(method: string, params: Record<string, unknown>):
       return catalogResponse()
     case 'catalog.getSection':
       if (params.section_id === 'my_all') return myTracksSection()
+      if (params.section_id === 'similar_all') return similarSection(String(params.start_from ?? ''))
       return params.section_id === 'home' ? homeRestResponse() : exploreResponse()
     case 'audio.add':
       return 99999

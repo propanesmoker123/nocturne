@@ -12,6 +12,7 @@ import { Login } from '../pages/Login'
 import { PlaylistPage } from '../pages/PlaylistPage'
 import { Playlists } from '../pages/Playlists'
 import { Recent } from '../pages/Recent'
+import { SectionPage } from '../pages/SectionPage'
 import { SearchPage } from '../pages/Search'
 import { SettingsPage } from '../pages/Settings'
 import s from './App.module.css'
@@ -49,6 +50,8 @@ function Page({ route }: { route: Route }) {
       return <Artist id={route.id} name={route.artist} />
     case 'recent':
       return <Recent />
+    case 'section':
+      return <SectionPage title={route.title} id={route.id} block={route.block} />
     case 'settings':
       return <SettingsPage />
   }
