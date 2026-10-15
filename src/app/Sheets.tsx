@@ -157,9 +157,9 @@ function SendTrackBody({ req }: { req: Extract<SheetRequest, { kind: 'send-track
 
   return (
     <>
-      <h2 className={s.sheetTitle}>Отправить другу</h2>
+      <h2 className={s.sheetTitle}>Поделиться треком</h2>
       <p className={s.sheetText}>
-        «{t.title}» — {t.artist} придёт в личные сообщения VK.
+        «{t.title}» — {t.artist}. Выберите друга — трек придёт ему в личные сообщения VK.
       </p>
       <input className={s.input} value={query} autoFocus onChange={(e) => setQuery(e.target.value)} placeholder="Найти друга" aria-label="Найти друга" />
       <div className={s.friendList}>
@@ -182,6 +182,14 @@ function SendTrackBody({ req }: { req: Extract<SheetRequest, { kind: 'send-track
         )}
       </div>
       <div className={s.sheetActions}>
+        <Button
+          onClick={() => {
+            void copyTrackLink(t).then(() => toast('Ссылка скопирована', 'info'))
+            close()
+          }}
+        >
+          Скопировать ссылку
+        </Button>
         <Button onClick={close}>Отмена</Button>
       </div>
     </>

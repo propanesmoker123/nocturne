@@ -1,7 +1,8 @@
+import { Send } from 'lucide-react'
 import { useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton, Spinner } from '../components/controls'
-import { IconBackward, IconCheck, IconForward, IconLyrics, IconNote, IconPause, IconPlay, IconPlus, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
+import { IconBackward, IconCheck, IconForward, IconNote, IconPause, IconPlay, IconPlus, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime, fullTrackName } from '../lib/format'
@@ -10,6 +11,7 @@ import { TogetherBanner, TogetherButton, useControlledBy } from '../together/Tog
 import { isInLibrary, toggleLibrary } from './library'
 import s from './MiniPlayer.module.css'
 import { useRouter } from './router'
+import { useSheet } from './sheetStore'
 import { copyTrackName } from './trackActions'
 import { useUi } from './ui'
 
@@ -134,8 +136,8 @@ export function MiniPlayer() {
 
         <div className={s.right}>
           <TogetherButton />
-          <IconButton size={32} label="Текст песни" active={nowPlayingTab === 'lyrics'} onClick={() => toggleNowPlaying('lyrics')} disabled={!current}>
-            <IconLyrics size={18} />
+          <IconButton size={32} label="Поделиться треком" onClick={() => current && useSheet.getState().open({ kind: 'send-track', track: current })} disabled={!current}>
+            <Send size={17} strokeWidth={2} />
           </IconButton>
           <IconButton size={32} label="Очередь" active={nowPlayingTab === 'queue'} onClick={() => toggleNowPlaying('queue')} disabled={!current}>
             <IconQueue size={18} />
