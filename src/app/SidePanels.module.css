@@ -81,21 +81,31 @@
   color: rgba(255, 255, 255, 0.55);
 }
 .rowEnd {
-  display: flex;
+  /* duration and the remove button share one cell, so the time sits on the right edge like the bars */
+  display: grid;
   align-items: center;
-  gap: 2px;
+  justify-items: end;
   font: 500 12px/16px var(--font);
   color: rgba(255, 255, 255, 0.5);
   font-variant-numeric: tabular-nums;
 }
+.rowEnd > * {
+  grid-area: 1 / 1;
+}
 .removeBtn {
   opacity: 0;
+  pointer-events: none;
 }
-.row:hover .removeBtn {
+.row:hover .removeBtn,
+.row:focus-visible .removeBtn,
+.removeBtn:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
-.row:hover .duration {
-  display: none;
+.row:hover .duration,
+.row:focus-visible .duration,
+.row:has(.removeBtn:focus-visible) .duration {
+  visibility: hidden;
 }
 
 /* Lyrics */
