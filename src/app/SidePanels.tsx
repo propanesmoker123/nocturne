@@ -4,6 +4,7 @@ import { Artwork } from '../components/Artwork'
 import { EqualizerBars, IconButton, Spinner } from '../components/controls'
 import { IconLyrics } from '../components/Icons'
 import { formatTime, pluralRu } from '../lib/format'
+import { scrollWithin } from '../lib/scrollWithin'
 import { remainingSeconds } from '../player/logic'
 import { allInOrder } from '../player/queue'
 import { usePlayer } from '../player/store'
@@ -62,7 +63,7 @@ export function QueuePanel() {
 
   // Open on the current track (what played is above it); follow it when the track changes
   useEffect(() => {
-    nowLabel.current?.scrollIntoView({ block: 'start', behavior: scrolledOnce.current ? 'smooth' : 'auto' })
+    scrollWithin(nowLabel.current, 'start', scrolledOnce.current)
     scrolledOnce.current = true
   }, [pos])
 
@@ -185,7 +186,7 @@ export function LyricsPanel() {
   useEffect(() => {
     if (activeIndex < 0 || !box.current) return
     const el = box.current.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`)
-    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    scrollWithin(el, 'center', true)
   }, [activeIndex])
 
   if (!track) return null
