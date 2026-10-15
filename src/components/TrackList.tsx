@@ -16,6 +16,10 @@ import s from './TrackList.module.css'
 
 const ROW = 56
 
+const tappedButton = (e: MouseEvent) => !!(e.target as HTMLElement).closest('button')
+/** One click plays; the second click of a double-click (old habit) must not pause what the first started. */
+const playClick = (e: MouseEvent) => e.detail <= 1 && !tappedButton(e)
+
 export function ArtistLinks({ track }: { track: Track }) {
   const push = useRouter((r) => r.push)
   return (
@@ -60,7 +64,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
       tabIndex={0}
       data-current={isCurrent || undefined}
       data-disabled={!track.playable || undefined}
-      onDoubleClick={() => track.playable && onPlay(index)}
+      onClick={(e) => playClick(e) && track.playable && onPlay(index)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && track.playable) onPlay(index)
       }}
@@ -161,6 +165,8 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
   const source = queueSource ?? tracks
   const onPlay = (index: number) => {
     const t = tracks[index]
+    // the track that is already on pauses or resumes instead of starting over
+    if (t.key === usePlayer.getState().current?.key) return usePlayer.getState().toggle()
     const at = source === tracks ? index : source.findIndex((x) => x.key === t.key)
     usePlayer.getState().playList(source, Math.max(0, at))
   }
@@ -205,7 +211,7 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
 export function TrackGrid({ tracks }: { tracks: Track[] }) {
   const currentKey = usePlayer((p) => p.current?.key)
   const isPlaying = usePlayer((p) => p.isPlaying)
-  const play = (i: number) => usePlayer.getState().playList(tracks, i)
+  const play = (i: number) => (tracks[i].key === usePlayer.getState().current?.key ? usePlayer.getState().toggle() : usePlayer.getState().playList(tracks, i))
   const strip = useRef<HTMLDivElement>(null)
   const scroll = useHorizontalScroll(strip)
   const { refresh } = scroll
@@ -219,7 +225,7 @@ export function TrackGrid({ tracks }: { tracks: Track[] }) {
             className={s.cell}
             data-current={t.key === currentKey || undefined}
             data-disabled={!t.playable || undefined}
-            onDoubleClick={() => t.playable && play(i)}
+            onClick={(e) => playClick(e) && t.playable && play(i)}
             onContextMenu={(e) => openTrackMenu(e, t, { list: tracks, index: i })}
           >
             <div className={s.cellArt}>

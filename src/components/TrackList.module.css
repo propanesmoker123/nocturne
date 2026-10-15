@@ -27,6 +27,11 @@
   border-radius: 10px;
   outline: none;
 }
+/* one click plays */
+.row:not([data-disabled]),
+.cell:not([data-disabled]) {
+  cursor: pointer;
+}
 .row::after {
   content: '';
   position: absolute;
