@@ -143,8 +143,8 @@ function SendTrackBody({ req }: { req: Extract<SheetRequest, { kind: 'send-track
       close()
     } catch (e) {
       const err = VkError.from(e)
-      // 7/15: this VK sign-in may not send messages at all — hand over the link instead
-      if (err.kind === 'vk' && (err.code === 7 || err.code === 15)) {
+      // 7/15 (or an auth refusal on this one method): this VK sign-in may not send messages at all — hand over the link instead
+      if (err.kind === 'auth' || (err.kind === 'vk' && (err.code === 7 || err.code === 15))) {
         await copyTrackLink(t).catch(() => {})
         toast('VK не дал отправить из Nocturne — ссылка на трек скопирована', 'info')
         close()
