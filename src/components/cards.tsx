@@ -1,9 +1,9 @@
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronRight, Headphones, Plus } from 'lucide-react'
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { showMenu } from '../app/menu'
 import { useRouter } from '../app/router'
 import { openTrackMenu, playlistMenuItems } from '../app/trackActions'
-import { formatTime, pluralRu } from '../lib/format'
+import { formatPlays, formatPlaysShort, formatTime, pluralRu } from '../lib/format'
 import { upcoming } from '../player/queue'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
@@ -134,6 +134,12 @@ export function PlaylistCard({ playlist: p }: { playlist: Playlist }) {
         {p.title}
       </button>
       <div className={`${s.cardSub} truncate`}>{playlistSubtitle(p)}</div>
+      {p.plays && (
+        <div className={s.cardPlays} title={formatPlays(p.plays)}>
+          <Headphones size={12} strokeWidth={2.2} aria-hidden="true" />
+          <span className="truncate">{formatPlaysShort(p.plays)}</span>
+        </div>
+      )}
     </div>
   )
 }

@@ -43,6 +43,8 @@ export interface Playlist {
   type: 'playlist' | 'album'
   ownerName?: string
   year?: number
+  /** How many times it was played in VK, when VK says. */
+  plays?: number
   /** For a followed copy: the playlist it was followed from. */
   original?: { id: number; ownerId: number; accessKey?: string }
 }

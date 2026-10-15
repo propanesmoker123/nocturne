@@ -79,6 +79,7 @@ export function normalizePlaylist(raw: RawPlaylist, meId: number, ownerNames?: M
     type: isAlbum ? 'album' : 'playlist',
     ownerName: ownerNames?.get(raw.owner_id),
     year: raw.year,
+    plays: raw.plays && raw.plays > 0 ? raw.plays : undefined,
     original: raw.original ? { id: raw.original.playlist_id, ownerId: raw.original.owner_id, accessKey: raw.original.access_key } : undefined,
   }
 }

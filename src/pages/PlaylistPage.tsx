@@ -9,7 +9,7 @@ import { Button, IconButton } from '../components/controls'
 import { EmptyState, TrackListSkeleton } from '../components/cards'
 import { IconMore, IconPlay } from '../components/Icons'
 import { TrackList } from '../components/TrackList'
-import { formatLongDuration, pluralRu } from '../lib/format'
+import { formatLongDuration, formatPlays, pluralRu } from '../lib/format'
 import { useAllPages } from '../lib/hooks'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
@@ -40,7 +40,9 @@ export function PlaylistPage({ ownerId, id, accessKey }: { ownerId: number; id: 
           <h1 className={s.heroTitle}>{p?.title ?? '…'}</h1>
           {p?.ownerName && <div className={s.heroOwner}>{p.ownerName}</div>}
           <div className={s.heroMeta}>
-            {[count ? `${count} ${pluralRu(count, 'трек', 'трека', 'треков')}` : null, totalSec ? formatLongDuration(totalSec) : null, p?.year ? String(p.year) : null].filter(Boolean).join(' · ')}
+            {[count ? `${count} ${pluralRu(count, 'трек', 'трека', 'треков')}` : null, totalSec ? formatLongDuration(totalSec) : null, p?.year ? String(p.year) : null, p?.plays ? formatPlays(p.plays) : null]
+              .filter(Boolean)
+              .join(' · ')}
           </div>
           {p?.description && <p className={s.heroDesc}>{p.description}</p>}
           <div className={s.heroActions}>

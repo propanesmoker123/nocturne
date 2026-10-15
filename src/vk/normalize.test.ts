@@ -129,6 +129,12 @@ describe('normalizePlaylist', () => {
     expect(p.description).toBeUndefined()
   })
 
+  test('keeps the play count VK reports, and nothing when it reports none', () => {
+    expect(normalizePlaylist(rawPlaylist({ plays: 1_234_567 }), 100).plays).toBe(1_234_567)
+    expect(normalizePlaylist(rawPlaylist({ plays: 0 }), 100).plays).toBeUndefined()
+    expect(normalizePlaylist(rawPlaylist(), 100).plays).toBeUndefined()
+  })
+
   test('treats playlists of other owners as not own', () => {
     const p = normalizePlaylist(rawPlaylist({ owner_id: -42, permissions: { play: true, edit: false } }), 100)
     expect(p.isOwn).toBe(false)

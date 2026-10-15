@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { filterTracks, formatCount, formatLongDuration, formatTime, normalizeSearch, pluralRu } from './format'
+import { filterTracks, formatCount, formatLongDuration, formatPlays, formatPlaysShort, formatTime, normalizeSearch, pluralRu } from './format'
 
 describe('formatTime', () => {
   test('formats minutes and seconds', () => {
@@ -89,5 +89,22 @@ describe('formatLongDuration', () => {
     expect(formatLongDuration(42 * 60 + 20)).toBe('42 мин')
     expect(formatLongDuration(72 * 60)).toBe('1 ч 12 мин')
     expect(formatLongDuration(2 * 3600 + 10)).toBe('2 ч')
+  })
+})
+
+describe('plays', () => {
+  test('short form for cards: тыс., млн, млрд with a decimal comma', () => {
+    expect(formatPlaysShort(345)).toBe('345')
+    expect(formatPlaysShort(1500)).toBe('1,5 тыс.')
+    expect(formatPlaysShort(123_456)).toBe('123 тыс.')
+    expect(formatPlaysShort(1_234_567)).toBe('1,2 млн')
+    expect(formatPlaysShort(2_500_000_000)).toBe('2,5 млрд')
+  })
+
+  test('full form for the album page agrees with the number', () => {
+    expect(formatPlays(1)).toBe('1 прослушивание')
+    expect(formatPlays(3)).toBe('3 прослушивания')
+    expect(formatPlays(11)).toBe('11 прослушиваний')
+    expect(formatPlays(1_234_567)).toBe('1,2 млн прослушиваний')
   })
 })

@@ -127,6 +127,7 @@ function playlist(i: number, owner: number, title: string, count: number, extra:
     photo: i % 3 === 2 ? undefined : thumb(40 + i),
     thumbs: [thumb(50 + i), thumb(51 + i), thumb(52 + i), thumb(53 + i)],
     access_key: `pk${i}`,
+    plays: i % 4 === 3 ? undefined : ((i * 7919 + 13) * 397) % 4_800_000,
     permissions: { play: true, edit: owner === ME, delete: owner === ME, follow: owner !== ME },
     ...extra,
   }

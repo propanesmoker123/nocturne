@@ -18,6 +18,20 @@ export function formatCount(n: number): string {
   return String(n)
 }
 
+/** Plays on a card: «345», «1,5 тыс.», «1,2 млн». */
+export function formatPlaysShort(n: number): string {
+  if (n >= 1_000_000_000) return compact(n / 1_000_000_000, ' млрд')
+  if (n >= 1_000_000) return compact(n / 1_000_000, ' млн')
+  if (n >= 1000) return compact(n / 1000, ' тыс.')
+  return String(n)
+}
+
+/** Plays on an album page: «1 прослушивание», «1,2 млн прослушиваний». */
+export function formatPlays(n: number): string {
+  if (n >= 1000) return `${formatPlaysShort(n)} прослушиваний`
+  return `${n} ${pluralRu(n, 'прослушивание', 'прослушивания', 'прослушиваний')}`
+}
+
 export function pluralRu(n: number, one: string, few: string, many: string): string {
   const abs = Math.abs(n) % 100
   const last = abs % 10
