@@ -433,14 +433,14 @@
   height: 120%;
   left: -12%;
   top: -40%;
-  background: var(--accent);
+  background: var(--aura-1, var(--accent));
 }
 .mixAura i:nth-child(2) {
   width: 38%;
   height: 110%;
   right: 4%;
   top: -10%;
-  background: color-mix(in oklab, var(--accent) 55%, #fff 20%);
+  background: var(--aura-2, color-mix(in oklab, var(--accent) 55%, #fff 20%));
   opacity: 0.35;
   animation-duration: 23s;
   animation-direction: alternate-reverse;
@@ -450,7 +450,7 @@
   height: 90%;
   left: 30%;
   bottom: -70%;
-  background: color-mix(in oklab, var(--accent) 70%, #000);
+  background: var(--aura-3, color-mix(in oklab, var(--accent) 70%, #000));
   opacity: 0.6;
   animation-duration: 27s;
 }
@@ -461,6 +461,27 @@
 }
 .mix[data-live] .mixAura i {
   opacity: 0.75;
+}
+/* in the wallpaper's colours: no accent tint in the glass itself */
+.mix[data-aura] {
+  background: var(--mat-thin);
+}
+.mix[data-aura='glass'] .mixAura {
+  display: none;
+}
+/* the playing cover, blurred into a glow — the same picture the dynamic wallpaper is made of */
+.mixAuraCover {
+  position: absolute;
+  inset: -40% -10%;
+  width: 120%;
+  height: 180%;
+  object-fit: cover;
+  filter: blur(56px) saturate(1.5);
+  opacity: 0.5;
+  transition: opacity var(--dur-3) var(--ease-out);
+}
+.mix[data-live] .mixAuraCover {
+  opacity: 0.65;
 }
 .mixBody {
   min-width: 0;

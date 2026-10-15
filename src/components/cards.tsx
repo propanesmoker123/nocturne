@@ -4,6 +4,7 @@ import { showMenu } from '../app/menu'
 import { useRouter } from '../app/router'
 import { openTrackMenu, playlistMenuItems } from '../app/trackActions'
 import { formatPlays, formatPlaysShort, formatTime, pluralRu } from '../lib/format'
+import { useSettings, type WallpaperConfig } from '../lib/settings'
 import { upcoming } from '../player/queue'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
@@ -15,6 +16,7 @@ import { EqualizerBars, Spinner } from './controls'
 import { EdgeArrows, useHorizontalScroll } from './HScroll'
 import { IconForward, IconMore, IconPause, IconPlay } from './Icons'
 import s from './cards.module.css'
+import { PRESETS } from './Wallpaper'
 
 /** `onOpen` turns the title into a link to the full list, marked with a chevron. */
 export function Section({
@@ -286,22 +288,44 @@ export function CardsSkeleton({ count = 6 }: { count?: number }) {
   )
 }
 
+/** The mix card glows in the wallpaper's colours: the playing cover under a dynamic wallpaper,
+ *  a preset's own colours, or plain glass over a picture or video of your own. */
+function mixAura(w: WallpaperConfig, cover: string | undefined): { kind: 'cover'; src: string } | { kind: 'colors'; colors: [string, string, string] } | { kind: 'glass' } {
+  if (w.kind === 'dynamic') return cover ? { kind: 'cover', src: cover } : { kind: 'colors', colors: PRESETS.dusk.colors }
+  if (w.kind === 'preset') return { kind: 'colors', colors: PRESETS[w.preset].colors }
+  return { kind: 'glass' }
+}
+
 export function MixHero({ title, description, covers = [] }: { title: string; description?: string; covers?: string[] }) {
   const source = usePlayer((p) => p.source)
   const isPlaying = usePlayer((p) => p.isPlaying)
   const current = usePlayer((p) => p.current)
   const queue = usePlayer((p) => p.queue)
   const [busy, setBusy] = useState(false)
+  const wallpaper = useSettings((x) => x.wallpaper)
+  const aura = mixAura(wallpaper, current?.cover?.m)
   const playingMix = source?.kind === 'mix'
   const live = playingMix && current ? current : null
   // Front card first: what plays now and what comes next, or a taste of the catalog.
   const stack = live ? [live.cover?.m, ...(queue ? upcoming(queue) : []).slice(0, 2).map((t) => t.cover?.m)] : covers.slice(0, 3)
   return (
-    <section className={s.mix} aria-label="VK Микс" data-live={(playingMix && isPlaying) || undefined}>
+    <section
+      className={s.mix}
+      aria-label="VK Микс"
+      data-live={(playingMix && isPlaying) || undefined}
+      data-aura={aura.kind}
+      style={aura.kind === 'colors' ? ({ ['--aura-1' as string]: aura.colors[0], ['--aura-2' as string]: aura.colors[1], ['--aura-3' as string]: aura.colors[2] } as CSSProperties) : undefined}
+    >
       <div className={s.mixAura} aria-hidden="true">
-        <i />
-        <i />
-        <i />
+        {aura.kind === 'cover' ? (
+          <img className={s.mixAuraCover} src={aura.src} alt="" referrerPolicy="no-referrer" />
+        ) : (
+          <>
+            <i />
+            <i />
+            <i />
+          </>
+        )}
       </div>
       <div className={s.mixBody}>
         <div className={s.mixKicker}>
