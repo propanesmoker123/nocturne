@@ -107,6 +107,9 @@
   border-radius: 14px;
   box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.75), 0 10px 26px -8px rgba(0, 0, 0, 0.5);
 }
+.artFrame:enabled {
+  cursor: zoom-in;
+}
 
 .controls {
   width: min(100%, calc(clamp(240px, min(50vh, 40vw), 540px) + 40px));

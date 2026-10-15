@@ -1,6 +1,6 @@
 import { ChevronDown } from 'lucide-react'
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton, Segmented, Spinner } from '../components/controls'
 import { IconBackward, IconCheck, IconForward, IconLyrics, IconMore, IconPause, IconPlay, IconPlus, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
@@ -9,6 +9,8 @@ import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
 import { usePlayer } from '../player/store'
 import { useControlledBy } from '../together/TogetherControls'
+import type { Track } from '../vk/models'
+import { CoverViewer } from './CoverViewer'
 import { isInLibrary, toggleLibrary } from './library'
 import s from './NowPlaying.module.css'
 import { useRouter } from './router'
@@ -59,6 +61,29 @@ function BigScrubber() {
         <span>-{formatTime(Math.max(0, duration - shown))}</span>
       </div>
     </div>
+  )
+}
+
+/** The big cover; a click opens it over the whole window at full size. */
+function CoverArt({ track, playing }: { track: Track; playing: boolean }) {
+  const [full, setFull] = useState(false)
+  const close = useCallback(() => setFull(false), [])
+  const big = track.cover?.l
+  return (
+    <>
+      <motion.button
+        type="button"
+        className={s.artFrame}
+        aria-label="Открыть обложку"
+        disabled={!big}
+        onClick={() => setFull(true)}
+        animate={{ scale: playing ? 1 : 0.86 }}
+        transition={{ type: 'spring', stiffness: 220, damping: 20 }}
+      >
+        <Artwork src={track.cover?.l} size="100%" radius={14} seed={track.key} />
+      </motion.button>
+      <CoverViewer src={full && big ? big : null} alt={`${track.title} — ${track.artist}`} onClose={close} />
+    </>
   )
 }
 
@@ -126,13 +151,7 @@ export function NowPlaying() {
 
           <div className={s.layout}>
             <div className={s.stage}>
-              <motion.div
-                className={s.artFrame}
-                animate={{ scale: isPlaying ? 1 : 0.86 }}
-                transition={{ type: 'spring', stiffness: 220, damping: 20 }}
-              >
-                <Artwork src={current.cover?.l} size="100%" radius={14} seed={current.key} />
-              </motion.div>
+              <CoverArt track={current} playing={isPlaying} />
 
               <div className={s.controls}>
                 <div className={s.titleRow}>
