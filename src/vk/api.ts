@@ -77,6 +77,16 @@ export async function getFriends(): Promise<Friend[]> {
   return r.items.map(normalizeFriend)
 }
 
+// ── Messages ─────────────────────────────────────────────────────────────
+
+/** A track as a VK message attachment: `audio<owner>_<id>`, plus the access key when it has one. */
+export const audioAttachment = (t: Pick<Track, 'ownerId' | 'id' | 'accessKey'>) => `audio${trackKeyWithAccess(t)}`
+
+/** Sends the track to a friend's private messages in VK. */
+export async function sendTrack(peerId: number, t: Pick<Track, 'ownerId' | 'id' | 'accessKey'>): Promise<void> {
+  await call('messages.send', { peer_id: peerId, attachment: audioAttachment(t), random_id: Math.floor(Math.random() * 2 ** 31) })
+}
+
 // ── Tracks ───────────────────────────────────────────────────────────────
 
 export async function getTracks(ownerId: number, offset = 0, count = 200): Promise<Page<Track>> {

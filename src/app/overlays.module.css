@@ -157,6 +157,54 @@
   margin: -4px 0 12px;
 }
 
+/* «Отправить другу» */
+.friendList {
+  height: min(46vh, 380px);
+  overflow-y: auto;
+  margin: 10px -8px 12px;
+  padding: 0 4px;
+}
+.friendRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.friendRow:hover:enabled,
+.friendRow:focus-visible {
+  background: var(--fill-3);
+}
+.friendRow:disabled {
+  cursor: default;
+}
+.friendPhoto {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--fill-2);
+}
+.friendName {
+  flex: 1;
+  min-width: 0;
+  font: 500 15px/20px var(--font);
+}
+.friendNote {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  margin: 0;
+  font: var(--t-callout);
+  color: var(--label-2);
+  text-align: center;
+}
+
 /* ── Toasts ───────────────────────────────────────────────── */
 .toasts {
   position: absolute;

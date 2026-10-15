@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Lock, Users } from 'lucide-react'
 import { useEffect } from 'react'
 import { useChrome } from '../app/chrome'
+import { useFriends } from '../app/friends'
 import { useRouter } from '../app/router'
 import { Carousel, EmptyState, PlaylistCard, Section, TrackListSkeleton } from '../components/cards'
 import { PageHeader } from '../components/PageHeader'
@@ -12,10 +13,9 @@ import * as vk from '../vk/api'
 import { describeError, VkError } from '../vk/errors'
 import s from './pages.module.css'
 
-const friendsKey = () => ['friends', vk.getMeId()] as const
 
 export function Friends() {
-  const q = useQuery({ queryKey: friendsKey(), queryFn: vk.getFriends, staleTime: 10 * 60_000 })
+  const q = useFriends()
   const push = useRouter((r) => r.push)
   const friends = q.data ?? []
   const open = friends.filter((f) => f.canSeeAudio)
@@ -56,7 +56,7 @@ export function Friends() {
 }
 
 export function FriendPage({ id, title }: { id: number; title?: string }) {
-  const friends = useQuery({ queryKey: friendsKey(), queryFn: vk.getFriends, staleTime: 10 * 60_000 })
+  const friends = useFriends()
   const friend = friends.data?.find((f) => f.id === id)
   const name = friend?.name ?? title ?? 'Друг'
   const tracks = useAllPages(['tracks', id], (offset) => vk.getTracks(id, offset, 500))

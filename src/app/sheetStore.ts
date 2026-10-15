@@ -6,6 +6,7 @@ export type SheetRequest =
   | { kind: 'playlist-edit'; playlist: Playlist }
   | { kind: 'confirm'; title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void | Promise<void> }
   | { kind: 'captcha'; img: string; resolve: (key: string | null) => void }
+  | { kind: 'send-track'; track: Track }
 
 interface SheetState {
   sheet: SheetRequest | null

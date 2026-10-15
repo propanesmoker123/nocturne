@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest'
-import { call, setCaptchaHandler, setTransport } from './api'
+import { audioAttachment, call, sendTrack, setCaptchaHandler, setTransport } from './api'
 import { VkError } from './errors'
 
 afterEach(() => {
@@ -46,5 +46,24 @@ describe('call', () => {
     setCaptchaHandler(async () => null)
     const err = (await call('audio.add', {}).catch((e: unknown) => e)) as VkError
     expect(err.isCaptcha).toBe(true)
+  })
+})
+
+describe('sending a track to a friend', () => {
+  test('the track goes as an audio attachment, with its access key when it has one', () => {
+    expect(audioAttachment({ ownerId: -2001, id: 456, accessKey: 'ab12' })).toBe('audio-2001_456_ab12')
+    expect(audioAttachment({ ownerId: 7, id: 9 })).toBe('audio7_9')
+  })
+
+  test('messages.send gets the friend, the attachment and a random id', async () => {
+    const seen: [string, Record<string, unknown>][] = []
+    setTransport(async (method, params) => {
+      seen.push([method, params])
+      return 1
+    })
+    await sendTrack(42, { ownerId: 7, id: 9 })
+    expect(seen[0][0]).toBe('messages.send')
+    expect(seen[0][1]).toMatchObject({ peer_id: 42, attachment: 'audio7_9' })
+    expect(Number.isInteger(seen[0][1].random_id)).toBe(true)
   })
 })

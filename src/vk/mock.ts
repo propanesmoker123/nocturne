@@ -280,6 +280,8 @@ export async function mockCall(method: string, params: Record<string, unknown>):
       return [{ id: ME, first_name: 'Демо', last_name: 'Режим', photo_200: avatar(99, 'ДР') }]
     case 'friends.get':
       return { count: FRIENDS.length, items: FRIENDS }
+    case 'messages.send':
+      return 1
     case 'audio.get': {
       if (params.playlist_id) {
         const n = Number(params.playlist_id)

@@ -2,13 +2,15 @@ import { AnimatePresence, motion, useIsPresent } from 'motion/react'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Button, Spinner } from '../components/controls'
 import * as vk from '../vk/api'
-import { describeError } from '../vk/errors'
+import { describeError, VkError } from '../vk/errors'
+import type { Friend } from '../vk/models'
+import { friendMatches, useFriends } from './friends'
 import { queryClient } from './queryClient'
 import s from './overlays.module.css'
 import { useRouter } from './router'
 import { useSheet, type SheetRequest } from './sheetStore'
 import { toast } from './toast'
-import { addTracksToPlaylist, myPlaylistsKey } from './trackActions'
+import { addTracksToPlaylist, copyTrackLink, myPlaylistsKey } from './trackActions'
 
 function PlaylistForm({ req }: { req: Extract<SheetRequest, { kind: 'playlist-create' | 'playlist-edit' }> }) {
   const editing = req.kind === 'playlist-edit' ? req.playlist : null
@@ -122,6 +124,70 @@ function CaptchaBody({ req }: { req: Extract<SheetRequest, { kind: 'captcha' }> 
   )
 }
 
+/** Many friends render slowly; the search narrows the rest. */
+const FRIENDS_SHOWN = 200
+
+function SendTrackBody({ req }: { req: Extract<SheetRequest, { kind: 'send-track' }> }) {
+  const friends = useFriends()
+  const [query, setQuery] = useState('')
+  const [sending, setSending] = useState<number | null>(null)
+  const close = useSheet((x) => x.close)
+  const t = req.track
+  const found = (friends.data ?? []).filter((f) => friendMatches(f.name, query))
+
+  const send = async (f: Friend) => {
+    setSending(f.id)
+    try {
+      await vk.sendTrack(f.id, t)
+      toast(`Отправлено: ${f.name}`, 'added')
+      close()
+    } catch (e) {
+      const err = VkError.from(e)
+      // 7/15: this VK sign-in may not send messages at all — hand over the link instead
+      if (err.kind === 'vk' && (err.code === 7 || err.code === 15)) {
+        await copyTrackLink(t).catch(() => {})
+        toast('VK не дал отправить из Nocturne — ссылка на трек скопирована', 'info')
+        close()
+        return
+      }
+      toast(err.kind === 'vk' && (err.code === 900 || err.code === 902) ? `${f.name} принимает сообщения не от всех` : describeError(err), 'error')
+      setSending(null)
+    }
+  }
+
+  return (
+    <>
+      <h2 className={s.sheetTitle}>Отправить другу</h2>
+      <p className={s.sheetText}>
+        «{t.title}» — {t.artist} придёт в личные сообщения VK.
+      </p>
+      <input className={s.input} value={query} autoFocus onChange={(e) => setQuery(e.target.value)} placeholder="Найти друга" aria-label="Найти друга" />
+      <div className={s.friendList}>
+        {friends.isLoading ? (
+          <div className={s.friendNote}>
+            <Spinner />
+          </div>
+        ) : friends.isError ? (
+          <p className={s.friendNote}>{describeError(friends.error)}</p>
+        ) : found.length === 0 ? (
+          <p className={s.friendNote}>{query.trim() ? 'Никого не нашли' : 'Друзей пока нет'}</p>
+        ) : (
+          found.slice(0, FRIENDS_SHOWN).map((f) => (
+            <button key={f.id} type="button" className={s.friendRow} disabled={sending !== null} onClick={() => void send(f)}>
+              {f.photo ? <img className={s.friendPhoto} src={f.photo} alt="" referrerPolicy="no-referrer" loading="lazy" /> : <span className={s.friendPhoto} />}
+              <span className={`${s.friendName} truncate`}>{f.name}</span>
+              {sending === f.id && <Spinner size={16} />}
+            </button>
+          ))
+        )}
+      </div>
+      <div className={s.sheetActions}>
+        <Button onClick={close}>Отмена</Button>
+      </div>
+    </>
+  )
+}
+
 /** The dimming layer stops catching clicks as soon as it starts leaving. */
 function Layer({ children, onDismiss }: { children: ReactNode; onDismiss(): void }) {
   const present = useIsPresent()
@@ -164,7 +230,15 @@ export function Sheets() {
             exit={{ y: 12, scale: 0.98, opacity: 0 }}
             transition={{ type: 'spring', stiffness: 420, damping: 34 }}
           >
-            {sheet.kind === 'confirm' ? <ConfirmBody req={sheet} /> : sheet.kind === 'captcha' ? <CaptchaBody req={sheet} /> : <PlaylistForm req={sheet} />}
+            {sheet.kind === 'confirm' ? (
+              <ConfirmBody req={sheet} />
+            ) : sheet.kind === 'captcha' ? (
+              <CaptchaBody req={sheet} />
+            ) : sheet.kind === 'send-track' ? (
+              <SendTrackBody req={sheet} />
+            ) : (
+              <PlaylistForm req={sheet} />
+            )}
           </motion.div>
         </Layer>
       )}

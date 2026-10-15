@@ -1,4 +1,4 @@
-import { Copy, Disc3, ListEnd, ListPlus, ListX, Mic2, Plus, Trash2 } from 'lucide-react'
+import { Copy, Disc3, ListEnd, ListPlus, ListX, Mic2, Plus, Send, Trash2 } from 'lucide-react'
 import type { MouseEvent } from 'react'
 import { IconCheck, IconPlay, IconPlus } from '../components/Icons'
 import { usePlayer } from '../player/store'
@@ -41,6 +41,13 @@ export async function removeTracksFromPlaylist(p: Playlist, tracks: Track[]) {
   } catch (e) {
     toast(describeError(e), 'error')
   }
+}
+
+/** The track's page in VK: what «Скопировать ссылку» copies and what goes out when sharing. */
+export const trackLink = (t: Pick<Track, 'ownerId' | 'id'>) => `https://vk.com/audio${t.ownerId}_${t.id}`
+
+export async function copyTrackLink(t: Pick<Track, 'ownerId' | 'id'>) {
+  await navigator.clipboard.writeText(trackLink(t))
 }
 
 interface TrackMenuContext {
@@ -98,6 +105,7 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
       },
     },
   )
+  items.push({ label: 'Отправить другу', icon: <Send {...ic} />, onSelect: () => useSheet.getState().open({ kind: 'send-track', track }) })
   if (ctx.playlist?.canEdit) {
     const p = ctx.playlist
     items.push({ label: 'Убрать из плейлиста', icon: <ListX {...ic} />, danger: true, onSelect: () => void removeTracksFromPlaylist(p, [track]) })
@@ -127,7 +135,7 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
     label: 'Скопировать ссылку',
     icon: <Copy {...ic} />,
     onSelect: () => {
-      void navigator.clipboard.writeText(`https://vk.com/audio${track.ownerId}_${track.id}`)
+      void copyTrackLink(track)
       toast('Ссылка скопирована', 'info')
     },
   })
