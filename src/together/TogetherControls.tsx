@@ -36,7 +36,7 @@ function Start({ onJoin }: { onJoin(): void }) {
   return (
     <>
       <h3 className={s.title}>Слушать вместе</h3>
-      <p className={s.text}>Друзья слышат то же, что и вы, с той же секунды. Соединение идёт напрямую между компьютерами.</p>
+      <p className={s.text}>Друзья слышат то же, что и вы, с той же секунды. Всё, что передаётся между вами, зашифровано.</p>
       <ErrorLine />
       <div className={s.actions}>
         <Button

@@ -32,6 +32,11 @@ export function formatPlays(n: number): string {
   return `${n} ${pluralRu(n, 'прослушивание', 'прослушивания', 'прослушиваний')}`
 }
 
+/** «Исполнитель — Название (подзаголовок VK)»: what a click on a track title copies. */
+export function fullTrackName(t: { artist: string; title: string; subtitle?: string }): string {
+  return `${t.artist} — ${t.title}${t.subtitle ? ` (${t.subtitle})` : ''}`
+}
+
 export function pluralRu(n: number, one: string, few: string, many: string): string {
   const abs = Math.abs(n) % 100
   const last = abs % 10

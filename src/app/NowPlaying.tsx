@@ -16,7 +16,7 @@ import s from './NowPlaying.module.css'
 import { useRouter } from './router'
 import { WindowControls } from './Titlebar'
 import { LyricsPanel, QueuePanel } from './SidePanels'
-import { openTrackMenu } from './trackActions'
+import { copyTrackName, openTrackMenu } from './trackActions'
 import { useUi, type NowPlayingTab } from './ui'
 
 function Backdrop({ src }: { src?: string }) {
@@ -156,7 +156,9 @@ export function NowPlaying() {
               <div className={s.controls}>
                 <div className={s.titleRow}>
                   <div className={s.titleBlock}>
-                    <div className={`${s.title} truncate`}>{current.title}</div>
+                    <button type="button" className={`${s.title} ${s.copyTitle} truncate`} title="Нажмите, чтобы скопировать название" onClick={() => copyTrackName(current)}>
+                      {current.title}
+                    </button>
                     <button
                       type="button"
                       className={`${s.artist} truncate`}

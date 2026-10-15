@@ -130,6 +130,12 @@
   font: 700 24px/30px var(--font);
   letter-spacing: var(--track-title);
 }
+.copyTitle {
+  display: block;
+  max-width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
 .artist {
   font: 500 19px/24px var(--font);
   color: rgba(255, 255, 255, 0.62);

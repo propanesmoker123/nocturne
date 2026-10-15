@@ -1,6 +1,7 @@
 import { Copy, Disc3, ListEnd, ListPlus, ListX, Mic2, Plus, Send, Trash2 } from 'lucide-react'
 import type { MouseEvent } from 'react'
 import { IconCheck, IconPlay, IconPlus } from '../components/Icons'
+import { fullTrackName } from '../lib/format'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
@@ -48,6 +49,14 @@ export const trackLink = (t: Pick<Track, 'ownerId' | 'id'>) => `https://vk.com/a
 
 export async function copyTrackLink(t: Pick<Track, 'ownerId' | 'id'>) {
   await navigator.clipboard.writeText(trackLink(t))
+}
+
+/** A click on the title in the player copies «Исполнитель — Название». */
+export function copyTrackName(t: Track) {
+  void navigator.clipboard.writeText(fullTrackName(t)).then(
+    () => toast('Название скопировано', 'info'),
+    () => toast('Не получилось скопировать', 'error'),
+  )
 }
 
 interface TrackMenuContext {

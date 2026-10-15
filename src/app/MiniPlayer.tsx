@@ -4,12 +4,13 @@ import { IconButton, Spinner } from '../components/controls'
 import { IconBackward, IconCheck, IconForward, IconLyrics, IconNote, IconPause, IconPlay, IconPlus, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
 import { WaveformScrubber } from '../components/Waveform'
-import { formatTime } from '../lib/format'
+import { formatTime, fullTrackName } from '../lib/format'
 import { usePlayer } from '../player/store'
 import { TogetherBanner, TogetherButton, useControlledBy } from '../together/TogetherControls'
 import { isInLibrary, toggleLibrary } from './library'
 import s from './MiniPlayer.module.css'
 import { useRouter } from './router'
+import { copyTrackName } from './trackActions'
 import { useUi } from './ui'
 
 export function speakerLevel(volume: number, muted: boolean): 0 | 1 | 2 | 3 {
@@ -78,7 +79,9 @@ export function MiniPlayer() {
               </button>
               <div className={s.titles}>
                 <div className={s.title}>
-                  <span className="truncate">{current.title}</span>
+                  <button type="button" className={`${s.copyTitle} truncate`} title={`${fullTrackName(current)} — нажмите, чтобы скопировать`} onClick={() => copyTrackName(current)}>
+                    {current.title}
+                  </button>
                   {current.explicit && <span className={s.explicit} aria-label="Нецензурное">E</span>}
                 </div>
                 <div className={`${s.artist} truncate`}>

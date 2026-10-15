@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { filterTracks, formatCount, formatLongDuration, formatPlays, formatPlaysShort, formatTime, normalizeSearch, pluralRu } from './format'
+import { filterTracks, formatCount, fullTrackName, formatLongDuration, formatPlays, formatPlaysShort, formatTime, normalizeSearch, pluralRu } from './format'
 
 describe('formatTime', () => {
   test('formats minutes and seconds', () => {
@@ -106,5 +106,12 @@ describe('plays', () => {
     expect(formatPlays(3)).toBe('3 прослушивания')
     expect(formatPlays(11)).toBe('11 прослушиваний')
     expect(formatPlays(1_234_567)).toBe('1,2 млн прослушиваний')
+  })
+})
+
+describe('the full name of a track (what a click on the title copies)', () => {
+  test('artist — title, with VK subtitle in brackets when there is one', () => {
+    expect(fullTrackName({ artist: 'elox1m, ghasaii', title: 'CASH & DR' })).toBe('elox1m, ghasaii — CASH & DR')
+    expect(fullTrackName({ artist: 'ulysse', title: 'de-energized', subtitle: 'prod. by negative.creeper' })).toBe('ulysse — de-energized (prod. by negative.creeper)')
   })
 })
