@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { allInOrder, append, createQueue, current, insertNext, move, next, prev, removeAt, setShuffle, upcoming } from './queue'
+import { allInOrder, append, createQueue, current, insertNext, move, moveNext, next, prev, removeAt, setShuffle, upcoming } from './queue'
 
 const ok = () => true
 
@@ -132,6 +132,25 @@ describe('queue editing', () => {
     const q = move(createQueue(['a', 'b', 'c'], 0, false, 'off'), 0, 2)
     expect(current(q)).toBe('a')
     expect(q.pos).toBe(2)
+  })
+  test('moveNext brings an upcoming track right after the current one, without a copy', () => {
+    const q = moveNext(createQueue(['a', 'b', 'c', 'd'], 1, false, 'off'), 3)
+    expect(current(q)).toBe('b')
+    expect(upcoming(q)).toEqual(['d', 'c'])
+    expect(q.order).toHaveLength(4)
+  })
+
+  test('moveNext on a track that already played queues it again right after the current one', () => {
+    const q = moveNext(createQueue(['a', 'b', 'c', 'd'], 2, false, 'off'), 0)
+    expect(current(q)).toBe('c')
+    expect(upcoming(q)).toEqual(['a', 'd'])
+    expect(allInOrder(q).filter((r) => r.part === 'played').map((r) => r.item)).toEqual(['b'])
+  })
+
+  test('moveNext leaves the queue alone for the current track or a position out of range', () => {
+    const q = createQueue(['a', 'b', 'c'], 1, false, 'off')
+    expect(moveNext(q, 1)).toBe(q)
+    expect(moveNext(q, 7)).toBe(q)
   })
 })
 

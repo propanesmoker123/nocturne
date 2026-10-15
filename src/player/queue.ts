@@ -106,6 +106,12 @@ export function move<T>(q: QueueState<T>, from: number, to: number): QueueState<
   return { ...q, order, pos: order.indexOf(curIdx) }
 }
 
+/** Moves the track at `orderPos` (upcoming or already played) to play right after the current one. */
+export function moveNext<T>(q: QueueState<T>, orderPos: number): QueueState<T> {
+  if (orderPos === q.pos) return q
+  return move(q, orderPos, orderPos > q.pos ? q.pos + 1 : q.pos)
+}
+
 export function upcoming<T>(q: QueueState<T>): T[] {
   return q.order.slice(q.pos + 1).map((i) => q.items[i])
 }

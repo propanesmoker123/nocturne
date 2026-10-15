@@ -12,6 +12,7 @@ import * as vk from '../vk/api'
 import type { Track } from '../vk/models'
 import { describeError } from '../vk/errors'
 import s from './SidePanels.module.css'
+import { openTrackMenu } from './trackActions'
 import { X } from 'lucide-react'
 
 function minutesLabel(sec: number): string {
@@ -120,6 +121,7 @@ export function QueuePanel() {
                   setDropAt(null)
                 }}
                 onClick={() => part !== 'current' && jumpTo(orderPos)}
+                onContextMenu={(e) => openTrackMenu(e, t, { inNowPlaying: true, queuePos: orderPos })}
                 onKeyDown={(e) => e.key === 'Enter' && part !== 'current' && jumpTo(orderPos)}
               >
                 <Artwork src={t.cover?.s} size={40} radius={6} seed={t.key} />

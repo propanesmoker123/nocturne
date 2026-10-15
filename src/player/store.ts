@@ -59,6 +59,8 @@ export interface PlayerState {
   addToQueue(tracks: Track[]): void
   removeFromQueue(orderPos: number): void
   moveInQueue(from: number, to: number): void
+  /** Plays the queue entry at `orderPos` right after the current track (moved, not copied). */
+  playNextFromQueue(orderPos: number): void
   jumpTo(orderPos: number): void
   updateTrack(key: string, patch: Partial<Track>): void
 }
@@ -400,6 +402,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
     moveInQueue(from, to) {
       const q = get().queue
       if (q) set({ queue: Q.move(q, from, to) })
+    },
+
+    playNextFromQueue(orderPos) {
+      const q = get().queue
+      if (!q || orderPos === q.pos) return
+      set({ queue: Q.moveNext(q, orderPos) })
+      toast('Будет следующим', 'queue')
     },
 
     jumpTo(orderPos) {

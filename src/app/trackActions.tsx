@@ -48,6 +48,8 @@ interface TrackMenuContext {
   index?: number
   playlist?: Playlist
   inNowPlaying?: boolean
+  /** Opened on a queue row: «Играть следующим» moves that entry instead of adding a copy. */
+  queuePos?: number
 }
 
 export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuItem[] {
@@ -63,10 +65,21 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
       onSelect: () => player.playList(ctx.list ?? [track], ctx.index ?? 0),
     })
   }
+  const queuePos = ctx.queuePos
+  if (queuePos === undefined) {
+    items.push(
+      { label: 'Играть следующим', icon: <ListPlus {...ic} />, disabled: !track.playable, onSelect: () => player.playNext([track]) },
+      { label: 'В конец очереди', icon: <ListEnd {...ic} />, disabled: !track.playable, onSelect: () => player.addToQueue([track]) },
+      { separator: true },
+    )
+  } else if (queuePos !== player.queue?.pos) {
+    items.push(
+      { label: 'Играть следующим', icon: <ListPlus {...ic} />, disabled: !track.playable, onSelect: () => player.playNextFromQueue(queuePos) },
+      { label: 'Убрать из очереди', icon: <ListX {...ic} />, onSelect: () => player.removeFromQueue(queuePos) },
+      { separator: true },
+    )
+  }
   items.push(
-    { label: 'Играть следующим', icon: <ListPlus {...ic} />, disabled: !track.playable, onSelect: () => player.playNext([track]) },
-    { label: 'В конец очереди', icon: <ListEnd {...ic} />, disabled: !track.playable, onSelect: () => player.addToQueue([track]) },
-    { separator: true },
     {
       label: liked ? 'Удалить из Моей музыки' : 'Добавить в Мою музыку',
       icon: liked ? <IconCheck size={16} /> : <IconPlus size={16} />,
