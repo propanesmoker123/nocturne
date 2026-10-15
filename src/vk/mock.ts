@@ -229,13 +229,24 @@ function similarSection(startFrom: string): RawCatalogResponse {
   }
 }
 
+/** «Показать все» under «Слушайте друг друга»: every friend's playlist as a card. */
+function sharedSection(): RawCatalogResponse {
+  const rest = homeRestResponse()
+  return { ...rest, section: { id: 'shared_all', title: 'Слушайте друг друга', blocks: [{ ...rest.section!.blocks![1], id: 'shared_all_list' }] } }
+}
+
 function homeRestResponse(): RawCatalogResponse {
   return {
     section: {
       id: 'home',
       title: 'Главная',
       blocks: [
-        { id: 'h4', data_type: 'none', layout: { name: 'header_extended', title: 'Слушайте друг друга' } },
+        {
+          id: 'h4',
+          data_type: 'none',
+          layout: { name: 'header_extended', title: 'Слушайте друг друга' },
+          actions: [{ action: { type: 'open_section' }, section_id: 'shared_all', title: 'Показать все' }],
+        },
         { id: 'shared', data_type: 'music_recommended_playlists', layout: { name: 'large_slider' }, playlists_ids: SHARED.map((p) => `${p.owner_id}_${p.id}`) },
       ],
     },
@@ -326,6 +337,7 @@ export async function mockCall(method: string, params: Record<string, unknown>):
     case 'catalog.getSection':
       if (params.section_id === 'my_all') return myTracksSection()
       if (params.section_id === 'similar_all') return similarSection(String(params.start_from ?? ''))
+      if (params.section_id === 'shared_all') return sharedSection()
       return params.section_id === 'home' ? homeRestResponse() : exploreResponse()
     case 'audio.add':
       return 99999

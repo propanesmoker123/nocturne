@@ -11,8 +11,8 @@ export type Route =
   | { name: 'friend'; id: number; title?: string }
   | { name: 'artist'; id?: string; artist: string }
   | { name: 'recent' }
-  /** All tracks behind a strip: a VK catalog section (`id`) or a block's own list (`block`). */
-  | { name: 'section'; title: string; id?: string; block?: string }
+  /** Everything behind a strip: a VK catalog section (`id`) or a block's own list (`block`); `cards` — playlists rather than tracks. */
+  | { name: 'section'; title: string; id?: string; block?: string; cards?: boolean }
   | { name: 'settings' }
 
 interface RouterState {

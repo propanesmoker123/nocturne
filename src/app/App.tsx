@@ -51,7 +51,7 @@ function Page({ route }: { route: Route }) {
     case 'recent':
       return <Recent />
     case 'section':
-      return <SectionPage title={route.title} id={route.id} block={route.block} />
+      return <SectionPage title={route.title} id={route.id} block={route.block} cards={route.cards} />
     case 'settings':
       return <SettingsPage />
   }

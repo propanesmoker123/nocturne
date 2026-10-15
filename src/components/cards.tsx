@@ -33,7 +33,7 @@ export function Section({
       <div className={s.sectionHead}>
         <h2 className={s.sectionTitle}>
           {onOpen ? (
-            <button type="button" className={s.sectionLink} onClick={onOpen} title="Все треки">
+            <button type="button" className={s.sectionLink} onClick={onOpen} title="Показать все">
               {title}
               <ChevronRight size={22} strokeWidth={2.6} aria-hidden="true" />
             </button>

@@ -157,6 +157,24 @@ describe('recommended playlists ("Слушайте друг друга")', () =>
     expect(b.color).toBeUndefined()
   })
 
+  test("the header's «Показать все» leads to every recommendation, and so for a playlist strip", () => {
+    const withMore: RawCatalogResponse = {
+      ...raw,
+      section: {
+        ...raw.section!,
+        blocks: [
+          { ...raw.section!.blocks![0], actions: [{ action: { type: 'open_section' }, section_id: 'ALL_SHARED', title: 'Показать все' }] },
+          raw.section!.blocks![1],
+          { id: 'h2', data_type: 'none', layout: { name: 'header', title: 'Альбомы' }, actions: [{ action: { type: 'open_section' }, section_id: 'ALL_ALBUMS' }] },
+          { id: 'p', data_type: 'music_playlists', layout: { name: 'large_slider' }, playlists_ids: ['5_48'] },
+        ],
+      },
+    }
+    const [rec, albums] = parseSection(withMore, 1).blocks
+    expect(rec.kind === 'recommended' && rec.more).toBe('ALL_SHARED')
+    expect(albums.kind === 'playlists' && albums.more).toBe('ALL_ALBUMS')
+  })
+
   test('skips playlists VK sent no match for', () => {
     const block = parseSection(raw, 1).blocks[0]
     expect(block.kind === 'recommended' && block.items.map((i) => i.playlist.id)).toEqual([48, 9])

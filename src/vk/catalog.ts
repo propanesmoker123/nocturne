@@ -77,14 +77,14 @@ function parseBlocks(blocks: RawCatalogBlock[], lookup: Lookup): Block[] {
       if (tracks.length) out.push({ kind: 'tracks', id: b.id, title, tracks, nextFrom: b.next_from, layout, ...(more ? { more } : {}) })
     } else if (b.data_type === 'music_playlists') {
       const playlists = (b.playlists_ids ?? []).map((id) => lookup.playlists.get(baseId(id))).filter((p): p is Playlist => !!p)
-      if (playlists.length) out.push({ kind: 'playlists', id: b.id, title, playlists, nextFrom: b.next_from, layout })
+      if (playlists.length) out.push({ kind: 'playlists', id: b.id, title, playlists, nextFrom: b.next_from, layout, ...(more ? { more } : {}) })
     } else if (b.data_type === 'audio_stream_mixes') {
       const mixId = b.audio_stream_mixes_ids?.[0]
       const mix = mixId ? lookup.mixes.get(mixId) : undefined
       if (mixId && mix) out.push({ kind: 'mix', id: b.id, title: mix.title, mixId, description: mix.description, layout })
     } else if (b.data_type === 'music_recommended_playlists') {
       const items = (b.playlists_ids ?? []).map((id) => recommendedItem(id, lookup)).filter((r): r is RecommendedPlaylist => !!r)
-      if (items.length) out.push({ kind: 'recommended', id: b.id, title, items, nextFrom: b.next_from, layout })
+      if (items.length) out.push({ kind: 'recommended', id: b.id, title, items, nextFrom: b.next_from, layout, ...(more ? { more } : {}) })
     }
     header = ''
     more = undefined

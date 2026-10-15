@@ -160,6 +160,13 @@
   box-shadow: var(--shadow-art);
 }
 
+/* «Слушайте друг друга» in full: the strip's cards in rows */
+.recGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(264px, 1fr));
+  gap: 20px;
+  margin-bottom: 28px;
+}
 .hint {
   font: var(--t-callout);
   color: var(--label-3);

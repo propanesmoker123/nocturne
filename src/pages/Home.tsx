@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from '../app/router'
 import { useScroller } from '../app/scroller'
 import { useSession } from '../app/session'
-import { STRIP_SIZE, fullListRoute, rememberBlock } from '../app/strips'
+import { STRIP_SIZE, fullCardsRoute, fullListRoute, rememberBlock } from '../app/strips'
 import { Button, Spinner } from '../components/controls'
 import { Carousel, CardsSkeleton, EmptyState, MixHero, PlaylistCard, RecommendedCard, Section, TrackListSkeleton } from '../components/cards'
 import { PageHeader } from '../components/PageHeader'
@@ -84,7 +84,7 @@ function TracksBlock({ block }: { block: Extract<Block, { kind: 'tracks' }> }) {
   const target = fullListRoute(block, vk.getMeId())
   const open = target
     ? () => {
-        if (target.name === 'section' && target.block) rememberBlock(target.block, block.tracks)
+        if (target.name === 'section' && target.block) rememberBlock(block)
         useRouter.getState().push(target)
       }
     : undefined
@@ -95,11 +95,22 @@ function TracksBlock({ block }: { block: Extract<Block, { kind: 'tracks' }> }) {
   )
 }
 
+/** The title of a card strip opens all of it (see `fullCardsRoute`). */
+function openCards(block: Extract<Block, { kind: 'recommended' | 'playlists' }>, title: string): (() => void) | undefined {
+  const target = fullCardsRoute({ id: block.id, title, count: block.kind === 'recommended' ? block.items.length : block.playlists.length, more: block.more })
+  if (!target) return undefined
+  return () => {
+    if (target.name === 'section' && target.block) rememberBlock(block)
+    useRouter.getState().push(target)
+  }
+}
+
 export function BlockView({ block }: { block: Block }) {
   if (block.kind === 'mix') return <MixHero title={block.title} description={block.description} />
   if (block.kind === 'recommended') {
+    const title = block.title || 'Слушайте друг друга'
     return (
-      <Section title={block.title || 'Слушайте друг друга'}>
+      <Section title={title} onOpen={openCards(block, title)}>
         <Carousel card={264}>
           {block.items.map((item) => (
             <RecommendedCard key={`${item.playlist.ownerId}_${item.playlist.id}`} item={item} />
@@ -109,8 +120,9 @@ export function BlockView({ block }: { block: Block }) {
     )
   }
   if (block.kind === 'tracks') return <TracksBlock block={block} />
+  const title = block.title || 'Плейлисты'
   return (
-    <Section title={block.title || 'Плейлисты'}>
+    <Section title={title} onOpen={openCards(block, title)}>
       <Carousel card={block.layout === 'large_slider' ? 216 : 176}>
         {block.playlists.map((p) => (
           <PlaylistCard key={`${p.ownerId}_${p.id}`} playlist={p} />
