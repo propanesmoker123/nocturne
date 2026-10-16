@@ -25,6 +25,13 @@ interface SavedSession {
   source: QueueSource | null
 }
 
+export interface PlayListOptions {
+  shuffle?: boolean
+  source?: QueueSource
+  startAt?: number
+  paused?: boolean
+}
+
 export interface PlayerState {
   queue: Q.QueueState<Track> | null
   current: Track | null
@@ -39,9 +46,11 @@ export interface PlayerState {
   shuffle: boolean
   repeat: Q.RepeatMode
   history: Track[]
+  /** Remote mode: the device this player steers, or null while it plays itself. */
+  remoteName: string | null
 
   /** `startAt` (seconds) and `paused` start the first track somewhere other than the top, or without playing. */
-  playList(tracks: Track[], index: number, opts?: { shuffle?: boolean; source?: QueueSource; startAt?: number; paused?: boolean }): void
+  playList(tracks: Track[], index: number, opts?: PlayListOptions): void
   playMix(): Promise<void>
   toggle(): void
   play(): void
@@ -85,6 +94,60 @@ const allow = (intent: PlayerIntent) => !guard || guard(intent)
 export function livePosition(): number {
   const { current, position } = usePlayer.getState()
   return current && loadedKey === current.key ? engine.position : position
+}
+
+/** What a press means when another device plays and this one is its remote. */
+export interface PlayerRemote {
+  toggle(): void
+  play(): void
+  pause(): void
+  next(): void
+  prev(): void
+  seek(sec: number): void
+  setVolume(v: number): void
+  toggleShuffle(): void
+  cycleRepeat(): void
+  playList(tracks: Track[], index: number, opts?: PlayListOptions): void
+  playMix(): void
+}
+
+/** What the steered device plays, as this player shows it. */
+export interface RemoteView {
+  name: string
+  track: Track | null
+  position: number
+  duration: number
+  playing: boolean
+  volume: number
+  shuffle: boolean
+  repeat: Q.RepeatMode
+}
+
+let remote: PlayerRemote | null = null
+let beforeRemote: Pick<PlayerState, 'queue' | 'current' | 'source' | 'position' | 'duration' | 'volume' | 'muted' | 'shuffle' | 'repeat'> | null = null
+
+export const remoteActive = () => remote !== null
+
+/**
+ * Remote mode: another device plays, every press goes to `r`, and the player shows that device
+ * (`showRemote`). This device's own audio stops; null brings its player back exactly as it was.
+ */
+export function setPlayerRemote(r: PlayerRemote | null) {
+  if (r && !remote) {
+    const s = usePlayer.getState()
+    beforeRemote = { queue: s.queue, current: s.current, source: s.source, position: s.position, duration: s.duration, volume: s.volume, muted: s.muted, shuffle: s.shuffle, repeat: s.repeat }
+    engine.pause()
+  }
+  if (!r && remote && beforeRemote) {
+    usePlayer.setState({ ...beforeRemote, isPlaying: false, isLoading: false, remoteName: null })
+    beforeRemote = null
+  }
+  remote = r
+}
+
+export function showRemote(v: RemoteView) {
+  if (!remote) return
+  usePlayer.setState({ remoteName: v.name, queue: null, current: v.track, position: v.position, duration: v.duration, isPlaying: v.playing, isLoading: false, volume: v.volume, shuffle: v.shuffle, repeat: v.repeat })
 }
 
 /** Warm the image cache for the next track so the queue card and player swap covers instantly. */
@@ -183,6 +246,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
   }
 
   engine.on('time', () => {
+    if (remote) return
     const position = engine.position
     const duration = engine.duration || get().current?.duration || 0
     set({ position, duration, buffered: engine.buffered })
@@ -195,15 +259,17 @@ export const usePlayer = create<PlayerState>((set, get) => {
       addToHistory(cur)
     }
   })
-  engine.on('state', () => set({ isPlaying: engine.playing }))
+  engine.on('state', () => !remote && set({ isPlaying: engine.playing }))
   engine.on('loading', () => {
+    if (remote) return
     const waiting = engine.waiting
     set({ isLoading: waiting })
     const cur = get().current
     if (!waiting && engine.playing && cur) consecutiveFailures = 0
   })
-  engine.on('ended', () => get().next(false))
+  engine.on('ended', () => !remote && get().next(false))
   engine.on('error', () => {
+    if (remote) return
     const t = get().current
     if (!t) return
     journal('player', `playback error: ${engine.lastError || 'unknown'}${retried.has(t.key) ? ', skipping track' : ', retrying with a fresh link'}`)
@@ -230,8 +296,10 @@ export const usePlayer = create<PlayerState>((set, get) => {
     shuffle: false,
     repeat: 'off',
     history: [],
+    remoteName: null,
 
     playList(tracks, index, opts) {
+      if (remote) return remote.playList(tracks, index, opts)
       if (!tracks.length || !allow('pick')) return
       const shuffle = opts?.shuffle ?? get().shuffle
       const start = opts?.shuffle ? Math.floor(Math.random() * tracks.length) : index
@@ -251,6 +319,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     async playMix() {
+      if (remote) return remote.playMix()
       try {
         const tracks = await vk.getStreamMix(20)
         get().playList(tracks, 0, { shuffle: false, source: { kind: 'mix', label: 'VK Микс' } })
@@ -261,6 +330,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     toggle() {
+      if (remote) return remote.toggle()
       const cur = get().current
       if (!cur) return
       if (!allow(loadedKey === cur.key && engine.playing ? 'pause' : 'resume')) return
@@ -273,6 +343,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     play() {
+      if (remote) return remote.play()
       const cur = get().current
       if (!cur || !allow('resume')) return
       if (loadedKey !== cur.key) void loadCurrent(true, get().position)
@@ -280,11 +351,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     pause() {
+      if (remote) return remote.pause()
       if (!allow('pause')) return
       engine.pause()
     },
 
     next(manual = true) {
+      if (remote) return remote.next()
       const q = get().queue
       if (!q || (manual && !allow('skip'))) return
       const n = Q.next(q, isPlayable, manual)
@@ -314,6 +387,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     prev() {
+      if (remote) return remote.prev()
       const q = get().queue
       if (!q || !allow('skip')) return
       if (prevAction(engine.position) === 'restart') {
@@ -330,6 +404,10 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     seek(sec) {
+      if (remote) {
+        set({ position: sec })
+        return remote.seek(sec)
+      }
       const cur = get().current
       if (!cur || !allow('seek')) return
       if (loadedKey !== cur.key) {
@@ -342,11 +420,15 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     seekBy(delta) {
       const d = get().duration || get().current?.duration || 0
-      get().seek(Math.min(Math.max(0, engine.position + delta), Math.max(0, d - 1)))
+      get().seek(Math.min(Math.max(0, livePosition() + delta), Math.max(0, d - 1)))
     },
 
     setVolume(v) {
       const volume = Math.min(1, Math.max(0, v))
+      if (remote) {
+        set({ volume })
+        return remote.setVolume(volume)
+      }
       set({ volume, muted: volume === 0 ? get().muted : false })
       engine.setVolume(volume, get().muted)
     },
@@ -356,12 +438,14 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     toggleMute() {
+      if (remote) return
       const muted = !get().muted
       set({ muted })
       engine.setVolume(get().volume, muted)
     },
 
     toggleShuffle() {
+      if (remote) return remote.toggleShuffle()
       if (!allow('mode')) return
       const shuffle = !get().shuffle
       const q = get().queue
@@ -369,6 +453,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     cycleRepeat() {
+      if (remote) return remote.cycleRepeat()
       if (!allow('mode')) return
       const order: Q.RepeatMode[] = ['off', 'all', 'one']
       const repeat = order[(order.indexOf(get().repeat) + 1) % order.length]
@@ -377,6 +462,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     playNext(tracks) {
+      if (remote) return toast('Очередь на другом устройстве отсюда пока не меняется', 'info')
       const q = get().queue
       if (!q) return get().playList(tracks, 0)
       set({ queue: Q.insertNext(q, tracks) })
@@ -384,6 +470,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     addToQueue(tracks) {
+      if (remote) return toast('Очередь на другом устройстве отсюда пока не меняется', 'info')
       const q = get().queue
       if (!q) return get().playList(tracks, 0)
       set({ queue: Q.append(q, tracks) })
@@ -391,6 +478,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     removeFromQueue(orderPos) {
+      if (remote) return
       const q = get().queue
       if (!q) return
       const wasCurrent = orderPos === q.pos
@@ -400,11 +488,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     moveInQueue(from, to) {
+      if (remote) return
       const q = get().queue
       if (q) set({ queue: Q.move(q, from, to) })
     },
 
     playNextFromQueue(orderPos) {
+      if (remote) return
       const q = get().queue
       if (!q || orderPos === q.pos) return
       set({ queue: Q.moveNext(q, orderPos) })
@@ -412,6 +502,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     jumpTo(orderPos) {
+      if (remote) return
       const q = get().queue
       if (!q || orderPos < 0 || orderPos >= q.order.length || !allow('pick')) return
       set({ queue: { ...q, pos: orderPos } })
@@ -472,6 +563,8 @@ export async function initPlayer() {
   let lastKey = ''
   let lastSave = 0
   usePlayer.subscribe((s, prev) => {
+    // what another device plays is never saved as this device's session
+    if (remote) return
     const now = Date.now()
     const important = s.current?.key !== lastKey || s.isPlaying !== prev.isPlaying || s.queue !== prev.queue || s.volume !== prev.volume || s.repeat !== prev.repeat
     if (important || now - lastSave > 15000) {
