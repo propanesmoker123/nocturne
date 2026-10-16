@@ -308,15 +308,21 @@ export async function joinSession(input: string) {
     if (resolvingKey === key) return
     resolvingKey = key
     let track: Track | null = null
+    let offline = false
     try {
       track = await resolveTrack(w)
     } catch {
-      track = null
+      offline = true
     }
     if (run !== r || resolvingKey !== key) return
     resolvingKey = null
     // The host moved on while we were looking: follow the newer word instead
     if (!host?.track || wireKey(host.track) !== key) return apply()
+    // VK did not answer (no internet for a moment): the host's next word tries again
+    if (offline) {
+      followingKey = null
+      return
+    }
     if (!track) {
       unavailableKey = key
       followingKey = null
@@ -368,7 +374,8 @@ export async function joinSession(input: string) {
     const played = position - lastPosition - seekedBy
     lastPosition = position
     seekedBy = 0
-    const expected = !!host?.playing && !!host.track && followingKey === wireKey(host.track) && !localPaused && resolvingKey === null
+    const online = typeof navigator === 'undefined' || navigator.onLine !== false
+    const expected = online && useTogether.getState().phase === 'live' && !!host?.playing && !!host.track && followingKey === wireKey(host.track) && !localPaused && resolvingKey === null
     if (!expected || (p.isPlaying && played > 0.5)) return void (heardAt = Date.now())
     if (Date.now() - heardAt < SILENT_MS) return
     heardAt = Date.now()
