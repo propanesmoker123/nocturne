@@ -24,38 +24,53 @@ interface UpdateState {
   install(): Promise<void>
 }
 
-type Pending = { downloadAndInstall(cb: (e: { event: string; data?: { contentLength?: number; chunkLength?: number } }) => void): Promise<void> }
+type Pending = { version: string; body?: string; downloadAndInstall(cb: (e: { event: string; data?: { contentLength?: number; chunkLength?: number } }) => void): Promise<void> }
 let pending: Pending | null = null
 let lastCheck: number | null = null
+
+async function latest(): Promise<Pending | null> {
+  const { check } = await import('@tauri-apps/plugin-updater')
+  return (await check()) as Pending | null
+}
 
 export const useUpdates = create<UpdateState>((set, get) => ({
   phase: 'idle',
   progress: 0,
   async check(manual = false, gap = CHECK_EVERY_MS) {
     if (!isTauri() || get().phase === 'downloading') return
-    // a found update stays on screen; background checks never flash «checking»
-    if (!manual && (get().phase === 'available' || !shouldCheck(lastCheck, Date.now(), gap))) return
+    if (!manual && !shouldCheck(lastCheck, Date.now(), gap)) return
     lastCheck = Date.now()
-    if (manual) set({ phase: 'checking', error: undefined })
+    // background checks never flash «checking»; a found update stays on screen, a newer one replaces it
+    const offered = get().phase === 'available'
+    if (manual && !offered) set({ phase: 'checking', error: undefined })
     try {
-      const { check } = await import('@tauri-apps/plugin-updater')
-      const update = await check()
+      const update = await latest()
       if (update) {
-        journal('update', `available: ${update.version}`)
-        pending = update as unknown as Pending
+        if (update.version !== get().version) journal('update', `available: ${update.version}`)
+        pending = update
         set({ phase: 'available', version: update.version, notes: update.body })
-      } else {
+      } else if (!offered) {
         set({ phase: 'none' })
       }
     } catch (e) {
       journal('update', `check failed: ${String(e)}`)
-      // No release published yet / offline: stay quiet unless the user asked.
-      if (manual) set({ phase: 'error', error: String(e) })
+      // No release published yet / offline: stay quiet unless the user asked (an offered update stays)
+      if (manual && !offered) set({ phase: 'error', error: String(e) })
     }
   },
   async install() {
     if (!pending) return
     set({ phase: 'downloading', progress: 0 })
+    // a release or two may have come out since this one was found: the newest goes in, not every one in turn
+    try {
+      const fresh = await latest()
+      if (fresh) {
+        pending = fresh
+        set({ version: fresh.version, notes: fresh.body })
+      }
+    } catch {
+      // offline for a moment: the one found before still installs
+    }
     let total = 0
     let done = 0
     try {
