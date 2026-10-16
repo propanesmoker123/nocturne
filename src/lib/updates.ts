@@ -45,6 +45,8 @@ export const useUpdates = create<UpdateState>((set, get) => ({
     if (manual && !offered) set({ phase: 'checking', error: undefined })
     try {
       const update = await latest()
+      // the person pressed «Обновить» meanwhile: the download stays on screen
+      if (get().phase === 'downloading') return
       if (update) {
         if (update.version !== get().version) journal('update', `available: ${update.version}`)
         pending = update
@@ -55,7 +57,7 @@ export const useUpdates = create<UpdateState>((set, get) => ({
     } catch (e) {
       journal('update', `check failed: ${String(e)}`)
       // No release published yet / offline: stay quiet unless the user asked (an offered update stays)
-      if (manual && !offered) set({ phase: 'error', error: String(e) })
+      if (manual && !offered && get().phase !== 'downloading') set({ phase: 'error', error: String(e) })
     }
   },
   async install() {
