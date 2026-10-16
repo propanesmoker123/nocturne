@@ -1,5 +1,5 @@
-import { schnorr } from '@noble/secp256k1'
-import { roomKey, seal, signedEvent, unseal, type EventKeys } from './seal'
+import { openRelayBus } from '../lib/relayBus'
+import { roomKey } from './seal'
 import type { Handshake, Message, Role } from './protocol'
 import { RELAYS, type OpenTransport, type TransportEvents } from './transport'
 
@@ -10,8 +10,7 @@ import { RELAYS, type OpenTransport, type TransportEvents } from './transport'
  * each other's IP addresses. A few messages a minute; relays are not asked to store any of them.
  */
 
-/** Ephemeral kind (20000–29999): relays pass such events on and do not keep them. */
-export const KIND = 25050
+export { KIND } from '../lib/relayBus'
 
 export interface RelayOptions {
   relays?: string[]
@@ -38,11 +37,8 @@ interface Envelope {
   msg?: unknown
 }
 
-const OPEN = 1
-const MAX_CONTENT = 16 * 1024
 /** Copies of an old message are ignored; one older than this is not even looked at. */
 const MAX_AGE_MS = 10 * 60_000
-const SEEN_LIMIT = 600
 
 const randomHex = (bytes: number) => Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, '0')).join('')
 
@@ -64,13 +60,7 @@ export function makeRelayTransport(opts: RelayOptions = {}): OpenTransport {
   const { relays = RELAYS, WebSocketImpl = globalThis.WebSocket, silenceMs = 30_000, joinEveryMs = 3000, keepAliveMs = 10_000, tickMs = 1000 } = opts
 
   return async ({ roomId, password, role }, ev: TransportEvents) => {
-    const key = await roomKey(password)
-    const keys: EventKeys = schnorr.keygen()
     const me = randomHex(8)
-    const topic = `nocturne-${roomId}`
-    const subId = `n${me.slice(0, 8)}`
-    const sockets = new Set<WebSocket>()
-    const seen = new Set<string>()
     const banned = new Set<string>()
     /** Who we talk with and when they last said anything: listeners (host side) or the host. */
     const peers = new Map<string, number>()
@@ -80,73 +70,27 @@ export function makeRelayTransport(opts: RelayOptions = {}): OpenTransport {
     let lastSent = 0
     const timers: ReturnType<typeof setInterval>[] = []
 
-    const remember = (id: string) => {
-      seen.add(id)
-      if (seen.size > SEEN_LIMIT) seen.delete(seen.values().next().value!)
-    }
+    const bus = openRelayBus({
+      relays,
+      WebSocketImpl,
+      topic: `nocturne-${roomId}`,
+      key: await roomKey(password),
+      onOpen: () => {
+        if (role === 'listener' && !hostHere) void publish({ ctl: 'join' })
+      },
+      onData: (env) => {
+        if (closed || !isEnvelope(env) || env.from === me || banned.has(env.from)) return
+        if (Math.abs(Date.now() - env.at) > MAX_AGE_MS) return
+        if (env.to !== undefined && env.to !== me) return
+        if (role === 'host') onListener(env)
+        else onHost(env)
+      },
+    })
 
     const publish = async (extra: Partial<Envelope>) => {
       if (closed && extra.ctl !== 'leave') return
       lastSent = Date.now()
-      const env: Envelope = { v: 1, from: me, role, at: Date.now(), ...extra }
-      const event = await signedEvent(keys, KIND, topic, await seal(key, env))
-      const frame = JSON.stringify(['EVENT', event])
-      for (const ws of sockets) if (ws.readyState === OPEN) ws.send(frame)
-    }
-
-    const subscribe = (ws: WebSocket) =>
-      ws.send(JSON.stringify(['REQ', subId, { kinds: [KIND], '#x': [topic], since: Math.floor(Date.now() / 1000) - 10 }]))
-
-    const connect = (url: string, attempt = 0) => {
-      if (closed) return
-      let ws: WebSocket
-      try {
-        ws = new WebSocketImpl(url)
-      } catch {
-        return void setTimeout(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
-      }
-      ws.addEventListener('open', () => {
-        attempt = 0
-        sockets.add(ws)
-        subscribe(ws)
-        if (role === 'listener' && !hostHere) void publish({ ctl: 'join' })
-      })
-      ws.addEventListener('message', (e) => void onFrame(String((e as MessageEvent).data)))
-      ws.addEventListener('close', () => {
-        sockets.delete(ws)
-        if (!closed) setTimeout(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
-      })
-      ws.addEventListener('error', () => {})
-    }
-
-    const onFrame = async (raw: string) => {
-      let frame: unknown
-      try {
-        frame = JSON.parse(raw)
-      } catch {
-        return
-      }
-      if (!Array.isArray(frame)) return
-      if (frame[0] === 'CLOSED' && frame[1] === subId) {
-        // The relay dropped our subscription (limits, restarts): ask again a bit later
-        return void setTimeout(() => {
-          for (const ws of sockets) if (ws.readyState === OPEN) subscribe(ws)
-        }, 5000)
-      }
-      if (frame[0] !== 'EVENT' || frame[1] !== subId) return
-      const event = frame[2] as { content?: unknown } | undefined
-      const content = event?.content
-      if (typeof content !== 'string' || content.length > MAX_CONTENT) return
-      // The same sealed message comes from every relay, and could be re-posted: one look only
-      const nonce = content.slice(0, 16)
-      if (seen.has(nonce)) return
-      remember(nonce)
-      const env = await unseal(key, content)
-      if (closed || !isEnvelope(env) || env.from === me || banned.has(env.from)) return
-      if (Math.abs(Date.now() - env.at) > MAX_AGE_MS) return
-      if (env.to !== undefined && env.to !== me) return
-      if (role === 'host') onListener(env)
-      else onHost(env)
+      await bus.publish({ v: 1, from: me, role, at: Date.now(), ...extra })
     }
 
     const onListener = (env: Envelope) => {
@@ -227,21 +171,16 @@ export function makeRelayTransport(opts: RelayOptions = {}): OpenTransport {
       )
     }
 
-    for (const url of relays) connect(url)
-
     return {
       send: (msg: Message, to?: string) => void publish({ msg, ...(to ? { to } : role === 'listener' && host ? { to: host } : {}) }),
-      relaysUp: async () => [...sockets].some((ws) => ws.readyState === OPEN),
+      relaysUp: async () => bus.up(),
       kick: (peer: string) => {
         banned.add(peer)
         if (peers.delete(peer)) ev.onPeerLeave(peer)
       },
       leave: () => {
         if (closed) return
-        void publish({ ctl: 'leave' }).finally(() => {
-          for (const ws of sockets) ws.close()
-          sockets.clear()
-        })
+        void publish({ ctl: 'leave' }).finally(() => bus.close())
         closed = true
         for (const t of timers) clearInterval(t)
       },
