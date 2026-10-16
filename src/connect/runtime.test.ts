@@ -28,7 +28,9 @@ const h = vi.hoisted(() => {
       engine.playing = false
       listeners.get('state')?.forEach((f) => f())
     },
-    seek() {},
+    seek(sec: number) {
+      engine.position = sec
+    },
     setVolume() {},
     position: 0,
     duration: 0,
@@ -48,7 +50,7 @@ const track = (id: number) => ({ id, ownerId: 1, key: `1_${id}`, artist: 'A', ti
 vi.mock('../vk/api', () => ({ getByIds: async (ids: { id: number }[]) => ids.map((i) => track(i.id)), getStreamMix: async () => [] }))
 
 const { usePlayer } = await import('../player/store')
-const { useDevices } = await import('./devices')
+const { useDevices, unlinkHere } = await import('./devices')
 const { useTogether } = await import('../together/session')
 const { startConnect, stopConnect, tickConnect, playOn } = await import('./runtime')
 
@@ -159,5 +161,73 @@ describe('linked devices and the player', () => {
     await settle()
     expect(useDevices.getState().remoteId).toBeNull()
     expect(h.calls.load).toEqual([])
+  })
+
+  test('unlinking while steering brings this player back as it was', async () => {
+    usePlayer.getState().playList([track(1)], 0, { paused: true })
+    await settle()
+    hear({ type: 'presence', presence: presence() }, PHONE)
+    expect(usePlayer.getState().remoteName).toBe('Телефон')
+    unlinkHere()
+    await settle()
+    expect(useDevices.getState().remoteId).toBeNull()
+    expect(usePlayer.getState().remoteName).toBeNull()
+    expect(usePlayer.getState().current?.key).toBe('1_1')
+  })
+
+  test('starting «Слушать вместе» while steering lets the other device go', () => {
+    hear({ type: 'presence', presence: presence() }, PHONE)
+    useTogether.setState({ role: 'listener' })
+    expect(useDevices.getState().remoteId).toBeNull()
+    expect(usePlayer.getState().remoteName).toBeNull()
+  })
+
+  test('a device heard for the first time gets this one’s presence at once', async () => {
+    await new Promise((r) => setTimeout(r, 300))
+    sent = []
+    hear({ type: 'presence', presence: presence({ playing: false, since: 0 }) }, PHONE)
+    await new Promise((r) => setTimeout(r, 350))
+    expect(sent.some((s) => s.msg.type === 'presence')).toBe(true)
+  })
+
+  test('a seek on the playing device is announced at once, not with the next heartbeat', async () => {
+    usePlayer.getState().playList([track(1)], 0)
+    await settle()
+    await new Promise((r) => setTimeout(r, 300))
+    sent = []
+    hear({ type: 'command', action: 'seek', value: 42 }, PHONE)
+    await new Promise((r) => setTimeout(r, 350))
+    expect(sent.find((s) => s.msg.type === 'presence')?.msg).toMatchObject({ presence: { position: 42 } })
+  })
+
+  test('a seek on the remote stays where it was dragged until the device answers', async () => {
+    hear({ type: 'presence', presence: presence({ position: 20 }) }, PHONE)
+    usePlayer.getState().seek(70)
+    await new Promise((r) => setTimeout(r, 700))
+    expect(usePlayer.getState().position).toBeGreaterThanOrEqual(70)
+  })
+
+  test('a volume drag on the remote is thinned out, and its last value always goes', async () => {
+    hear({ type: 'presence', presence: presence() }, PHONE)
+    sent = []
+    for (let i = 1; i <= 30; i++) usePlayer.getState().setVolume(i / 30)
+    await new Promise((r) => setTimeout(r, 400))
+    const volumes = sent.filter((s) => s.msg.type === 'command' && s.msg.action === 'volume')
+    expect(volumes.length).toBeLessThanOrEqual(4)
+    expect(volumes.at(-1)?.msg).toMatchObject({ value: 1 })
+  })
+
+  test('VK Mix moves as VK Mix, not as a list that runs out', async () => {
+    hear({ type: 'play', tracks: [w(1), w(2)], index: 0, position: 0, playing: true, shuffle: false, repeat: 'off', mix: true, label: 'VK Микс' }, PHONE)
+    await settle()
+    expect(usePlayer.getState().source).toMatchObject({ kind: 'mix', label: 'VK Микс' })
+  })
+
+  test('picking a track on the remote keeps the shuffle mode of the steered device', () => {
+    hear({ type: 'presence', presence: presence({ shuffle: true }) }, PHONE)
+    usePlayer.getState().playList([track(1), track(2), track(3)], 1)
+    const order = sent.find((s) => s.msg.type === 'play')!.msg
+    expect(order).toMatchObject({ shuffle: true, index: 1 })
+    expect(order).not.toHaveProperty('randomStart')
   })
 })

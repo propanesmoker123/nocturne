@@ -51,3 +51,16 @@ export function remoteHolds(d: SeenDevice | undefined, now: number): boolean {
   if (!d || now - d.seen > OFFLINE_MS) return false
   return d.presence.playing || now - d.lastPlaying <= IDLE_REMOTE_MS
 }
+
+/** Plaintext budget of one order: sealed (AES-GCM) and base64'd it must stay under the relays' 16 KB. */
+export const ORDER_BUDGET = 11_500
+
+/** Drops tracks from the ends (later ones first) until the order fits one sealed message; the current one always stays. */
+export function fitOrder<O extends { tracks: unknown[]; index: number }>(order: O, max = ORDER_BUDGET): O {
+  const size = (o: O) => new TextEncoder().encode(JSON.stringify(o)).length
+  let fitted = order
+  while (fitted.tracks.length > 1 && size(fitted) > max) {
+    fitted = fitted.tracks.length - 1 > fitted.index ? { ...fitted, tracks: fitted.tracks.slice(0, -1) } : { ...fitted, tracks: fitted.tracks.slice(1), index: fitted.index - 1 }
+  }
+  return fitted
+}

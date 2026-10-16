@@ -43,4 +43,11 @@ describe('what devices may say to each other', () => {
     expect(parseConnectMessage('presence')).toBeNull()
     expect(parseConnectMessage(null)).toBeNull()
   })
+
+  test('an order says whether it is VK Mix and whether to start anywhere (shuffle play)', () => {
+    const order = { type: 'play', tracks: [w(1)], index: 0, position: 0, playing: true, shuffle: true, repeat: 'off' }
+    expect(parseConnectMessage({ ...order, mix: true, randomStart: true })).toMatchObject({ mix: true, randomStart: true })
+    expect(parseConnectMessage(order)).not.toHaveProperty('mix')
+    expect(parseConnectMessage({ ...order, mix: 'yes' })).toBeNull()
+  })
 })

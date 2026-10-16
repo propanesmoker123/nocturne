@@ -9,6 +9,8 @@
   z-index: 5;
   width: 340px;
   display: grid;
+  /* the column is the card's width, never the longest line inside it */
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   padding: 16px;
   border-radius: 18px;
@@ -41,6 +43,7 @@
 }
 .link {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   justify-items: center;
   gap: 10px;
 }

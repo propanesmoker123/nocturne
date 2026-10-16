@@ -93,6 +93,8 @@ const allow = (intent: PlayerIntent) => !guard || guard(intent)
 /** The position the audio is really at, without waiting for the next time update. */
 export function livePosition(): number {
   const { current, position } = usePlayer.getState()
+  // in remote mode this engine may still hold the same track, paused somewhere else
+  if (remote) return position
   return current && loadedKey === current.key ? engine.position : position
 }
 
@@ -136,7 +138,11 @@ export function setPlayerRemote(r: PlayerRemote | null) {
   if (r && !remote) {
     const s = usePlayer.getState()
     beforeRemote = { queue: s.queue, current: s.current, source: s.source, position: s.position, duration: s.duration, volume: s.volume, muted: s.muted, shuffle: s.shuffle, repeat: s.repeat }
-    engine.pause()
+    remote = r
+    // a load still on its way never starts, and this device's own audio stops for good
+    loadToken++
+    loadedKey = null
+    engine.stop()
   }
   if (!r && remote && beforeRemote) {
     usePlayer.setState({ ...beforeRemote, isPlaying: false, isLoading: false, remoteName: null })
@@ -215,6 +221,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       onFailure(track, 'Трек недоступен в вашем регионе или удалён')
       return
     }
+    if (remote) return
     loadedKey = track.key
     beginWaveform(track.key, track.duration)
     engine.load(track.url, startAt, autoplay)

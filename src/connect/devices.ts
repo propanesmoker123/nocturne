@@ -53,7 +53,8 @@ export function ensureCode(): string {
 export function joinGroup(input: string): boolean {
   const code = normalizeCode(input)
   if (!code) return false
-  useDevices.setState({ code, devices: {}, remoteId: null })
+  // remote mode is left by the runtime when the channel closes, never by just forgetting it here
+  useDevices.setState({ code, devices: {} })
   save()
   return true
 }
@@ -67,12 +68,12 @@ export function renameDevice(name: string) {
 
 /** This device leaves the group; the others stay together. */
 export function unlinkHere() {
-  useDevices.setState({ code: null, devices: {}, remoteId: null })
+  useDevices.setState({ code: null, devices: {} })
   save()
 }
 
 /** A new code here: every other device loses the link and has to be linked again. */
 export function unlinkAll() {
-  useDevices.setState({ code: newGroupCode(), devices: {}, remoteId: null })
+  useDevices.setState({ code: newGroupCode(), devices: {} })
   save()
 }

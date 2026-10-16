@@ -101,7 +101,16 @@ export function DevicesButton() {
   }, [open])
   return (
     <div ref={box} className={s.anchor}>
-      <IconButton size={32} label={remoteName ? `Играет на устройстве «${remoteName}»` : 'Устройства'} active={open || !!remoteName} onClick={() => setOpen(!open)}>
+      <IconButton
+        size={32}
+        label={remoteName ? `Играет на устройстве «${remoteName}»` : 'Устройства'}
+        active={open || !!remoteName}
+        onClick={() => {
+          // not linked yet: the card opens on the code and QR (its first render makes the code)
+          if (!open && !code) setLinking(true)
+          setOpen(!open)
+        }}
+      >
         <MonitorSmartphone size={18} strokeWidth={2} />
       </IconButton>
       {open && (

@@ -41,6 +41,10 @@ export interface PlayOrder {
   shuffle: boolean
   repeat: Repeat
   label?: string
+  /** VK Mix: the receiver keeps it going instead of playing a list that runs out. */
+  mix?: boolean
+  /** «Перемешать»: start anywhere, not at `index`. */
+  randomStart?: boolean
 }
 
 export type ConnectMessage =
@@ -79,7 +83,8 @@ function playOrder(v: Record<string, unknown>): PlayOrder | null {
   if (!int(v.index, 0, tracks.length - 1) || !num(v.position, 0, MAX_SECONDS) || typeof v.playing !== 'boolean' || typeof v.shuffle !== 'boolean' || !repeat(v.repeat)) return null
   const label = v.label === undefined ? undefined : text(v.label, 100)
   if (label === null) return null
-  return { tracks: tracks as WireTrack[], index: v.index, position: v.position, playing: v.playing, shuffle: v.shuffle, repeat: v.repeat, ...(label ? { label } : {}) }
+  if ((v.mix !== undefined && typeof v.mix !== 'boolean') || (v.randomStart !== undefined && typeof v.randomStart !== 'boolean')) return null
+  return { tracks: tracks as WireTrack[], index: v.index, position: v.position, playing: v.playing, shuffle: v.shuffle, repeat: v.repeat, ...(label ? { label } : {}), ...(v.mix ? { mix: true } : {}), ...(v.randomStart ? { randomStart: true } : {}) }
 }
 
 /** The message, cleaned, or null when it must be ignored. */

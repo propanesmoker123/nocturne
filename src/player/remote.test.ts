@@ -39,7 +39,7 @@ vi.mock('../lib/journal', () => ({ journal: () => {} }))
 vi.mock('../lib/persist', () => ({ loadJSON: async () => null, saveJSON: async () => {}, debouncedSaver: () => ({ save: (d: unknown) => h.saves.push(d), flush() {} }) }))
 vi.mock('../vk/api', () => ({ getByIds: async (ts: Track[]) => ts, getStreamMix: async () => [] }))
 
-const { usePlayer, setPlayerRemote, showRemote, initPlayer } = await import('./store')
+const { usePlayer, setPlayerRemote, showRemote, initPlayer, livePosition } = await import('./store')
 
 const t = (id: number) => ({ id, ownerId: 1, key: `1_${id}`, artist: 'A', title: `T${id}`, duration: 100, url: `https://cdn/${id}`, urlFetchedAt: Date.now(), explicit: false, artists: [{ name: 'A' }], playable: true, hasLyrics: false, liked: false }) as Track
 const settle = () => new Promise((r) => setTimeout(r, 50))
@@ -108,5 +108,23 @@ describe('the remote mode of the player', () => {
     showRemote(VIEW)
     showRemote({ ...VIEW, track: t(10) })
     expect(h.saves.length).toBe(before)
+  })
+
+  test('a local load still waiting for a fresh link does not start once the player steers another device', async () => {
+    const stale = { ...t(5), urlFetchedAt: 0 }
+    usePlayer.getState().playList([stale], 0)
+    setPlayerRemote(remote().r)
+    await settle()
+    expect(h.calls.load).toEqual([])
+  })
+
+  test('the live position in remote mode is the steered device’s, never this engine’s', async () => {
+    usePlayer.getState().playList([t(1)], 0)
+    await settle()
+    h.engine.position = 99
+    setPlayerRemote(remote().r)
+    showRemote({ ...VIEW, track: t(1), position: 12 })
+    expect(livePosition()).toBe(12)
+    h.engine.position = 0
   })
 })

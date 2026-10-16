@@ -31,6 +31,8 @@ export interface ConnectBus {
 export interface ConnectBusOptions {
   relays?: string[]
   WebSocketImpl?: typeof WebSocket
+  /** A relay connected: a good moment to say who we are. */
+  onOpen?(): void
 }
 
 export async function openConnectBus(code: string, me: string, onMessage: (msg: ConnectMessage, from: string) => void, opts: ConnectBusOptions = {}): Promise<ConnectBus> {
@@ -38,6 +40,7 @@ export async function openConnectBus(code: string, me: string, onMessage: (msg: 
   const bus = openRelayBus({
     relays: opts.relays ?? CONNECT_RELAYS,
     WebSocketImpl: opts.WebSocketImpl,
+    onOpen: opts.onOpen,
     topic: await groupTopic(code),
     key: await groupKey(code),
     onData: (data) => {

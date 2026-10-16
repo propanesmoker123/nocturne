@@ -1,14 +1,14 @@
 import { toast } from '../app/toast'
 import { journal } from '../lib/journal'
 import { isAndroid } from '../lib/platform'
-import { livePosition, setPlayerRemote, showRemote, usePlayer, type PlayerRemote } from '../player/store'
+import { livePosition, remoteActive, setPlayerRemote, showRemote, usePlayer, type PlayerRemote } from '../player/store'
 import type { WireTrack } from '../together/protocol'
 import { toWire, useTogether } from '../together/session'
 import * as vk from '../vk/api'
 import type { Track } from '../vk/models'
 import { openConnectBus, type ConnectBus } from './bus'
 import { loadDevices, useDevices } from './devices'
-import { queueWindow, remoteHolds, remotePosition, shouldYield, OFFLINE_MS, type SeenDevice } from './logic'
+import { fitOrder, queueWindow, remoteHolds, remotePosition, shouldYield, OFFLINE_MS, type SeenDevice } from './logic'
 import { MAX_PLAY_TRACKS, type CommandAction, type ConnectMessage, type PlayOrder, type Presence } from './protocol'
 
 /**
@@ -17,7 +17,9 @@ import { MAX_PLAY_TRACKS, type CommandAction, type ConnectMessage, type PlayOrde
  * a remote while another device plays — the way Spotify Connect does.
  */
 
-export type OpenBus = (code: string, me: string, onMessage: (msg: ConnectMessage, from: string) => void) => Promise<ConnectBus>
+export type OpenBus = (code: string, me: string, onMessage: (msg: ConnectMessage, from: string) => void, onOpen: () => void) => Promise<ConnectBus>
+
+const openBusDefault: OpenBus = (code, me, onMessage, onOpen) => openConnectBus(code, me, onMessage, { onOpen })
 
 let bus: ConnectBus | null = null
 let openedFor: string | null = null
@@ -26,6 +28,7 @@ let since = 0
 let lastKey = ''
 let lastSentAt = 0
 let pending: ReturnType<typeof setTimeout> | undefined
+let pendingForce = false
 let ticker: ReturnType<typeof setInterval> | null = null
 let cleanups: (() => void)[] = []
 /** Tracks another device announced, in full once VK answers (cover, «in my music»). */
@@ -85,9 +88,15 @@ function announce(force = false) {
   bus.send({ type: 'presence', presence })
 }
 
-function announceSoon() {
+/** `force`: say it even if nothing but the position changed (a seek, someone new in the group). */
+function announceSoon(force = false) {
+  pendingForce ||= force
   clearTimeout(pending)
-  pending = setTimeout(() => announce(), 250)
+  pending = setTimeout(() => {
+    const f = pendingForce
+    pendingForce = false
+    announce(f)
+  }, 250)
 }
 
 /** This device's queue as an order for another one: up to MAX_PLAY_TRACKS around the current track, in play order. */
@@ -100,7 +109,16 @@ function myOrder(): PlayOrder | null {
     q.pos,
     MAX_PLAY_TRACKS,
   )
-  return { tracks: w.items.map(toWire), index: w.index, position: clampSeconds(livePosition()), playing: p.isPlaying, shuffle: false, repeat: p.repeat, ...(p.source?.label ? { label: p.source.label.slice(0, 100) } : {}) }
+  return fitOrder({
+    tracks: w.items.map(toWire),
+    index: w.index,
+    position: clampSeconds(livePosition()),
+    playing: p.isPlaying,
+    shuffle: p.shuffle,
+    repeat: p.repeat,
+    ...(p.source?.label ? { label: p.source.label.slice(0, 100) } : {}),
+    ...(p.source?.kind === 'mix' ? { mix: true } : {}),
+  })
 }
 
 /** Plays here what another device sent. */
@@ -116,7 +134,9 @@ async function startOrder(o: PlayOrder) {
   if (!list.length) return toast('Не получилось включить музыку с другого устройства', 'error')
   const index = Math.max(0, list.findIndex((t) => t.key === keyOf(o.tracks[o.index])))
   leaveRemote()
-  usePlayer.getState().playList(list, index, { shuffle: o.shuffle, startAt: o.position, paused: !o.playing, source: { kind: 'list', ...(o.label ? { label: o.label } : {}) } })
+  // shuffle mode as the sender had it; an explicit «Перемешать» starts anywhere
+  if (!o.randomStart) usePlayer.setState({ shuffle: o.shuffle })
+  usePlayer.getState().playList(list, index, { ...(o.randomStart ? { shuffle: true } : {}), startAt: o.position, paused: !o.playing, source: { kind: o.mix ? 'mix' : 'list', ...(o.label ? { label: o.label } : {}) } })
   for (let i = 0; i < 3 && usePlayer.getState().repeat !== o.repeat; i++) usePlayer.getState().cycleRepeat()
 }
 
@@ -137,21 +157,57 @@ function runCommand(action: CommandAction, value?: number) {
 
 function remoteFor(id: string): PlayerRemote {
   const cmd = (action: CommandAction, value?: number) => bus?.send({ type: 'command', action, ...(value === undefined ? {} : { value }) }, id)
+  /** What this remote just asked for, kept in the device's last word so the player does not snap back before it answers. */
+  const expect = (p: Partial<Presence>) =>
+    useDevices.setState((s) => {
+      const d = s.devices[id]
+      return d ? { devices: { ...s.devices, [id]: { ...d, presence: { ...d.presence, ...p }, seen: Date.now() } } } : {}
+    })
+  // a volume drag sends at most every 150 ms, and always its last value
+  let volumeAt = 0
+  let volumeValue = 0
+  let volumeTimer: ReturnType<typeof setTimeout> | undefined
+  const sendVolume = () => {
+    volumeTimer = undefined
+    volumeAt = Date.now()
+    cmd('volume', volumeValue)
+  }
   return {
     toggle: () => cmd('toggle'),
     play: () => cmd('play'),
     pause: () => cmd('pause'),
     next: () => cmd('next'),
     prev: () => cmd('prev'),
-    seek: (sec) => cmd('seek', clampSeconds(sec)),
-    setVolume: (v) => cmd('volume', Math.max(0, Math.min(v, 1))),
+    seek: (sec) => {
+      const at = clampSeconds(sec)
+      expect({ position: at })
+      cmd('seek', at)
+    },
+    setVolume: (v) => {
+      volumeValue = Math.max(0, Math.min(v, 1))
+      expect({ volume: volumeValue })
+      const wait = 150 - (Date.now() - volumeAt)
+      if (wait <= 0) sendVolume()
+      else volumeTimer ??= setTimeout(sendVolume, wait)
+    },
     toggleShuffle: () => cmd('shuffle'),
     cycleRepeat: () => cmd('repeat'),
     playMix: () => cmd('mix'),
     playList: (tracks, index, opts) => {
       const w = queueWindow(tracks, index, MAX_PLAY_TRACKS)
       const label = opts?.source?.label
-      bus?.send({ type: 'play', tracks: w.items.map(toWire), index: w.index, position: clampSeconds(opts?.startAt ?? 0), playing: !opts?.paused, shuffle: !!opts?.shuffle, repeat: usePlayer.getState().repeat, ...(label ? { label: label.slice(0, 100) } : {}) }, id)
+      const order = fitOrder({
+        tracks: w.items.map(toWire),
+        index: w.index,
+        position: clampSeconds(opts?.startAt ?? 0),
+        playing: !opts?.paused,
+        // the steered device's shuffle mode stays as it is, unless this is «Перемешать»
+        shuffle: opts?.shuffle ?? usePlayer.getState().shuffle,
+        repeat: usePlayer.getState().repeat,
+        ...(label ? { label: label.slice(0, 100) } : {}),
+        ...(opts?.shuffle ? { randomStart: true } : {}),
+      })
+      bus?.send({ type: 'play', ...order }, id)
     },
   }
 }
@@ -175,9 +231,9 @@ function enterRemote(id: string) {
   announceSoon()
 }
 
-/** This player is this device's own again. */
+/** This player is this device's own again (safe to call any time). */
 export function leaveRemote() {
-  if (!remoteOn()) return
+  if (!remoteOn() && !remoteActive()) return
   useDevices.setState({ remoteId: null })
   setPlayerRemote(null)
   if (ticker) clearInterval(ticker)
@@ -191,6 +247,8 @@ function onMessage(msg: ConnectMessage, from: string) {
     const prev = useDevices.getState().devices[from]
     const seen: SeenDevice = { id: from, presence: msg.presence, seen: now, lastPlaying: msg.presence.playing ? now : (prev?.lastPlaying ?? 0) }
     useDevices.setState((s) => ({ devices: { ...s.devices, [from]: seen } }))
+    // someone new (just started, just linked): tell them about us now, not at the next heartbeat
+    if (!prev) announceSoon(true)
     if (together()) return
     const { deviceId, remoteId, devices } = useDevices.getState()
     if (!remoteOn() && usePlayer.getState().isPlaying && shouldYield({ id: deviceId, playing: true, since }, seen)) {
@@ -262,7 +320,7 @@ function closeBus() {
 }
 
 /** Opens the group channel while this device is linked, follows code changes. Call once at start. */
-export async function startConnect(openBus: OpenBus = openConnectBus) {
+export async function startConnect(openBus: OpenBus = openBusDefault) {
   await loadDevices()
   const sync = async () => {
     const { code, deviceId } = useDevices.getState()
@@ -271,7 +329,7 @@ export async function startConnect(openBus: OpenBus = openConnectBus) {
     openedFor = code
     if (!code) return
     try {
-      bus = await openBus(code, deviceId, onMessage)
+      bus = await openBus(code, deviceId, onMessage, () => announceSoon(true))
     } catch (e) {
       journal('connect', `channel did not open: ${String(e).slice(0, 80)}`)
       openedFor = null
@@ -288,7 +346,13 @@ export async function startConnect(openBus: OpenBus = openConnectBus) {
     usePlayer.subscribe((s, prev) => {
       if (remoteOn()) return
       if (s.isPlaying && !prev.isPlaying) since = Date.now()
-      if (s.current?.key !== prev.current?.key || s.isPlaying !== prev.isPlaying || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.volume !== prev.volume) announceSoon()
+      // a jump (a seek here or from a remote) goes out at once, so remotes do not show the old place
+      if (Math.abs(s.position - prev.position) > 2) announceSoon(true)
+      else if (s.current?.key !== prev.current?.key || s.isPlaying !== prev.isPlaying || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.volume !== prev.volume) announceSoon()
+    }),
+    // listening together and the device remote never mix: starting a session lets the steered device go
+    useTogether.subscribe((s, prev) => {
+      if (s.role && !prev.role) leaveRemote()
     }),
   )
   const t = setInterval(() => tickConnect(), 5000)
@@ -306,6 +370,7 @@ export function stopConnect() {
   for (const f of cleanups.splice(0)) f()
   closeBus()
   clearTimeout(pending)
+  pendingForce = false
   openedFor = null
   since = 0
   lastKey = ''

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { IDLE_REMOTE_MS, OFFLINE_MS, onlineDevices, playingDevice, queueWindow, remoteHolds, remotePosition, shouldYield, type SeenDevice } from './logic'
+import { IDLE_REMOTE_MS, OFFLINE_MS, ORDER_BUDGET, fitOrder, onlineDevices, playingDevice, queueWindow, remoteHolds, remotePosition, shouldYield, type SeenDevice } from './logic'
 import type { Presence } from './protocol'
 
 const P: Presence = { name: 'ПК', platform: 'desktop', track: null, position: 10, duration: 100, playing: true, since: 1000, volume: 1, shuffle: false, repeat: 'off', queue: { pos: 0, total: 1 } }
@@ -47,5 +47,16 @@ describe('the device remote rules', () => {
     expect(remoteHolds(dev('a', {}, 0, 0), OFFLINE_MS + 1)).toBe(false)
     expect(remoteHolds(dev('a', { playing: false }, IDLE_REMOTE_MS, 0), IDLE_REMOTE_MS + 1)).toBe(false)
     expect(remoteHolds(undefined, 0)).toBe(false)
+  })
+
+  test('an order with long titles shrinks to fit one sealed message, keeping the current track', () => {
+    const long = (i: number) => ({ owner: 1, id: i, title: 'Очень длинное название классического произведения '.repeat(4).slice(0, 200), artist: 'Оркестр и солисты '.repeat(12).slice(0, 200), duration: 300 })
+    const tracks = Array.from({ length: 40 }, (_, i) => long(i))
+    const fitted = fitOrder({ tracks, index: 10, position: 5 })
+    expect(new TextEncoder().encode(JSON.stringify(fitted)).length).toBeLessThanOrEqual(ORDER_BUDGET)
+    expect(fitted.tracks[fitted.index]).toBe(tracks[10])
+    expect(fitted.tracks.length).toBeGreaterThan(1)
+    const small = { tracks: [long(1)], index: 0 }
+    expect(fitOrder(small)).toEqual(small)
   })
 })
