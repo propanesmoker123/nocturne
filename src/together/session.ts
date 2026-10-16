@@ -125,7 +125,7 @@ export const clearTogetherError = () => useTogether.setState({ error: null })
 
 const myName = () => useSession.getState().user?.name?.trim().split(/\s+/)[0] || 'Слушатель'
 
-function toWire(t: Track): WireTrack {
+export function toWire(t: Track): WireTrack {
   return {
     owner: t.ownerId,
     id: t.id,

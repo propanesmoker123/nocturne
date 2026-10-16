@@ -43,7 +43,7 @@ const int = (v: unknown, min: number, max: number): v is number => Number.isSafe
 const num = (v: unknown, min: number, max: number): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
 const text = (v: unknown, max: number): string | null => (typeof v === 'string' ? v.trim().slice(0, max) : null)
 
-function wireTrack(v: unknown): WireTrack | null | undefined {
+export function wireTrack(v: unknown): WireTrack | null | undefined {
   if (v === null) return null
   if (!isObj(v)) return undefined
   const title = text(v.title, 200)
