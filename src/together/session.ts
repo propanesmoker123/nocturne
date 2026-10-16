@@ -63,6 +63,11 @@ const CLOCK_EVERY_MS = 30_000
 const RELAY_CHECK_MS = 15_000
 /** How far the host's position may move on its own between updates before it counts as a seek. */
 const SEEK_JUMP = 1.5
+/** The host plays, the listener should too, and nothing has been heard for this long: load the track again. */
+const SILENT_MS = 20_000
+/** Loads of one track before the listener gives up on it and waits for the next. */
+const SILENT_RELOADS = 3
+const WATCH_MS = 2000
 
 type EndReason = 'left' | 'picked' | 'ended' | 'lost' | TogetherError
 
@@ -252,6 +257,11 @@ export async function joinSession(input: string) {
   let lastHint = 0
   const samples: ClockSample[] = []
   let offset = 0
+  // what the listener has really heard: the position moved by playing, not by our own seeks
+  let heardAt = Date.now()
+  let lastPosition = 0
+  let seekedBy = 0
+  let reloads = { key: '', count: 0 }
 
   const send = (msg: Message) => {
     if (hostPeer) r.transport?.send(msg, hostPeer)
@@ -286,6 +296,7 @@ export async function joinSession(input: string) {
     if (a.kind === 'load') return void load(a.track)
     asSync(() => {
       const p = usePlayer.getState()
+      if (a.kind === 'seek') seekedBy += a.to - livePosition()
       if (a.kind === 'seek') p.seek(a.to)
       else if (a.kind === 'play') p.play()
       else p.pause()
@@ -350,6 +361,34 @@ export async function joinSession(input: string) {
 
   const ping = () => send({ v: 1, type: 'ping', t0: Date.now() })
 
+  /** The sound should be coming and is not (a CDN node that never answers, a player stuck after an error): load the track again. */
+  const watchSound = () => {
+    const p = usePlayer.getState()
+    const position = livePosition()
+    const played = position - lastPosition - seekedBy
+    lastPosition = position
+    seekedBy = 0
+    const expected = !!host?.playing && !!host.track && followingKey === wireKey(host.track) && !localPaused && resolvingKey === null
+    if (!expected || (p.isPlaying && played > 0.5)) return void (heardAt = Date.now())
+    if (Date.now() - heardAt < SILENT_MS) return
+    heardAt = Date.now()
+    const key = followingKey!
+    if (reloads.key !== key) reloads = { key, count: 0 }
+    reloads.count++
+    journal('together', `no sound for ${SILENT_MS / 1000} s (playing ${p.isPlaying}, loading ${p.isLoading}, at ${Math.round(position)} s), ${reloads.count > SILENT_RELOADS ? 'giving up on the track' : 'loading it again'}`)
+    if (reloads.count > SILENT_RELOADS) {
+      unavailableKey = key
+      followingKey = null
+      useTogether.setState({ unavailable: true })
+      status('unavailable')
+      if (p.isPlaying) asSync(() => usePlayer.getState().pause())
+      toast('Звук этого трека не загружается — включится следующий', 'error')
+      return
+    }
+    followingKey = null
+    apply()
+  }
+
   let transport: Transport
   try {
     transport = await openTransport(
@@ -412,6 +451,7 @@ export async function joinSession(input: string) {
   r.transport = transport
 
   every(r, ping, CLOCK_EVERY_MS)
+  every(r, watchSound, WATCH_MS)
   r.cleanups.push(
     // Once the sound really starts, check once more: loading took a moment, the host did not wait
     usePlayer.subscribe((p, prev) => {

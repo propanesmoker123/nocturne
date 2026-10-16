@@ -244,6 +244,45 @@ describe('listening', () => {
     expect(h.toasts.at(-1)).toMatchObject({ text: 'Вы вышли из совместного прослушивания', action: { label: 'Вернуться' } })
   })
 
+  /** The host plays on for `seconds`, saying where it is every 5 s; `heard` moves the listener's player like real sound would. */
+  async function hostPlaysOn(seconds: number, heard: boolean) {
+    const start = Date.now()
+    for (let t = 1; t <= seconds; t++) {
+      await vi.advanceTimersByTimeAsync(1000)
+      if (heard && usePlayer.getState().isPlaying) usePlayer.setState({ position: usePlayer.getState().position + 1 })
+      if (t % 5 === 0) ev.onMessage(state(100 + t, { position: 40 + (Date.now() - start) / 1000, at: Date.now() }), 'h1')
+    }
+    await flush()
+  }
+  const loads = () => h.calls.filter((c) => c.startsWith('playList')).length
+
+  test('no sound while the host plays: the track loads again, three times at most, then waits for the next one', async () => {
+    await connected()
+    ev.onMessage(state(1), 'h1')
+    await flush()
+    expect(loads()).toBe(1)
+    // the follow seeks move the timeline, but nothing is heard
+    await hostPlaysOn(25, false)
+    expect(loads()).toBe(2)
+    await hostPlaysOn(75, false)
+    expect(loads()).toBe(4)
+    expect(useTogether.getState().unavailable).toBe(true)
+    expect(sentTo('h1', 'status').at(-1)).toMatchObject({ state: 'unavailable' })
+    expect(h.toasts.at(-1)?.text).toMatch(/не загружается/)
+    // the host's next track is tried afresh
+    ev.onMessage(state(500, { track: { owner: -2001, id: 777, title: 'Другой', artist: 'X', duration: 100 }, at: Date.now() }), 'h1')
+    await flush()
+    expect(loads()).toBe(5)
+  })
+
+  test('a listener whose sound plays is left alone', async () => {
+    await connected()
+    ev.onMessage(state(1), 'h1')
+    await flush()
+    await hostPlaysOn(60, true)
+    expect(loads()).toBe(1)
+  })
+
   test('goodbye from the host ends the session; music keeps playing', async () => {
     await connected()
     ev.onMessage(state(1), 'h1')
