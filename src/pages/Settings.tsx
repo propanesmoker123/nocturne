@@ -2,6 +2,9 @@ import { useQuery } from '@tanstack/react-query'
 import { ImagePlus, Plus, RotateCcw, X } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useSession } from '../app/session'
+import { useSheet } from '../app/sheetStore'
+import { renameDevice, unlinkAll, unlinkHere, useDevices } from '../connect/devices'
+import { onlineDevices } from '../connect/logic'
 import { toast } from '../app/toast'
 import { Button, Segmented, Switch } from '../components/controls'
 import { HotkeyInput } from '../components/HotkeyInput'
@@ -138,6 +141,8 @@ function AboutRow() {
 export function SettingsPage() {
   const st = useSettings()
   const user = useSession((x) => x.user)
+  const devices = useDevices()
+  const online = onlineDevices(devices.devices, Date.now())
   const logout = useSession((x) => x.logout)
   const failed = useHotkeyStatus((h) => h.failed)
   const monitors = useMonitors()
@@ -338,6 +343,28 @@ export function SettingsPage() {
         <Row title="Транслировать в статус VK" sub="Друзья увидят, что вы слушаете">
           <Switch label="Транслировать в статус VK" checked={st.broadcastStatus} onChange={(v) => st.update({ broadcastStatus: v })} />
         </Row>
+      </Group>
+
+      <Group title="Мои устройства" note="Связанные устройства видят друг друга: музыку можно перенести с той же секунды, а одно устройство становится пультом для другого. Связь зашифрована кодом, который знают только ваши устройства.">
+        <Row title="Это устройство">
+          <input className={s.nameInput} defaultValue={devices.name} key={devices.name} maxLength={40} onBlur={(e) => renameDevice(e.target.value)} aria-label="Имя этого устройства" />
+        </Row>
+        <Row title="Связь" sub={devices.code ? (online.length ? `В сети: ${online.map((d) => d.presence.name).join(', ')}` : 'Других устройств сейчас нет в сети') : 'Это устройство ни с чем не связано'}>
+          <Button onClick={() => useSheet.getState().open({ kind: 'link-device' })}>{devices.code ? 'Связать ещё' : 'Связать устройство'}</Button>
+        </Row>
+        {devices.code && (
+          <Row title="Отвязать" sub="«Все» меняет код: остальные устройства потеряют связь">
+            <Button onClick={unlinkHere}>Это устройство</Button>
+            <Button
+              variant="danger"
+              onClick={() =>
+                useSheet.getState().open({ kind: 'confirm', title: 'Отвязать все устройства?', message: 'Код сменится, и остальные устройства придётся связать заново.', confirmLabel: 'Отвязать все', danger: true, onConfirm: unlinkAll })
+              }
+            >
+              Все
+            </Button>
+          </Row>
+        )}
       </Group>
 
       <Group

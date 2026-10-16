@@ -7,6 +7,7 @@ export type SheetRequest =
   | { kind: 'confirm'; title: string; message: string; confirmLabel: string; danger?: boolean; onConfirm: () => void | Promise<void> }
   | { kind: 'captcha'; img: string; resolve: (key: string | null) => void }
   | { kind: 'send-track'; track: Track }
+  | { kind: 'link-device' }
 
 interface SheetState {
   sheet: SheetRequest | null

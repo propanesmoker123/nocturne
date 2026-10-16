@@ -2,6 +2,7 @@ import { AnimatePresence, motion, useIsPresent } from 'motion/react'
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Button, Spinner } from '../components/controls'
 import * as vk from '../vk/api'
+import { LinkDevice } from '../connect/DevicesPanel'
 import { describeError, VkError } from '../vk/errors'
 import type { Friend } from '../vk/models'
 import { friendMatches, useFriends } from './friends'
@@ -196,6 +197,20 @@ function SendTrackBody({ req }: { req: Extract<SheetRequest, { kind: 'send-track
   )
 }
 
+function LinkDeviceBody() {
+  const close = useSheet((x) => x.close)
+  return (
+    <>
+      <h2 className={s.sheetTitle}>Связать устройство</h2>
+      <p className={s.sheetText}>Музыка будет переезжать между связанными устройствами, а одно станет пультом для другого.</p>
+      <LinkDevice onLinked={close} />
+      <div className={s.sheetActions}>
+        <Button onClick={close}>Готово</Button>
+      </div>
+    </>
+  )
+}
+
 /** The dimming layer stops catching clicks as soon as it starts leaving. */
 function Layer({ children, onDismiss }: { children: ReactNode; onDismiss(): void }) {
   const present = useIsPresent()
@@ -244,6 +259,8 @@ export function Sheets() {
               <CaptchaBody req={sheet} />
             ) : sheet.kind === 'send-track' ? (
               <SendTrackBody req={sheet} />
+            ) : sheet.kind === 'link-device' ? (
+              <LinkDeviceBody />
             ) : (
               <PlaylistForm req={sheet} />
             )}

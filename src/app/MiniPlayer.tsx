@@ -1,6 +1,7 @@
 import { Send } from 'lucide-react'
 import { useState } from 'react'
 import { Artwork } from '../components/Artwork'
+import { DevicesButton } from '../connect/DevicesPanel'
 import { IconButton, Spinner } from '../components/controls'
 import { IconBackward, IconCheck, IconForward, IconNote, IconPause, IconPlay, IconPlus, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
@@ -135,6 +136,7 @@ export function MiniPlayer() {
         </div>
 
         <div className={s.right}>
+          <DevicesButton />
           <TogetherButton />
           <IconButton size={32} label="Поделиться треком" onClick={() => current && useSheet.getState().open({ kind: 'send-track', track: current })} disabled={!current}>
             <Send size={17} strokeWidth={2} />

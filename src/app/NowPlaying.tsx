@@ -103,6 +103,7 @@ export function NowPlaying() {
   const repeat = usePlayer((p) => p.repeat)
   const volume = usePlayer((p) => p.volume)
   const muted = usePlayer((p) => p.muted)
+  const remoteName = usePlayer((p) => p.remoteName)
   const { toggle, next, prev, toggleShuffle, cycleRepeat, setVolume } = usePlayer.getState()
   const controlledBy = useControlledBy()
   const push = useRouter((r) => r.push)
@@ -154,6 +155,7 @@ export function NowPlaying() {
               <CoverArt track={current} playing={isPlaying} />
 
               <div className={s.controls}>
+                {remoteName && <div className={s.remoteNote}>Играет на устройстве «{remoteName}»</div>}
                 <div className={s.titleRow}>
                   <div className={s.titleBlock}>
                     <button type="button" className={`${s.title} ${s.copyTitle} truncate`} title="Нажмите, чтобы скопировать название" onClick={() => copyTrackName(current)}>

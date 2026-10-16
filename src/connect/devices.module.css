@@ -1,0 +1,121 @@
+/* Same anchoring as listening together: the card hangs above the player bar */
+.anchor {
+  display: contents;
+}
+.card {
+  position: absolute;
+  right: 14px;
+  bottom: calc(100% + 12px);
+  z-index: 5;
+  width: 340px;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  background: var(--mat-chrome);
+  -webkit-backdrop-filter: var(--mat-blur-strong);
+  backdrop-filter: var(--mat-blur-strong);
+  box-shadow: var(--mat-edge), 0 18px 50px -12px rgba(0, 0, 0, 0.6);
+}
+/* Phone: no player bar to hang from — the card comes up from the bottom of the screen */
+:global(:root[data-platform='android']) .card {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--safe-bottom) + 12px);
+  width: auto;
+  z-index: 60;
+}
+.title {
+  font: var(--t-headline);
+}
+.hint {
+  margin: 0;
+  font: var(--t-footnote);
+  color: var(--label-2);
+}
+.error {
+  margin: 0;
+  font: 500 13px/18px var(--font);
+  color: var(--sys-red);
+}
+.link {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+.qr {
+  width: 168px;
+  height: 168px;
+  padding: 8px;
+  border-radius: 12px;
+  background: #fff;
+}
+.qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.code {
+  font: 600 20px/24px ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  letter-spacing: 0.06em;
+  user-select: text;
+}
+.join {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 11px;
+  padding: 9px 12px;
+  background: var(--fill-3);
+  color: var(--label);
+  font: var(--t-body);
+}
+.input:focus {
+  background: var(--fill-2);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.list {
+  display: grid;
+  gap: 4px;
+}
+.device {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  text-align: left;
+  color: var(--label-2);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.device:hover {
+  background: var(--fill-3);
+}
+.device[data-active] {
+  color: var(--accent-text);
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+}
+.deviceText {
+  display: grid;
+  min-width: 0;
+}
+.deviceName {
+  font: 600 14px/18px var(--font);
+  color: var(--label);
+}
+.deviceSub {
+  font: 400 12px/16px var(--font);
+  color: var(--label-2);
+}
+.more {
+  justify-self: start;
+  font: 600 13px/18px var(--font);
+  color: var(--accent-text);
+}

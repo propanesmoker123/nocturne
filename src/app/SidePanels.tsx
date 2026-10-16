@@ -52,6 +52,7 @@ export function QueuePanel() {
   const queue = usePlayer((p) => p.queue)
   const source = usePlayer((p) => p.source)
   const isPlaying = usePlayer((p) => p.isPlaying)
+  const remoteName = usePlayer((p) => p.remoteName)
   const { jumpTo, removeFromQueue, moveInQueue } = usePlayer.getState()
   const [dragFrom, setDragFrom] = useState<number | null>(null)
   const [dropAt, setDropAt] = useState<number | null>(null)
@@ -68,6 +69,13 @@ export function QueuePanel() {
     scrolledOnce.current = true
   }, [pos])
 
+  if (remoteName) {
+    return (
+      <div className={s.empty}>
+        <span>Очередь — на устройстве «{remoteName}»</span>
+      </div>
+    )
+  }
   if (!queue || rows.length === 0) {
     return (
       <div className={s.empty}>
