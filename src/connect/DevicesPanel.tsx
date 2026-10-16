@@ -85,6 +85,13 @@ export function DevicesButton() {
   const [open, setOpen] = useState(false)
   const [linking, setLinking] = useState(false)
   const code = useDevices((d) => d.code)
+  const heard = useDevices((d) => Object.keys(d.devices).length)
+  const heardBefore = useRef(heard)
+  // a device that just linked by this code shows up: the card turns to the list of devices
+  useEffect(() => {
+    if (heard > heardBefore.current) setLinking(false)
+    heardBefore.current = heard
+  }, [heard])
   const remoteName = usePlayer((p) => p.remoteName)
   const togetherOn = useTogether((t) => !!t.role)
   const box = useRef<HTMLDivElement>(null)
@@ -106,8 +113,8 @@ export function DevicesButton() {
         label={remoteName ? `Играет на устройстве «${remoteName}»` : 'Устройства'}
         active={open || !!remoteName}
         onClick={() => {
-          // not linked yet: the card opens on the code and QR (its first render makes the code)
-          if (!open && !code) setLinking(true)
+          // not linked yet: the card opens on the code and QR (its first render makes the code); linked — on the devices
+          if (!open) setLinking(!code)
           setOpen(!open)
         }}
       >
