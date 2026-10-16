@@ -10,6 +10,11 @@ const B = 'bbbbbbbbbbbbbbbb'
 const C = 'cccccccccccccccc'
 const OPTS = { relays: ['wss://a', 'wss://b'], WebSocketImpl: FakeSocket as never }
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** Waits for a condition instead of a fixed time: the full suite runs many files at once. */
+async function until(cond: () => boolean, ms = 3000) {
+  for (const end = Date.now() + ms; !cond() && Date.now() < end; ) await wait(10)
+}
+const connected = () => until(() => open.every((b) => b.up()))
 const open: ConnectBus[] = []
 
 async function device(code: string, id: string) {
@@ -32,9 +37,10 @@ describe('the group channel', () => {
   test('one device hears another of the same group, once, with who said it; never itself', async () => {
     const a = await device(CODE, A)
     const b = await device(CODE, B)
-    await wait(30)
+    await connected()
     a.bus.send({ type: 'pull' })
-    await wait(150)
+    await until(() => b.got.length > 0)
+    await wait(100)
     expect(b.got).toEqual([{ msg: { type: 'pull' }, from: A }])
     expect(a.got).toEqual([])
   })
@@ -43,9 +49,10 @@ describe('the group channel', () => {
     const a = await device(CODE, A)
     const b = await device(CODE, B)
     const c = await device(CODE, C)
-    await wait(30)
+    await connected()
     a.bus.send({ type: 'pull' }, C)
-    await wait(150)
+    await until(() => c.got.length > 0)
+    await wait(100)
     expect(b.got).toEqual([])
     expect(c.got).toHaveLength(1)
   })
@@ -53,19 +60,20 @@ describe('the group channel', () => {
   test('another group hears nothing', async () => {
     const a = await device(CODE, A)
     const x = await device(OTHER, B)
-    await wait(30)
+    await connected()
     a.bus.send({ type: 'bye' })
-    await wait(150)
+    await wait(300)
     expect(x.got).toEqual([])
   })
 
   test('junk and floods are dropped', async () => {
     const a = await device(CODE, A)
     const b = await device(CODE, B)
-    await wait(30)
+    await connected()
     a.bus.send({ type: 'reboot' } as never)
     for (let i = 0; i < 40; i++) a.bus.send({ type: 'command', action: 'next' }, B)
-    await wait(400)
+    await until(() => b.got.length >= 20)
+    await wait(300)
     expect(b.got.length).toBeLessThanOrEqual(20)
     expect(b.got.every((g) => g.msg.type === 'command')).toBe(true)
   })
