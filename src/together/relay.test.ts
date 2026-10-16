@@ -66,7 +66,7 @@ describe('listening together over relays', () => {
     const open = opener()
     const host = await open({ roomId: 'r1', password: CODE, role: 'host' }, H.ev)
     const listener = await open({ roomId: 'r1', password: CODE, role: 'listener' }, L.ev)
-    await settle()
+    await until(() => H.joins.length > 0 && L.joins.length > 0)
     expect(H.admitted.map((a) => a.role)).toEqual(['listener'])
     expect(H.joins).toHaveLength(1)
     expect(L.joins).toHaveLength(1)
@@ -74,7 +74,7 @@ describe('listening together over relays', () => {
 
     host.send(ping(1))
     listener.send(ping(2))
-    await settle()
+    await until(() => L.msgs.length > 0 && H.msgs.length > 0)
     expect(L.msgs).toEqual([{ msg: ping(1), from: L.joins[0] }])
     expect(H.msgs).toEqual([{ msg: ping(2), from: H.joins[0] }])
     expect(await host.relaysUp()).toBe(true)
@@ -98,9 +98,9 @@ describe('listening together over relays', () => {
     const open = opener()
     const host = await open({ roomId: 'r1', password: CODE, role: 'host' }, H.ev)
     await open({ roomId: 'r1', password: CODE, role: 'listener' }, L.ev)
-    await settle()
+    await until(() => H.joins.length > 0 && L.joins.length > 0)
     host.send(ping(7))
-    await settle()
+    await until(() => L.msgs.some((m) => (m.msg as { t0: number }).t0 === 7))
     expect(L.msgs.filter((m) => (m.msg as { t0: number }).t0 === 7)).toHaveLength(1)
     // someone re-posts the very same sealed content in a new event: still nothing new
     const original = FakeSocket.frames.filter((f) => f.frame[0] === 'EVENT').at(-1)!.frame[1] as { kind: number; tags: string[][]; id: string }
@@ -130,12 +130,12 @@ describe('listening together over relays', () => {
     const open = opener()
     const host = await open({ roomId: 'r1', password: CODE, role: 'host' }, H.ev)
     await open({ roomId: 'r1', password: CODE, role: 'listener' }, L.ev)
-    await settle()
+    await until(() => H.joins.length > 0 && L.joins.length > 0)
     await advance(2000)
     expect(H.leaves).toEqual([])
     expect(L.leaves).toEqual([])
     host.leave()
-    await settle()
+    await until(() => L.leaves.length > 0)
     expect(L.leaves).toEqual([L.joins[0]])
   })
 
@@ -147,7 +147,7 @@ describe('listening together over relays', () => {
     const L = recorder()
     const host = await opener({ ...OPTS, WebSocketImpl: HostSocket as never })({ roomId: 'r1', password: CODE, role: 'host' }, H.ev)
     await opener()({ roomId: 'r1', password: CODE, role: 'listener' }, L.ev)
-    await settle()
+    await until(() => H.joins.length > 0 && L.joins.length > 0)
     HostSocket.muted = true
     await advance(300)
     expect(L.leaves).toEqual([])
@@ -155,7 +155,7 @@ describe('listening together over relays', () => {
     expect(L.leaves).toEqual([L.joins[0]])
     HostSocket.muted = false
     host.send(ping(1))
-    await settle()
+    await until(() => L.joins.length > 1)
     expect(L.joins).toEqual([L.joins[0], L.joins[0]])
   })
 
@@ -175,7 +175,7 @@ describe('listening together over relays', () => {
     const open = opener()
     const host = await open({ roomId: 'r1', password: CODE, role: 'host' }, H.ev)
     const listener = await open({ roomId: 'r1', password: CODE, role: 'listener' }, L.ev)
-    await settle()
+    await until(() => H.joins.length > 0 && L.joins.length > 0)
     host.kick(H.joins[0])
     expect(H.leaves).toEqual([H.joins[0]])
     listener.send(ping(9))

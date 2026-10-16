@@ -59,6 +59,10 @@ const PHONE = 'bbbbbbbbbbbbbbbb'
 const w = (id: number) => ({ owner: 1, id, title: `T${id}`, artist: 'A', duration: 100 })
 const presence = (over = {}) => ({ name: 'Телефон', platform: 'android' as const, track: w(9), position: 20, duration: 100, playing: true, since: Date.now(), volume: 0.7, shuffle: false, repeat: 'off' as const, queue: { pos: 0, total: 1 }, ...over })
 const settle = () => new Promise((r) => setTimeout(r, 80))
+/** Waits for a condition, not a fixed time: the full suite runs many files at once. */
+async function until(cond: () => boolean, ms = 3000) {
+  for (const end = Date.now() + ms; !cond() && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20))
+}
 
 let sent: { msg: ConnectMessage; to?: string }[] = []
 let hear: (msg: ConnectMessage, from: string) => void = () => {}
@@ -101,9 +105,9 @@ describe('linked devices and the player', () => {
   })
 
   test('a remote announces itself idle, never the track it mirrors', async () => {
+    sent = []
     hear({ type: 'presence', presence: presence() }, PHONE)
-    await settle()
-    await new Promise((r) => setTimeout(r, 300))
+    await until(() => sent.some((s) => s.msg.type === 'presence'))
     const mine = sent.filter((s) => s.msg.type === 'presence').at(-1)!.msg
     expect(mine).toMatchObject({ presence: { track: null, playing: false } })
   })
@@ -186,7 +190,7 @@ describe('linked devices and the player', () => {
     await new Promise((r) => setTimeout(r, 300))
     sent = []
     hear({ type: 'presence', presence: presence({ playing: false, since: 0 }) }, PHONE)
-    await new Promise((r) => setTimeout(r, 350))
+    await until(() => sent.some((s) => s.msg.type === 'presence'), 1000)
     expect(sent.some((s) => s.msg.type === 'presence')).toBe(true)
   })
 
@@ -196,7 +200,7 @@ describe('linked devices and the player', () => {
     await new Promise((r) => setTimeout(r, 300))
     sent = []
     hear({ type: 'command', action: 'seek', value: 42 }, PHONE)
-    await new Promise((r) => setTimeout(r, 350))
+    await until(() => sent.some((s) => s.msg.type === 'presence'), 1000)
     expect(sent.find((s) => s.msg.type === 'presence')?.msg).toMatchObject({ presence: { position: 42 } })
   })
 
@@ -211,7 +215,7 @@ describe('linked devices and the player', () => {
     hear({ type: 'presence', presence: presence() }, PHONE)
     sent = []
     for (let i = 1; i <= 30; i++) usePlayer.getState().setVolume(i / 30)
-    await new Promise((r) => setTimeout(r, 400))
+    await until(() => sent.some((s) => s.msg.type === 'command' && s.msg.action === 'volume' && s.msg.value === 1))
     const volumes = sent.filter((s) => s.msg.type === 'command' && s.msg.action === 'volume')
     expect(volumes.length).toBeLessThanOrEqual(4)
     expect(volumes.at(-1)?.msg).toMatchObject({ value: 1 })
