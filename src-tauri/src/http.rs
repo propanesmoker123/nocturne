@@ -11,10 +11,13 @@ pub struct Http {
 
 impl Http {
     pub fn new() -> Self {
+        // A slow CDN node still gets there: a request ends when nothing comes for a while, not after a
+        // fixed time (30 s for a whole segment cut slow downloads off and started them over again)
         let client = reqwest::Client::builder()
             .gzip(true)
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(120))
             .build()
             .expect("http client");
         Self { client, ua: RwLock::new(DEFAULT_UA.to_string()) }
