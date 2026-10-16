@@ -486,39 +486,10 @@
 .mixBody {
   min-width: 0;
 }
-.mixKicker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font: 600 13px/16px var(--font);
-  color: rgba(255, 255, 255, 0.75);
-  margin-bottom: 8px;
-}
-.mixDot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 30%, transparent);
-}
-.mix[data-live] .mixDot {
-  animation: mix-pulse 1.6s var(--ease-in-out) infinite;
-}
-@keyframes mix-pulse {
-  50% {
-    box-shadow: 0 0 0 6px color-mix(in oklab, var(--accent) 0%, transparent);
-  }
-}
 .mixTitle {
   font: 800 42px/46px var(--font);
   letter-spacing: -0.035em;
-  margin: 0 0 8px;
-}
-.mixText {
-  font: var(--t-callout);
-  color: rgba(255, 255, 255, 0.8);
-  max-width: 460px;
-  margin: 0 0 20px;
+  margin: 0 0 22px;
 }
 .mixActions {
   display: flex;
@@ -608,7 +579,6 @@
     transition: none;
   }
   .mixAura i,
-  .mixDot,
   .skeleton {
     animation: none !important;
   }

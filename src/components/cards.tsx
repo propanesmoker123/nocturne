@@ -296,7 +296,7 @@ function mixAura(w: WallpaperConfig, cover: string | undefined): { kind: 'cover'
   return { kind: 'glass' }
 }
 
-export function MixHero({ title, description, covers = [] }: { title: string; description?: string; covers?: string[] }) {
+export function MixHero({ title, covers = [] }: { title: string; covers?: string[] }) {
   const source = usePlayer((p) => p.source)
   const isPlaying = usePlayer((p) => p.isPlaying)
   const current = usePlayer((p) => p.current)
@@ -328,12 +328,7 @@ export function MixHero({ title, description, covers = [] }: { title: string; de
         )}
       </div>
       <div className={s.mixBody}>
-        <div className={s.mixKicker}>
-          <span className={s.mixDot} />
-          {live ? 'Сейчас в миксе' : 'Бесконечный поток'}
-        </div>
         <h2 className={s.mixTitle}>{title.replace(/^Слушать\s+/i, '')}</h2>
-        <p className={`${s.mixText} truncate`}>{live ? `${live.title} — ${live.artist}` : (description ?? 'Подборка, которая подстраивается под то, что вы слушаете.')}</p>
         <div className={s.mixActions}>
           <button
             type="button"

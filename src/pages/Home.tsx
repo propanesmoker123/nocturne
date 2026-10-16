@@ -106,7 +106,7 @@ function openCards(block: Extract<Block, { kind: 'recommended' | 'playlists' }>,
 }
 
 export function BlockView({ block }: { block: Block }) {
-  if (block.kind === 'mix') return <MixHero title={block.title} description={block.description} />
+  if (block.kind === 'mix') return <MixHero title={block.title} />
   if (block.kind === 'recommended') {
     const title = block.title || 'Слушайте друг друга'
     return (
@@ -162,7 +162,7 @@ export function Home() {
           }
         />
       )}
-      {home?.blocks.map((b) => (b.kind === 'mix' ? <MixHero key={b.id} title={b.title} description={b.description} covers={mixCovers} /> : null))}
+      {home?.blocks.map((b) => (b.kind === 'mix' ? <MixHero key={b.id} title={b.title} covers={mixCovers} /> : null))}
       {history.length > 0 && (
         <Section title="Недавно играло" onOpen={history.length > STRIP_SIZE ? () => useRouter.getState().push({ name: 'recent' }) : undefined}>
           <TrackGrid tracks={history.slice(0, STRIP_SIZE)} />
