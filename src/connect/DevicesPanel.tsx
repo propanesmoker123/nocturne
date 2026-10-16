@@ -2,6 +2,7 @@ import { Monitor, MonitorSmartphone, Smartphone } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { renderSVG } from 'uqr'
 import { Button, IconButton } from '../components/controls'
+import { isAndroid } from '../lib/platform'
 import { usePlayer } from '../player/store'
 import { useTogether } from '../together/session'
 import { ensureCode, joinGroup, useDevices } from './devices'
@@ -59,7 +60,7 @@ export function DevicesList() {
   return (
     <div className={s.list}>
       <button type="button" className={s.device} data-active={!remoteId || undefined} onClick={() => remoteId && playHere()}>
-        {isPhoneName(name) ? <Smartphone size={20} /> : <Monitor size={20} />}
+        {isAndroid ? <Smartphone size={20} /> : <Monitor size={20} />}
         <span className={s.deviceText}>
           <span className={s.deviceName}>{name} · это устройство</span>
           <span className={s.deviceSub}>{remoteId ? 'Нажмите, чтобы играть здесь' : playingHere ? 'Играет здесь' : 'Ничего не играет'}</span>
@@ -78,8 +79,6 @@ export function DevicesList() {
     </div>
   )
 }
-
-const isPhoneName = (n: string) => /телефон|phone/i.test(n)
 
 /** The «Устройства» button: lit while another device plays; its card lists the devices or offers to link one. */
 export function DevicesButton() {

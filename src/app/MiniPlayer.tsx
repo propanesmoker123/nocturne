@@ -64,6 +64,7 @@ export function MiniPlayer() {
   const { toggle, next, prev, toggleShuffle, cycleRepeat, setVolume, toggleMute } = usePlayer.getState()
   const { openNowPlaying, toggleNowPlaying } = useUi()
   const nowPlayingTab = useUi((u) => (u.nowPlaying ? u.tab : null))
+  const remoteName = usePlayer((p) => p.remoteName)
   const push = useRouter((r) => r.push)
   const liked = current ? isInLibrary(current) : false
   // Listening together, the host seeks and skips; the listener keeps pause and volume
@@ -92,6 +93,7 @@ export function MiniPlayer() {
                     {current.artist}
                   </button>
                 </div>
+                {remoteName && <div className={`${s.remote} truncate`}>Играет на «{remoteName}»</div>}
               </div>
               <IconButton size={30} label={liked ? 'Убрать из Моей музыки' : 'Добавить в Мою музыку'} active={liked} onClick={() => void toggleLibrary(current)}>
                 {liked ? <IconCheck size={18} /> : <IconPlus size={18} />}

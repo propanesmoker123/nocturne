@@ -11,6 +11,7 @@ import { askCaptcha } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
 import { startSystemSync } from './app/systemSync'
 import { toast } from './app/toast'
+import { startConnect } from './connect/runtime'
 import { startGlobalHotkeys } from './lib/globalHotkeys'
 import { journalUncaughtErrors } from './lib/journal'
 import { startUpdateChecks } from './lib/updates'
@@ -51,6 +52,7 @@ async function boot() {
 
   await initSession()
   await initPlayer()
+  void startConnect()
   void applyDemoHash()
   const actions = { toggleLike: () => void toggleLibrary(usePlayer.getState().current), showWindow: () => void showMainWindow() }
   startBridges(actions)
