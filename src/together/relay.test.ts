@@ -43,6 +43,11 @@ const opener =
   }
 const advance = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const settle = () => advance(300)
+/** Waits for a condition (the full suite runs many files at once), then lets the dust settle. */
+async function until(cond: () => boolean, ms = 3000) {
+  for (const end = Date.now() + ms; !cond() && Date.now() < end; ) await advance(20)
+  await settle()
+}
 
 beforeEach(() => {
   room = `r${Math.random().toString(36).slice(2)}`
@@ -81,7 +86,7 @@ describe('listening together over relays', () => {
     const open = opener()
     await open({ roomId: 'r1', password: CODE, role: 'host' }, H.ev)
     await open({ roomId: 'r1', password: CODE, role: 'listener' }, L.ev)
-    await settle()
+    await until(() => L.errors.includes('full'))
     expect(H.joins).toEqual([])
     expect(L.errors).toContain('full')
     expect(L.joins).toEqual([])
