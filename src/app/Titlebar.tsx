@@ -25,7 +25,8 @@ export function WindowControls() {
   }, [])
   if (!isTauri()) return <div />
   return (
-    <div className={s.windowControls}>
+    // the block spans the whole right part of the title bar: it must drag the window too (its buttons still click)
+    <div className={s.windowControls} data-tauri-drag-region>
       <button type="button" className={s.winBtn} aria-label="Свернуть" onClick={() => void win().then((w) => w.minimize())}>
         <Minus size={16} strokeWidth={1.8} />
       </button>
