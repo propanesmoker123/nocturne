@@ -1,4 +1,5 @@
 import { openRelayBus } from '../lib/relayBus'
+import { serverNow } from '../lib/serverTime'
 import { roomKey } from './seal'
 import type { Handshake, Message, Role } from './protocol'
 import { RELAYS, type OpenTransport, type TransportEvents } from './transport'
@@ -80,7 +81,7 @@ export function makeRelayTransport(opts: RelayOptions = {}): OpenTransport {
       },
       onData: (env) => {
         if (closed || !isEnvelope(env) || env.from === me || banned.has(env.from)) return
-        if (Math.abs(Date.now() - env.at) > MAX_AGE_MS) return
+        if (Math.abs(serverNow() - env.at) > MAX_AGE_MS) return
         if (env.to !== undefined && env.to !== me) return
         if (role === 'host') onListener(env)
         else onHost(env)
@@ -90,7 +91,7 @@ export function makeRelayTransport(opts: RelayOptions = {}): OpenTransport {
     const publish = async (extra: Partial<Envelope>) => {
       if (closed && extra.ctl !== 'leave') return
       lastSent = Date.now()
-      await bus.publish({ v: 1, from: me, role, at: Date.now(), ...extra })
+      await bus.publish({ v: 1, from: me, role, at: serverNow(), ...extra })
     }
 
     const onListener = (env: Envelope) => {

@@ -7,7 +7,7 @@ export class FakeSocket {
   static frames: { url: string; frame: unknown[] }[] = []
   readyState = 0
   private listeners: Record<string, ((e: { data?: string }) => void)[]> = {}
-  private subs = new Map<string, { kinds: number[]; '#x': string[] }>()
+  private subs = new Map<string, { kinds: number[]; '#x': string[]; since?: number }>()
 
   constructor(readonly url: string) {
     setTimeout(() => {
@@ -34,10 +34,12 @@ export class FakeSocket {
     if (frame[0] === 'CLOSE') this.subs.delete(frame[1] as string)
     if (frame[0] === 'EVENT') this.fanOut(frame[1] as { kind: number; tags: string[][] })
   }
-  fanOut(event: { kind: number; tags: string[][]; [field: string]: unknown }) {
+  fanOut(event: { kind: number; tags: string[][]; created_at?: number; [field: string]: unknown }) {
     for (const s of FakeSocket.hub.get(this.url) ?? []) {
       for (const [subId, f] of s.subs) {
-        if (f.kinds.includes(event.kind) && f['#x'].includes(event.tags[0][1])) {
+        // real relays hold live events to `since` too
+        const late = f.since !== undefined && (event.created_at ?? 0) < f.since
+        if (f.kinds.includes(event.kind) && f['#x'].includes(event.tags[0][1]) && !late) {
           setTimeout(() => s.readyState === 1 && s.emit('message', { data: JSON.stringify(['EVENT', subId, event]) }), 5)
         }
       }

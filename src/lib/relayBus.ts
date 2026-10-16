@@ -1,5 +1,6 @@
 import { schnorr } from '@noble/secp256k1'
 import { seal, signedEvent, unseal } from '../together/seal'
+import { serverNow } from './serverTime'
 
 /**
  * Sealed, signed ephemeral events in one topic over a handful of public Nostr relays — the
@@ -48,7 +49,10 @@ export function openRelayBus(o: RelayBusOptions): RelayBus {
     if (seen.size > SEEN_LIMIT) seen.delete(seen.values().next().value!)
   }
 
-  const subscribe = (ws: WebSocket) => ws.send(JSON.stringify(['REQ', subId, { kinds: [KIND], '#x': [o.topic], since: Math.floor(Date.now() / 1000) - 10 }]))
+  // Only live events (`limit: 0`), and no `since`: relays hold live events to it too, so a clock a
+  // little ahead of another device's would stop hearing that device while still being heard by it.
+  // Freshness is the envelope's job, with its wide window.
+  const subscribe = (ws: WebSocket) => ws.send(JSON.stringify(['REQ', subId, { kinds: [KIND], '#x': [o.topic], limit: 0 }]))
 
   const connect = (url: string, attempt = 0) => {
     if (closed) return
@@ -103,7 +107,7 @@ export function openRelayBus(o: RelayBusOptions): RelayBus {
 
   return {
     publish: async (data) => {
-      const event = await signedEvent(keys, KIND, o.topic, await seal(o.key, data))
+      const event = await signedEvent(keys, KIND, o.topic, await seal(o.key, data), Math.floor(serverNow() / 1000))
       const frame = JSON.stringify(['EVENT', event])
       for (const ws of sockets) if (ws.readyState === OPEN) ws.send(frame)
     },

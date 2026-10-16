@@ -14,6 +14,7 @@ import { toast } from './app/toast'
 import { startConnect } from './connect/runtime'
 import { startGlobalHotkeys } from './lib/globalHotkeys'
 import { journalUncaughtErrors } from './lib/journal'
+import { startServerTimeSync } from './lib/serverTime'
 import { startUpdateChecks } from './lib/updates'
 import { initSettings, useSettings } from './lib/settings'
 import { invoke, isTauri } from './lib/tauri'
@@ -52,6 +53,7 @@ async function boot() {
 
   await initSession()
   await initPlayer()
+  startServerTimeSync()
   void startConnect()
   void applyDemoHash()
   const actions = { toggleLike: () => void toggleLibrary(usePlayer.getState().current), showWindow: () => void showMainWindow() }

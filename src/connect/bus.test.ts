@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { FakeSocket } from '../test/fakeRelay'
 import { openConnectBus, type ConnectBus } from './bus'
 import type { ConnectMessage } from './protocol'
@@ -64,6 +64,18 @@ describe('the group channel', () => {
     a.bus.send({ type: 'bye' })
     await wait(300)
     expect(x.got).toEqual([])
+  })
+
+  test('a device whose clock runs ahead still hears the others (relays hold events to the asked «since»)', async () => {
+    const a = await device(CODE, A)
+    const real = Date.now
+    const ahead = vi.spyOn(Date, 'now').mockImplementation(() => real() + 40_000)
+    const b = await device(CODE, B)
+    await connected()
+    ahead.mockRestore()
+    a.bus.send({ type: 'pull' })
+    await until(() => b.got.length > 0)
+    expect(b.got).toEqual([{ msg: { type: 'pull' }, from: A }])
   })
 
   test('junk and floods are dropped', async () => {

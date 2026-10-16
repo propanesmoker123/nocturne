@@ -1,4 +1,5 @@
 import { openRelayBus } from '../lib/relayBus'
+import { serverNow } from '../lib/serverTime'
 import { RateLimit } from '../together/rules'
 import { RELAYS } from '../together/transport'
 import { groupKey, groupTopic } from './link'
@@ -46,7 +47,7 @@ export async function openConnectBus(code: string, me: string, onMessage: (msg: 
     onData: (data) => {
       const env = data as Partial<Envelope> | null
       if (!env || typeof env !== 'object' || env.v !== 1 || typeof env.from !== 'string' || !/^[0-9a-f]{16}$/.test(env.from) || env.from === me) return
-      if (typeof env.at !== 'number' || Math.abs(Date.now() - env.at) > MAX_AGE_MS) return
+      if (typeof env.at !== 'number' || Math.abs(serverNow() - env.at) > MAX_AGE_MS) return
       if (env.to !== undefined && env.to !== me) return
       if (!limit.hit(env.from, Date.now())) return
       const msg = parseConnectMessage(env.msg)
@@ -54,7 +55,7 @@ export async function openConnectBus(code: string, me: string, onMessage: (msg: 
     },
   })
   return {
-    send: (msg, to) => void bus.publish({ v: 1, from: me, at: Date.now(), ...(to ? { to } : {}), msg } satisfies Envelope),
+    send: (msg, to) => void bus.publish({ v: 1, from: me, at: serverNow(), ...(to ? { to } : {}), msg } satisfies Envelope),
     up: () => bus.up(),
     close: () => bus.close(),
   }
