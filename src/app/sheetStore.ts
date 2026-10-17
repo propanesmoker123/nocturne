@@ -19,7 +19,12 @@ interface SheetState {
 
 export const useSheet = create<SheetState>((set, get) => ({
   sheet: null,
-  open: (sheet) => set({ sheet }),
+  open: (sheet) => {
+    // a captcha pushed aside is answered «no», or its VK request would wait for ever
+    const cur = get().sheet
+    if (cur?.kind === 'captcha' && cur !== sheet) cur.resolve(null)
+    set({ sheet })
+  },
   close: () => {
     const cur = get().sheet
     if (cur?.kind === 'captcha') cur.resolve(null)

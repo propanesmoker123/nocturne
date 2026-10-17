@@ -42,7 +42,15 @@ async function showWhatsNew() {
   if (!isTauri()) return
   const { getVersion } = await import('@tauri-apps/api/app')
   const kept = await takeWhatsNew(await getVersion())
-  if (kept) useSheet.getState().open({ kind: 'notes', title: `Что нового в ${kept.version}`, notes: kept.notes })
+  if (!kept) return
+  const show = () => useSheet.getState().open({ kind: 'notes', title: `Что нового в ${kept.version}`, notes: kept.notes })
+  // after whatever is on screen (a captcha at start must not be pushed aside)
+  if (!useSheet.getState().sheet) return show()
+  const off = useSheet.subscribe((s) => {
+    if (s.sheet) return
+    off()
+    show()
+  })
 }
 
 async function boot() {
