@@ -55,6 +55,7 @@ export function startIslandDemo(api: DemoApi): () => void {
     playing: (on: boolean) => push({ isPlaying: on }),
     seek: (sec: number) => push({ position: sec }),
     together: (t: PlayerSnapshot['together']) => push({ together: t }),
+    track: (patch: Partial<NonNullable<PlayerSnapshot['track']>>) => push({ track: { ...snap.track!, ...patch } }),
     hover: api.hover,
     waveColor: api.wave,
     settings: (patch: Partial<IslandSettings>) => {

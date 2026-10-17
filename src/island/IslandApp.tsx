@@ -11,7 +11,7 @@ import { formatTime } from '../lib/format'
 import { DEFAULT_SETTINGS, type IslandProgress, type IslandSettings } from '../lib/settings'
 import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
 import { useWaveform } from '../player/waveformStore'
-import { COLLAPSE_DELAY, SHAPES, VOLUME_HUD_MS, hitRect, isInteractive, pickShape, volumeChanged } from './geometry'
+import { COLLAPSE_DELAY, FLASH_MS, PEEK_MS, SHAPES, VOLUME_HUD_MS, hitRect, isInteractive, moment, pickShape, volumeChanged } from './geometry'
 import { roundedPath } from './shapes'
 import s from './island.module.css'
 
@@ -217,15 +217,17 @@ export function IslandApp() {
   const [st, setSt] = useState<PlayerSnapshot | null>(null)
   const [settings, setSettings] = useState<IslandSettings>(DEFAULT_SETTINGS.island)
   const [expanded, setExpanded] = useState(false)
-  const [peek, setPeek] = useState(false)
+  const [peek, setPeek] = useState<true | null>(null)
   const [flash, setFlash] = useState<'added' | 'removed' | null>(null)
+  // each with its own timer (see `moment`)
+  const [peekFor] = useState(() => moment<true>(setPeek))
+  const [flashFor] = useState(() => moment<'added' | 'removed'>(setFlash))
   const [volumeHud, setVolumeHud] = useState(false)
   const [waveColor, setWaveColor] = useState<string | null>(null)
   const volumeTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const prevVolume = useRef<{ volume: number; muted: boolean } | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const leaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const peekTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const prevKey = useRef<string | null>(null)
   const prevLiked = useRef<boolean | null>(null)
   const settingsRef = useRef(settings)
@@ -269,18 +271,23 @@ export function IslandApp() {
   useEffect(() => {
     const key = st?.track?.key ?? null
     const liked = st?.track?.liked ?? null
-    if (key && prevKey.current && key !== prevKey.current && settings.showOnTrackChange) {
-      setPeek(true)
-      clearTimeout(peekTimer.current)
-      peekTimer.current = setTimeout(() => setPeek(false), 3200)
-    } else if (key && key === prevKey.current && liked !== null && prevLiked.current !== null && liked !== prevLiked.current) {
-      setFlash(liked ? 'added' : 'removed')
-      clearTimeout(peekTimer.current)
-      peekTimer.current = setTimeout(() => setFlash(null), 1800)
+    if (key !== prevKey.current) {
+      // a badge about the previous track is not about this one
+      flashFor.hide()
+      if (key && prevKey.current && settings.showOnTrackChange) peekFor.show(true, PEEK_MS)
+    } else if (key && liked !== null && prevLiked.current !== null && liked !== prevLiked.current) {
+      flashFor.show(liked ? 'added' : 'removed', FLASH_MS)
     }
     prevKey.current = key
     prevLiked.current = liked
-  }, [st?.track?.key, st?.track?.liked, settings.showOnTrackChange])
+  }, [st?.track?.key, st?.track?.liked, settings.showOnTrackChange, peekFor, flashFor])
+  useEffect(
+    () => () => {
+      peekFor.dispose()
+      flashFor.dispose()
+    },
+    [peekFor, flashFor],
+  )
 
   // Volume HUD: a moment of «🔊 ▬▬▬▭ 60 %» whenever the volume or mute changes (hotkeys, wheel, slider)
   useEffect(() => {

@@ -1,5 +1,29 @@
-import { describe, expect, test } from 'vitest'
-import { COLLAPSE_DELAY, SHAPES, VOLUME_HUD_MS, WINDOW, hitRect, isInteractive, pickShape, volumeChanged } from './geometry'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+import { COLLAPSE_DELAY, FLASH_MS, PEEK_MS, SHAPES, VOLUME_HUD_MS, WINDOW, hitRect, isInteractive, moment, pickShape, volumeChanged } from './geometry'
+
+describe('island moments', () => {
+  afterEach(() => void vi.useRealTimers())
+
+  test('a like and then a quick switch of tracks: neither the badge nor the peek stays up', () => {
+    vi.useFakeTimers()
+    const shown: { peek: true | null; flash: 'added' | 'removed' | null } = { peek: null, flash: null }
+    const peek = moment<true>((v) => (shown.peek = v))
+    const flash = moment<'added' | 'removed'>((v) => (shown.flash = v))
+    flash.show('added', FLASH_MS)
+    // two tracks back right away: the badge was about the old track, the new one peeks
+    flash.hide()
+    peek.show(true, PEEK_MS)
+    vi.advanceTimersByTime(PEEK_MS)
+    expect(shown).toEqual({ peek: null, flash: null })
+    // and the other way round: a like while the new track still peeks
+    peek.show(true, PEEK_MS)
+    flash.show('added', FLASH_MS)
+    vi.advanceTimersByTime(FLASH_MS)
+    expect(shown).toEqual({ peek: true, flash: null })
+    vi.advanceTimersByTime(PEEK_MS)
+    expect(shown).toEqual({ peek: null, flash: null })
+  })
+})
 
 describe('island geometry', () => {
   test('every shape fits inside the fixed island window', () => {

@@ -26,6 +26,32 @@ export function isInteractive(shape: IslandShape, expandOn: 'hover' | 'click'): 
 
 /** How long the volume HUD stays after the last change (ms). */
 export const VOLUME_HUD_MS = 1500
+/** A peek at a new track, and the «Добавлено» / «Убрано» badge, stay this long. */
+export const PEEK_MS = 3200
+export const FLASH_MS = 1800
+
+/**
+ * A value the island shows for a moment, with a timer of its own. The peek and the badge once
+ * shared one: switching tracks right after a like cancelled the badge's timer and left
+ * «Добавлено в Мою музыку» up for good.
+ */
+export function moment<T>(apply: (value: T | null) => void) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return {
+    show(value: T, ms: number) {
+      clearTimeout(timer)
+      apply(value)
+      timer = setTimeout(() => apply(null), ms)
+    },
+    hide() {
+      clearTimeout(timer)
+      apply(null)
+    },
+    dispose() {
+      clearTimeout(timer)
+    },
+  }
+}
 
 /** The volume or mute changed between two snapshots (the very first one is not a change). */
 export function volumeChanged(prev: { volume: number; muted: boolean } | null, next: { volume: number; muted: boolean }): boolean {
