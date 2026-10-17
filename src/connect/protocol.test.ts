@@ -17,6 +17,19 @@ describe('what devices may say to each other', () => {
     }
   })
 
+  test('presence may say the tracks around the one that plays; an old one without them, or a broken one, still comes through', () => {
+    const m = parseConnectMessage({ type: 'presence', presence: { ...presence, near: { prev: w(0), next: w(2) } } })
+    expect(m).toMatchObject({ presence: { near: { prev: { id: 0 }, next: { id: 2 } } } })
+    expect(parseConnectMessage({ type: 'presence', presence })).not.toHaveProperty('presence.near')
+    expect(parseConnectMessage({ type: 'presence', presence: { ...presence, near: { prev: { owner: 1 }, next: null } } })).toMatchObject({ presence: { near: { prev: null, next: null } } })
+    expect(parseConnectMessage({ type: 'presence', presence: { ...presence, near: 'x' } })).not.toHaveProperty('presence.near')
+  })
+
+  test('«previous» may ask for the previous track even late in this one (a swipe), never anything else', () => {
+    expect(parseConnectMessage({ type: 'command', action: 'prev', value: 1 })).toEqual({ type: 'command', action: 'prev', value: 1 })
+    expect(parseConnectMessage({ type: 'command', action: 'prev', value: 5 })).toEqual({ type: 'command', action: 'prev' })
+  })
+
   test('commands: only known actions; seek and volume need a value in range, others carry none', () => {
     expect(parseConnectMessage({ type: 'command', action: 'next', value: 99 })).toEqual({ type: 'command', action: 'next' })
     expect(parseConnectMessage({ type: 'command', action: 'seek', value: 30 })).toEqual({ type: 'command', action: 'seek', value: 30 })

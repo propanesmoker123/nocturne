@@ -114,7 +114,7 @@ export function MiniPlayer() {
             <IconButton size={32} plain active={shuffle} label={shuffle ? 'Выключить перемешивание' : 'Перемешать'} onClick={toggleShuffle} disabled={locked}>
               <IconShuffle size={17} />
             </IconButton>
-            <IconButton size={36} plain label="Предыдущий" onClick={prev} disabled={locked}>
+            <IconButton size={36} plain label="Предыдущий" onClick={() => prev()} disabled={locked}>
               <IconBackward size={22} />
             </IconButton>
             <IconButton className={s.play} size={40} plain label={isPlaying ? 'Пауза' : 'Играть'} onClick={toggle} disabled={!current}>

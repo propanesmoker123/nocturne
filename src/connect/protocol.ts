@@ -28,6 +28,8 @@ export interface Presence {
   shuffle: boolean
   repeat: Repeat
   queue: { pos: number; total: number }
+  /** The tracks before and after this one (a remote's swipe shows them); absent from older versions. */
+  near?: { prev: WireTrack | null; next: WireTrack | null }
 }
 
 export type CommandAction = 'toggle' | 'play' | 'pause' | 'next' | 'prev' | 'seek' | 'volume' | 'shuffle' | 'repeat' | 'mix'
@@ -73,7 +75,9 @@ function presence(v: unknown): Presence | null {
   if (!num(v.position, 0, MAX_SECONDS) || !num(v.duration, 0, MAX_SECONDS) || typeof v.playing !== 'boolean' || !num(v.since, 0, MAX_TIME)) return null
   if (!num(v.volume, 0, 1) || typeof v.shuffle !== 'boolean' || !repeat(v.repeat)) return null
   if (!isObj(q) || !int(q.pos, 0, 100_000) || !int(q.total, 0, 100_000)) return null
-  return { name, platform: v.platform, track, position: v.position, duration: v.duration, playing: v.playing, since: v.since, volume: v.volume, shuffle: v.shuffle, repeat: v.repeat, queue: { pos: q.pos, total: q.total } }
+  // a nicety: a broken neighbour is just not known
+  const near = isObj(v.near) ? { prev: wireTrack(v.near.prev) ?? null, next: wireTrack(v.near.next) ?? null } : undefined
+  return { name, platform: v.platform, track, position: v.position, duration: v.duration, playing: v.playing, since: v.since, volume: v.volume, shuffle: v.shuffle, repeat: v.repeat, queue: { pos: q.pos, total: q.total }, ...(near ? { near } : {}) }
 }
 
 function playOrder(v: Record<string, unknown>): PlayOrder | null {
@@ -100,6 +104,8 @@ export function parseConnectMessage(raw: unknown): ConnectMessage | null {
       if (!ACTIONS.includes(action)) return null
       if (action === 'seek') return num(raw.value, 0, MAX_SECONDS) ? { type: 'command', action, value: raw.value } : null
       if (action === 'volume') return num(raw.value, 0, 1) ? { type: 'command', action, value: raw.value } : null
+      // 1: the previous track even late in this one (a remote's swipe), not a restart
+      if (action === 'prev' && raw.value === 1) return { type: 'command', action, value: 1 }
       return { type: 'command', action }
     }
     case 'play': {

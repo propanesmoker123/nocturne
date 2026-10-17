@@ -31,6 +31,9 @@ let pending: ReturnType<typeof setTimeout> | undefined
 let pendingForce = false
 let ticker: ReturnType<typeof setInterval> | null = null
 let cleanups: (() => void)[] = []
+/** After a swipe on the remote: the track it switched to, held against older words until the device confirms (or a moment passes). */
+let holding: { id: string; key: string; until: number } | null = null
+const HOLD_MS = 2500
 /** Tracks another device announced, in full once VK answers (cover, «in my music»). */
 const full = new Map<string, Track>()
 
@@ -56,11 +59,25 @@ function displayTrack(w: WireTrack): Track {
   return bare
 }
 
+/** The tracks before and after the current one in play order (a remote's swipe shows them). */
+function myNear(): Presence['near'] {
+  const q = usePlayer.getState().queue
+  if (!q || !q.order.length) return undefined
+  const at = (pos: number) => {
+    const i = q.order[pos]
+    return i === undefined ? null : toWire(q.items[i])
+  }
+  const last = q.order.length - 1
+  const wrap = usePlayer.getState().repeat === 'all'
+  return { prev: q.pos > 0 ? at(q.pos - 1) : wrap ? at(last) : null, next: q.pos < last ? at(q.pos + 1) : wrap ? at(0) : null }
+}
+
 /** This device about itself. A remote is idle here: it never announces the track it mirrors. */
 function myPresence(): Presence {
   const p = usePlayer.getState()
   const d = useDevices.getState()
   const mine = !remoteOn()
+  const near = mine ? myNear() : undefined
   return {
     name: d.name,
     platform: isAndroid ? 'android' : 'desktop',
@@ -73,6 +90,7 @@ function myPresence(): Presence {
     shuffle: mine && p.shuffle,
     repeat: mine ? p.repeat : 'off',
     queue: { pos: mine ? (p.queue?.pos ?? 0) : 0, total: mine ? (p.queue?.order.length ?? 0) : 0 },
+    ...(near ? { near } : {}),
   }
 }
 
@@ -146,7 +164,7 @@ function runCommand(action: CommandAction, value?: number) {
   else if (action === 'play') p.play()
   else if (action === 'pause') p.pause()
   else if (action === 'next') p.next(true)
-  else if (action === 'prev') p.prev()
+  else if (action === 'prev') p.prev(value === 1)
   else if (action === 'seek' && value !== undefined) p.seek(value)
   else if (action === 'volume' && value !== undefined) p.setVolume(value)
   else if (action === 'shuffle') p.toggleShuffle()
@@ -172,12 +190,28 @@ function remoteFor(id: string): PlayerRemote {
     volumeAt = Date.now()
     cmd('volume', volumeValue)
   }
+  /** Shows the neighbour as playing right away (a swipe must not snap back while the device answers). */
+  const switchTo = (to: 'prev' | 'next') => {
+    const d = useDevices.getState().devices[id]
+    const target = d?.presence.near?.[to]
+    if (!d || !target) return
+    const was = d.presence.track
+    expect({ track: target, position: 0, duration: target.duration, near: { prev: to === 'next' ? was : null, next: to === 'prev' ? was : null } })
+    holding = { id, key: keyOf(target), until: Date.now() + HOLD_MS }
+    applyRemote()
+  }
   return {
     toggle: () => cmd('toggle'),
     play: () => cmd('play'),
     pause: () => cmd('pause'),
-    next: () => cmd('next'),
-    prev: () => cmd('prev'),
+    next: () => {
+      cmd('next')
+      switchTo('next')
+    },
+    prev: (always) => {
+      cmd('prev', always ? 1 : undefined)
+      if (always) switchTo('prev')
+    },
     seek: (sec) => {
       const at = clampSeconds(sec)
       expect({ position: at })
@@ -218,7 +252,8 @@ function applyRemote() {
   const d = remoteId ? devices[remoteId] : undefined
   if (!d) return
   const p = d.presence
-  showRemote({ name: p.name, track: p.track ? displayTrack(p.track) : null, position: remotePosition(p, d.seen, Date.now()), duration: p.duration, playing: p.playing, volume: p.volume, shuffle: p.shuffle, repeat: p.repeat })
+  const near = p.near ? { prev: p.near.prev ? displayTrack(p.near.prev) : null, next: p.near.next ? displayTrack(p.near.next) : null } : null
+  showRemote({ name: p.name, track: p.track ? displayTrack(p.track) : null, near, position: remotePosition(p, d.seen, Date.now()), duration: p.duration, playing: p.playing, volume: p.volume, shuffle: p.shuffle, repeat: p.repeat })
 }
 
 function enterRemote(id: string) {
@@ -244,6 +279,12 @@ export function leaveRemote() {
 function onMessage(msg: ConnectMessage, from: string) {
   const now = Date.now()
   if (msg.type === 'presence') {
+    // a word sent before our switch reached the device would take the remote back for a moment
+    if (holding?.id === from && Date.now() < holding.until && (!msg.presence.track || keyOf(msg.presence.track) !== holding.key)) {
+      useDevices.setState((s) => (s.devices[from] ? { devices: { ...s.devices, [from]: { ...s.devices[from], seen: now } } } : {}))
+      return
+    }
+    if (holding?.id === from) holding = null
     const prev = useDevices.getState().devices[from]
     const seen: SeenDevice = { id: from, presence: msg.presence, seen: now, lastPlaying: msg.presence.playing ? now : (prev?.lastPlaying ?? 0) }
     useDevices.setState((s) => ({ devices: { ...s.devices, [from]: seen } }))
@@ -374,4 +415,5 @@ export function stopConnect() {
   openedFor = null
   since = 0
   lastKey = ''
+  holding = null
 }

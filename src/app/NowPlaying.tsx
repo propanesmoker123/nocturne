@@ -187,7 +187,7 @@ export function NowPlaying() {
                   <IconButton size={40} plain active={shuffle} label="Перемешать" onClick={toggleShuffle} disabled={!!controlledBy}>
                     <IconShuffle size={21} />
                   </IconButton>
-                  <IconButton size={56} plain label="Предыдущий" onClick={prev} disabled={!!controlledBy}>
+                  <IconButton size={56} plain label="Предыдущий" onClick={() => prev()} disabled={!!controlledBy}>
                     <IconBackward size={36} />
                   </IconButton>
                   <IconButton className={s.big} size={64} plain label={isPlaying ? 'Пауза' : 'Играть'} onClick={toggle}>

@@ -227,6 +227,38 @@ describe('linked devices and the player', () => {
     expect(usePlayer.getState().source).toMatchObject({ kind: 'mix', label: 'VK Микс' })
   })
 
+  test('the playing device says the tracks around its own (what a remote swipe would go to)', async () => {
+    usePlayer.getState().playList([track(1), track(2), track(3)], 1)
+    await until(() => sent.some((s) => s.msg.type === 'presence' && s.msg.presence.track?.id === 2))
+    const mine = sent.filter((s) => s.msg.type === 'presence').at(-1)!.msg
+    expect(mine).toMatchObject({ presence: { near: { prev: { id: 1 }, next: { id: 3 } } } })
+  })
+
+  test('a swipe on the remote shows the next track at once, and a word from before the switch does not take it back', async () => {
+    hear({ type: 'presence', presence: presence({ near: { prev: w(8), next: w(10) } }) }, PHONE)
+    expect(usePlayer.getState().remoteNear).toMatchObject({ prev: { key: '1_8' }, next: { key: '1_10' } })
+    usePlayer.getState().next()
+    expect(usePlayer.getState()).toMatchObject({ current: { key: '1_10' }, position: 0 })
+    hear({ type: 'presence', presence: presence({ near: { prev: w(8), next: w(10) } }) }, PHONE)
+    await new Promise((r) => setTimeout(r, 600))
+    expect(usePlayer.getState().current?.key).toBe('1_10')
+    hear({ type: 'presence', presence: presence({ track: w(10), position: 1, near: { prev: w(9), next: w(11) } }) }, PHONE)
+    await new Promise((r) => setTimeout(r, 600))
+    expect(usePlayer.getState()).toMatchObject({ current: { key: '1_10' }, remoteNear: { next: { key: '1_11' } } })
+  })
+
+  test('a swipe back on the remote asks for the previous track even late in this one, and the device goes there', async () => {
+    hear({ type: 'presence', presence: presence() }, PHONE)
+    usePlayer.getState().prev(true)
+    expect(sent.filter((s) => s.msg.type === 'command').at(-1)).toEqual({ msg: { type: 'command', action: 'prev', value: 1 }, to: PHONE })
+    hear({ type: 'bye' }, PHONE)
+    usePlayer.getState().playList([track(1), track(2), track(3)], 2)
+    h.engine.position = 50
+    hear({ type: 'command', action: 'prev', value: 1 }, PHONE)
+    await until(() => usePlayer.getState().current?.key === '1_2')
+    expect(usePlayer.getState().current?.key).toBe('1_2')
+  })
+
   test('picking a track on the remote keeps the shuffle mode of the steered device', () => {
     hear({ type: 'presence', presence: presence({ shuffle: true }) }, PHONE)
     usePlayer.getState().playList([track(1), track(2), track(3)], 1)

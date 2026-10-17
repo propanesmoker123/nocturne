@@ -71,7 +71,7 @@ describe('the remote mode of the player', () => {
     const list = [t(1), t(2)]
     p.playList(list, 1)
     await settle()
-    expect(got).toEqual(['toggle', 'next', 'prev', 'seek:30', 'volume:0.3', 'shuffle', 'repeat', `playList:${JSON.stringify(list)}`])
+    expect(got).toEqual(['toggle', 'next', 'prev:false', 'seek:30', 'volume:0.3', 'shuffle', 'repeat', `playList:${JSON.stringify(list)}`])
     expect(h.calls.load).toEqual([])
   })
 

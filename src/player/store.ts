@@ -48,6 +48,8 @@ export interface PlayerState {
   history: Track[]
   /** Remote mode: the device this player steers, or null while it plays itself. */
   remoteName: string | null
+  /** Remote mode: the tracks before and after the one that plays there (when that device says). */
+  remoteNear: RemoteNear | null
 
   /** `startAt` (seconds) and `paused` start the first track somewhere other than the top, or without playing. */
   playList(tracks: Track[], index: number, opts?: PlayListOptions): void
@@ -56,7 +58,8 @@ export interface PlayerState {
   play(): void
   pause(): void
   next(manual?: boolean): void
-  prev(): void
+  /** `always`: the previous track even late in this one (a swipe), not a restart. */
+  prev(always?: boolean): void
   seek(sec: number): void
   seekBy(delta: number): void
   setVolume(v: number): void
@@ -104,7 +107,8 @@ export interface PlayerRemote {
   play(): void
   pause(): void
   next(): void
-  prev(): void
+  /** `always`: the previous track even late in this one, not a restart (a swipe). */
+  prev(always?: boolean): void
   seek(sec: number): void
   setVolume(v: number): void
   toggleShuffle(): void
@@ -113,10 +117,17 @@ export interface PlayerRemote {
   playMix(): void
 }
 
+/** The tracks around the one that plays: what a swipe would go to. */
+export interface RemoteNear {
+  prev: Track | null
+  next: Track | null
+}
+
 /** What the steered device plays, as this player shows it. */
 export interface RemoteView {
   name: string
   track: Track | null
+  near?: RemoteNear | null
   position: number
   duration: number
   playing: boolean
@@ -145,7 +156,7 @@ export function setPlayerRemote(r: PlayerRemote | null) {
     engine.stop()
   }
   if (!r && remote && beforeRemote) {
-    usePlayer.setState({ ...beforeRemote, isPlaying: false, isLoading: false, remoteName: null })
+    usePlayer.setState({ ...beforeRemote, isPlaying: false, isLoading: false, remoteName: null, remoteNear: null })
     beforeRemote = null
   }
   remote = r
@@ -153,7 +164,7 @@ export function setPlayerRemote(r: PlayerRemote | null) {
 
 export function showRemote(v: RemoteView) {
   if (!remote) return
-  usePlayer.setState({ remoteName: v.name, queue: null, current: v.track, position: v.position, duration: v.duration, isPlaying: v.playing, isLoading: false, volume: v.volume, shuffle: v.shuffle, repeat: v.repeat })
+  usePlayer.setState({ remoteName: v.name, remoteNear: v.near ?? null, queue: null, current: v.track, position: v.position, duration: v.duration, isPlaying: v.playing, isLoading: false, volume: v.volume, shuffle: v.shuffle, repeat: v.repeat })
 }
 
 /** Warm the image cache for the next track so the queue card and player swap covers instantly. */
@@ -304,6 +315,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     repeat: 'off',
     history: [],
     remoteName: null,
+    remoteNear: null,
 
     playList(tracks, index, opts) {
       if (remote) return remote.playList(tracks, index, opts)
@@ -393,11 +405,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
       void loadCurrent(true)
     },
 
-    prev() {
-      if (remote) return remote.prev()
+    prev(always = false) {
+      if (remote) return remote.prev(always)
       const q = get().queue
       if (!q || !allow('skip')) return
-      if (prevAction(engine.position) === 'restart') {
+      if (!always && prevAction(engine.position) === 'restart') {
         engine.seek(0)
         return
       }
