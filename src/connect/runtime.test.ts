@@ -247,6 +247,25 @@ describe('linked devices and the player', () => {
     expect(usePlayer.getState()).toMatchObject({ current: { key: '1_10' }, remoteNear: { next: { key: '1_11' } } })
   })
 
+  test('two quick «next» on the remote: the device’s word about where it really is comes through at once', async () => {
+    hear({ type: 'presence', presence: presence({ near: { prev: w(8), next: w(10) } }) }, PHONE)
+    usePlayer.getState().next()
+    usePlayer.getState().next()
+    expect(usePlayer.getState().current?.key).toBe('1_10')
+    // the device took both presses and says it plays 11, not the 10 the remote guessed
+    hear({ type: 'presence', presence: presence({ track: w(11), position: 0, near: { prev: w(10), next: w(12) } }) }, PHONE)
+    await new Promise((r) => setTimeout(r, 600))
+    expect(usePlayer.getState().current?.key).toBe('1_11')
+  })
+
+  test('a queue change on the playing device is announced at once (the remote’s neighbours stay true)', async () => {
+    usePlayer.getState().playList([track(1), track(2), track(3)], 0)
+    await until(() => sent.some((s) => s.msg.type === 'presence' && s.msg.presence.near?.next?.id === 2))
+    usePlayer.getState().playNext([track(7)])
+    await until(() => sent.some((s) => s.msg.type === 'presence' && s.msg.presence.near?.next?.id === 7))
+    expect(sent.filter((s) => s.msg.type === 'presence').at(-1)).toMatchObject({ msg: { presence: { near: { next: { id: 7 } } } } })
+  })
+
   test('a swipe back on the remote asks for the previous track even late in this one, and the device goes there', async () => {
     hear({ type: 'presence', presence: presence() }, PHONE)
     usePlayer.getState().prev(true)

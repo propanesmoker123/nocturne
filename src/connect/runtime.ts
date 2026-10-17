@@ -32,8 +32,8 @@ let pending: ReturnType<typeof setTimeout> | undefined
 let pendingForce = false
 let ticker: ReturnType<typeof setInterval> | null = null
 let cleanups: (() => void)[] = []
-/** After a swipe on the remote: the track it switched to, held against older words until the device confirms (or a moment passes). */
-let holding: { id: string; key: string; until: number } | null = null
+/** After next/previous on the remote: the track it switched away from — words still showing it are from before the switch and wait out a moment. */
+let holding: { id: string; from: string; until: number } | null = null
 const HOLD_MS = 2500
 /** Tracks another device announced, in full once VK answers (cover, «in my music»). */
 const full = new Map<string, Track>()
@@ -193,7 +193,7 @@ function remoteFor(id: string): PlayerRemote {
     if (!d || !target) return
     const was = d.presence.track
     expect({ track: target, position: 0, duration: target.duration, near: { prev: to === 'next' ? was : null, next: to === 'prev' ? was : null } })
-    holding = { id, key: keyOf(target), until: Date.now() + HOLD_MS }
+    if (was) holding = { id, from: keyOf(was), until: Date.now() + HOLD_MS }
     applyRemote()
   }
   return {
@@ -275,8 +275,9 @@ export function leaveRemote() {
 function onMessage(msg: ConnectMessage, from: string) {
   const now = Date.now()
   if (msg.type === 'presence') {
-    // a word sent before our switch reached the device would take the remote back for a moment
-    if (holding?.id === from && Date.now() < holding.until && (!msg.presence.track || keyOf(msg.presence.track) !== holding.key)) {
+    // a word sent before our switch reached the device would take the remote back for a moment; any
+    // other track is where the device really is (two quick presses, a queue that changed) and goes through
+    if (holding?.id === from && Date.now() < holding.until && msg.presence.track && keyOf(msg.presence.track) === holding.from) {
       useDevices.setState((s) => (s.devices[from] ? { devices: { ...s.devices, [from]: { ...s.devices[from], seen: now } } } : {}))
       return
     }
@@ -385,7 +386,8 @@ export async function startConnect(openBus: OpenBus = openBusDefault) {
       if (s.isPlaying && !prev.isPlaying) since = Date.now()
       // a jump (a seek here or from a remote) goes out at once, so remotes do not show the old place
       if (Math.abs(s.position - prev.position) > 2) announceSoon(true)
-      else if (s.current?.key !== prev.current?.key || s.isPlaying !== prev.isPlaying || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.volume !== prev.volume) announceSoon()
+      // (a queue change moves the neighbours a remote's swipe shows)
+      else if (s.current?.key !== prev.current?.key || s.isPlaying !== prev.isPlaying || s.shuffle !== prev.shuffle || s.repeat !== prev.repeat || s.volume !== prev.volume || s.queue !== prev.queue) announceSoon()
     }),
     // listening together and the device remote never mix: starting a session lets the steered device go
     useTogether.subscribe((s, prev) => {
