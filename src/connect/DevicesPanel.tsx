@@ -5,7 +5,8 @@ import { Button, IconButton } from '../components/controls'
 import { isAndroid } from '../lib/platform'
 import { usePlayer } from '../player/store'
 import { useTogether } from '../together/session'
-import { ensureCode, joinGroup, useDevices } from './devices'
+import { useSheet } from '../app/sheetStore'
+import { ensureCode, joinGroup, unlinkHere, useDevices } from './devices'
 import s from './devices.module.css'
 import { linkFor } from './link'
 import { onlineDevices } from './logic'
@@ -137,9 +138,28 @@ export function DevicesButton() {
           ) : (
             <>
               <DevicesList />
-              <button type="button" className={s.more} onClick={() => setLinking(true)}>
-                Связать ещё устройство
-              </button>
+              <div className={s.actions}>
+                <button type="button" className={s.more} onClick={() => setLinking(true)}>
+                  Связать ещё устройство
+                </button>
+                <button
+                  type="button"
+                  className={s.unlink}
+                  onClick={() => {
+                    setOpen(false)
+                    useSheet.getState().open({
+                      kind: 'confirm',
+                      title: 'Отвязать это устройство?',
+                      message: 'Оно перестанет видеть остальные ваши устройства и управлять ими. Связать снова можно кодом или QR.',
+                      confirmLabel: 'Отвязать',
+                      danger: true,
+                      onConfirm: unlinkHere,
+                    })
+                  }}
+                >
+                  Отвязать
+                </button>
+              </div>
             </>
           )}
         </div>

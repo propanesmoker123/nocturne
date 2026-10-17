@@ -122,3 +122,16 @@
   font: 600 13px/18px var(--font);
   color: var(--accent-text);
 }
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.unlink {
+  font: 500 13px/18px var(--font);
+  color: var(--label-3);
+}
+.unlink:hover {
+  color: var(--sys-red);
+}
