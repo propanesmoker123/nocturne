@@ -66,8 +66,13 @@ export function prev<T>(q: QueueState<T>, isPlayable: (t: T) => boolean): QueueS
   return seek(q, -1, q.repeat === 'all', isPlayable)
 }
 
+export interface Around<T> {
+  prev: T | null
+  next: T | null
+}
+
 /** What a manual «next» and «previous» would go to — what a swipe shows beside the current item. */
-export function around<T>(q: QueueState<T>, isPlayable: (t: T) => boolean): { prev: T | null; next: T | null } {
+export function around<T>(q: QueueState<T>, isPlayable: (t: T) => boolean): Around<T> {
   const n = next(q, isPlayable, true)
   const p = prev(q, isPlayable)
   return { prev: p && p.pos !== q.pos ? current(p) : null, next: n && n.pos !== q.pos ? current(n) : null }
