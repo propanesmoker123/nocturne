@@ -8,6 +8,8 @@ export type SheetRequest =
   | { kind: 'captcha'; img: string; resolve: (key: string | null) => void }
   | { kind: 'send-track'; track: Track }
   | { kind: 'link-device' }
+  /** «Что нового»: release notes as a short list, with an optional action (e.g. «Обновить»). */
+  | { kind: 'notes'; title: string; notes: string; action?: { label: string; run: () => void } }
 
 interface SheetState {
   sheet: SheetRequest | null

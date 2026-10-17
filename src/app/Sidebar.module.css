@@ -198,3 +198,10 @@
 .updateBtn:disabled {
   opacity: 0.8;
 }
+.updateNotes {
+  color: var(--accent-text);
+  text-align: left;
+}
+.updateNotes:hover {
+  text-decoration: underline;
+}

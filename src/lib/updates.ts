@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { journal } from './journal'
+import { rememberWhatsNew } from './whatsNew'
 import { isTauri } from './tauri'
 
 /** A new version shows up within half an hour while the app runs (latest.json is a tiny static file). */
@@ -73,6 +74,7 @@ export const useUpdates = create<UpdateState>((set, get) => ({
     } catch {
       // offline for a moment: the one found before still installs
     }
+    await rememberWhatsNew(pending.version, pending.body).catch(() => {})
     let total = 0
     let done = 0
     try {

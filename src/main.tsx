@@ -7,7 +7,7 @@ import { applyDemoHash } from './app/demo'
 import { toggleLibrary } from './app/library'
 import { queryClient } from './app/queryClient'
 import { initSession, useSession } from './app/session'
-import { askCaptcha } from './app/sheetStore'
+import { askCaptcha, useSheet } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
 import { startSystemSync } from './app/systemSync'
 import { toast } from './app/toast'
@@ -16,6 +16,7 @@ import { startGlobalHotkeys } from './lib/globalHotkeys'
 import { journalUncaughtErrors } from './lib/journal'
 import { startServerTimeSync } from './lib/serverTime'
 import { startUpdateChecks } from './lib/updates'
+import { takeWhatsNew } from './lib/whatsNew'
 import { initSettings, useSettings } from './lib/settings'
 import { invoke, isTauri } from './lib/tauri'
 import { startBridges } from './player/bridges'
@@ -36,6 +37,14 @@ async function showMainWindow(toggle = false) {
   await w.setFocus()
 }
 
+/** The first start after an update: «Что нового» once, from the notes kept before installing. */
+async function showWhatsNew() {
+  if (!isTauri()) return
+  const { getVersion } = await import('@tauri-apps/api/app')
+  const kept = await takeWhatsNew(await getVersion())
+  if (kept) useSheet.getState().open({ kind: 'notes', title: `Что нового в ${kept.version}`, notes: kept.notes })
+}
+
 async function boot() {
   journalUncaughtErrors()
   setCaptchaHandler((e) => (e.captchaImg ? askCaptcha(e.captchaImg) : Promise.resolve(null)))
@@ -52,6 +61,7 @@ async function boot() {
   )
 
   await initSession()
+  void showWhatsNew().catch(() => {})
   await initPlayer()
   startServerTimeSync()
   void startConnect()

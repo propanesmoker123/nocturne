@@ -12,6 +12,7 @@ import { useRouter } from './router'
 import { useSheet, type SheetRequest } from './sheetStore'
 import { toast } from './toast'
 import { addTracksToPlaylist, copyTrackLink, myPlaylistsKey } from './trackActions'
+import { splitNotes } from '../lib/whatsNew'
 
 function PlaylistForm({ req }: { req: Extract<SheetRequest, { kind: 'playlist-create' | 'playlist-edit' }> }) {
   const editing = req.kind === 'playlist-edit' ? req.playlist : null
@@ -69,6 +70,34 @@ function PlaylistForm({ req }: { req: Extract<SheetRequest, { kind: 'playlist-cr
         </Button>
       </div>
     </form>
+  )
+}
+
+function NotesBody({ req }: { req: Extract<SheetRequest, { kind: 'notes' }> }) {
+  const close = useSheet((x) => x.close)
+  return (
+    <>
+      <h2 className={s.sheetTitle}>{req.title}</h2>
+      <ul className={s.notes}>
+        {splitNotes(req.notes).map((p) => (
+          <li key={p}>{p}</li>
+        ))}
+      </ul>
+      <div className={s.sheetActions}>
+        <Button onClick={close}>{req.action ? 'Позже' : 'Понятно'}</Button>
+        {req.action && (
+          <Button
+            variant="primary"
+            onClick={() => {
+              close()
+              req.action!.run()
+            }}
+          >
+            {req.action.label}
+          </Button>
+        )}
+      </div>
+    </>
   )
 }
 
@@ -255,6 +284,8 @@ export function Sheets() {
           >
             {sheet.kind === 'confirm' ? (
               <ConfirmBody req={sheet} />
+            ) : sheet.kind === 'notes' ? (
+              <NotesBody req={sheet} />
             ) : sheet.kind === 'captcha' ? (
               <CaptchaBody req={sheet} />
             ) : sheet.kind === 'send-track' ? (

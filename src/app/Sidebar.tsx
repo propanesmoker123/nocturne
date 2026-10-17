@@ -102,13 +102,25 @@ function PlaylistLinks() {
 }
 
 function UpdateCard() {
-  const { phase, version, progress, install } = useUpdates()
+  const { phase, version, notes, progress, install } = useUpdates()
   if (phase !== 'available' && phase !== 'downloading') return null
   return (
     <div className={s.update}>
       <div className={s.updateText}>
         <div className={s.updateTitle}>Nocturne {version}</div>
-        <div className={s.updateSub}>{phase === 'downloading' ? `Загружаем… ${Math.round(progress * 100)}%` : 'Доступно обновление'}</div>
+        {phase === 'downloading' ? (
+          <div className={s.updateSub}>Загружаем… {Math.round(progress * 100)}%</div>
+        ) : notes?.trim() ? (
+          <button
+            type="button"
+            className={`${s.updateSub} ${s.updateNotes}`}
+            onClick={() => useSheet.getState().open({ kind: 'notes', title: `Что нового в ${version}`, notes, action: { label: 'Обновить', run: () => void install() } })}
+          >
+            Что нового
+          </button>
+        ) : (
+          <div className={s.updateSub}>Доступно обновление</div>
+        )}
       </div>
       <button type="button" className={s.updateBtn} disabled={phase === 'downloading'} onClick={() => void install()}>
         {phase === 'downloading' ? <Spinner size={14} /> : 'Обновить'}

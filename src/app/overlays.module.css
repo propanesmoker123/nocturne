@@ -136,6 +136,19 @@
   min-height: 84px;
   resize: vertical;
 }
+/* «Что нового»: release notes as a short list */
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 18px;
+  padding-left: 18px;
+  font: var(--t-callout);
+  color: var(--label-2);
+}
+.notes li::marker {
+  color: var(--accent-text);
+}
 .sheetActions {
   display: flex;
   justify-content: flex-end;
