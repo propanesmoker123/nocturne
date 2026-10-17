@@ -1,7 +1,17 @@
 import { describe, expect, test } from 'vitest'
-import { allInOrder, append, createQueue, current, insertNext, move, moveNext, next, prev, removeAt, setShuffle, upcoming } from './queue'
+import { allInOrder, append, around, createQueue, current, insertNext, move, moveNext, next, prev, removeAt, setShuffle, upcoming } from './queue'
 
 const ok = () => true
+
+describe('around', () => {
+  test('what a manual next and previous would go to, skipping the unplayable, wrapping only on repeat', () => {
+    const playable = (t: string) => t !== 'x'
+    expect(around(createQueue(['a', 'b', 'c'], 1, false, 'off'), playable)).toEqual({ prev: 'a', next: 'c' })
+    expect(around(createQueue(['a', 'x', 'c'], 0, false, 'off'), playable)).toEqual({ prev: null, next: 'c' })
+    expect(around(createQueue(['a', 'b', 'c'], 2, false, 'all'), playable)).toEqual({ prev: 'b', next: 'a' })
+    expect(around(createQueue(['a'], 0, false, 'all'), playable)).toEqual({ prev: null, next: null })
+  })
+})
 
 describe('createQueue', () => {
   test('starts at the requested index in natural order', () => {

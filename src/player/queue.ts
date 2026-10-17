@@ -66,6 +66,13 @@ export function prev<T>(q: QueueState<T>, isPlayable: (t: T) => boolean): QueueS
   return seek(q, -1, q.repeat === 'all', isPlayable)
 }
 
+/** What a manual «next» and «previous» would go to — what a swipe shows beside the current item. */
+export function around<T>(q: QueueState<T>, isPlayable: (t: T) => boolean): { prev: T | null; next: T | null } {
+  const n = next(q, isPlayable, true)
+  const p = prev(q, isPlayable)
+  return { prev: p && p.pos !== q.pos ? current(p) : null, next: n && n.pos !== q.pos ? current(n) : null }
+}
+
 export function setShuffle<T>(q: QueueState<T>, on: boolean, rnd: () => number = Math.random): QueueState<T> {
   const curIdx = q.order[q.pos]
   if (curIdx === undefined) return { ...q, shuffle: on }

@@ -4,6 +4,7 @@ import { isAndroid } from '../lib/platform'
 import { livePosition, remoteActive, setPlayerRemote, showRemote, usePlayer, type PlayerRemote } from '../player/store'
 import type { WireTrack } from '../together/protocol'
 import { toWire, useTogether } from '../together/session'
+import * as Q from '../player/queue'
 import * as vk from '../vk/api'
 import type { Track } from '../vk/models'
 import { openConnectBus, type ConnectBus } from './bus'
@@ -59,17 +60,12 @@ function displayTrack(w: WireTrack): Track {
   return bare
 }
 
-/** The tracks before and after the current one in play order (a remote's swipe shows them). */
+/** The tracks a «previous» and a «next» would go to (a remote's swipe shows them). */
 function myNear(): Presence['near'] {
   const q = usePlayer.getState().queue
-  if (!q || !q.order.length) return undefined
-  const at = (pos: number) => {
-    const i = q.order[pos]
-    return i === undefined ? null : toWire(q.items[i])
-  }
-  const last = q.order.length - 1
-  const wrap = usePlayer.getState().repeat === 'all'
-  return { prev: q.pos > 0 ? at(q.pos - 1) : wrap ? at(last) : null, next: q.pos < last ? at(q.pos + 1) : wrap ? at(0) : null }
+  if (!q) return undefined
+  const { prev, next } = Q.around(q, (t) => t.playable)
+  return { prev: prev ? toWire(prev) : null, next: next ? toWire(next) : null }
 }
 
 /** This device about itself. A remote is idle here: it never announces the track it mirrors. */
