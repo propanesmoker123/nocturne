@@ -12,6 +12,7 @@ import { askCaptcha, useSheet } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
 import { startSystemSync } from './app/systemSync'
 import { toast } from './app/toast'
+import { startAlbumSync } from './albums/sync'
 import { startConnect } from './connect/runtime'
 import { startGlobalHotkeys } from './lib/globalHotkeys'
 import { journalUncaughtErrors } from './lib/journal'
@@ -76,7 +77,8 @@ async function boot() {
   void showWhatsNew().catch(() => {})
   await initPlayer()
   startServerTimeSync()
-  void startConnect()
+  // albums need this device's id and link code, which Connect loads
+  void startConnect().finally(() => void startAlbumSync())
   void applyDemoHash()
   const actions = { toggleLike: () => void toggleLibrary(usePlayer.getState().current), showWindow: () => void showMainWindow() }
   startBridges(actions)
