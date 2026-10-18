@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import type { Track } from '../vk/models'
 
-const h = vi.hoisted(() => ({ saved: [] as unknown[] }))
+const h = vi.hoisted(() => ({ saved: [] as unknown[], unlink: null as null | ((kind: 'here' | 'all') => void) }))
 vi.mock('../lib/persist', () => ({ loadJSON: async () => null, saveJSON: async () => {}, debouncedSaver: () => ({ save: (d: unknown) => void h.saved.push(d), flush() {} }) }))
-vi.mock('../connect/devices', () => ({ useDevices: { getState: () => ({ deviceId: 'aaaaaaaaaaaaaaaa' }) } }))
+vi.mock('../connect/devices', () => ({ useDevices: { getState: () => ({ deviceId: 'aaaaaaaaaaaaaaaa' }) }, onUnlink: (fn: (kind: 'here' | 'all') => void) => void (h.unlink = fn) }))
 
 const { useAlbums, onAlbumsChanged } = await import('./store')
 const { addTracks, liveEntries, newAlbum, renameAlbum } = await import('./model')
@@ -88,5 +88,17 @@ describe('albums on the device', () => {
     expect(s().applyRemote(id, remote)).toBe(false)
     expect(heard).toEqual([[id]])
     off()
+  })
+})
+
+describe('albums and unlinking devices', () => {
+  test('unlinking all devices changes every album code; unlinking this one forgets the albums here', () => {
+    const id = s().create('Микс')
+    const before = entry(id).code
+    h.unlink!('all')
+    expect(entry(id).code).not.toBe(before)
+    h.unlink!('here')
+    expect(s().list).toEqual([])
+    expect(s().docs).toEqual({})
   })
 })

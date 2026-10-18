@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { useDevices } from '../connect/devices'
+import { onUnlink, useDevices } from '../connect/devices'
 import { debouncedSaver, loadJSON } from '../lib/persist'
 import { generateCode } from '../together/code'
 import type { Track } from '../vk/models'
@@ -166,6 +166,10 @@ export const useAlbums = create<AlbumsState>((set, get) => {
     },
   }
 })
+
+// A lost or given-away device must not keep the albums: unlinking all devices changes every
+// album's code, and a device that leaves forgets its albums
+onUnlink((kind) => (kind === 'all' ? useAlbums.getState().rotateAll() : useAlbums.getState().wipe()))
 
 /** Reads what the last run kept. Call once, before the sync starts. */
 export async function loadAlbums(): Promise<void> {

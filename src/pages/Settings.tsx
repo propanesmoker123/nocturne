@@ -381,11 +381,17 @@ export function SettingsPage() {
         </Row>
         {devices.code && (
           <Row title="Отвязать" sub="«Все» меняет код: остальные устройства потеряют связь">
-            <Button onClick={unlinkHere}>Это устройство</Button>
+            <Button
+              onClick={() =>
+                useSheet.getState().open({ kind: 'confirm', title: 'Отвязать это устройство?', message: 'Оно перестанет видеть остальные ваши устройства. Альбомы на этом устройстве удалятся (на других останутся).', confirmLabel: 'Отвязать', danger: true, onConfirm: unlinkHere })
+              }
+            >
+              Это устройство
+            </Button>
             <Button
               variant="danger"
               onClick={() =>
-                useSheet.getState().open({ kind: 'confirm', title: 'Отвязать все устройства?', message: 'Код сменится, и остальные устройства придётся связать заново.', confirmLabel: 'Отвязать все', danger: true, onConfirm: unlinkAll })
+                useSheet.getState().open({ kind: 'confirm', title: 'Отвязать все устройства?', message: 'Код сменится, и остальные устройства придётся связать заново. Коды всех альбомов тоже сменятся: друзьям из общих альбомов нужно будет дать новый код.', confirmLabel: 'Отвязать все', danger: true, onConfirm: unlinkAll })
               }
             >
               Все

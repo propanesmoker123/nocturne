@@ -66,14 +66,24 @@ export function renameDevice(name: string) {
   save()
 }
 
+const unlinkListeners = new Set<(kind: 'here' | 'all') => void>()
+
+/** Hears unlinking: `all` (a new code, every other device cut off) or `here` (this device left). */
+export function onUnlink(fn: (kind: 'here' | 'all') => void): () => void {
+  unlinkListeners.add(fn)
+  return () => void unlinkListeners.delete(fn)
+}
+
 /** This device leaves the group; the others stay together. */
 export function unlinkHere() {
   useDevices.setState({ code: null, devices: {} })
   save()
+  for (const fn of unlinkListeners) fn('here')
 }
 
 /** A new code here: every other device loses the link and has to be linked again. */
 export function unlinkAll() {
   useDevices.setState({ code: newGroupCode(), devices: {} })
   save()
+  for (const fn of unlinkListeners) fn('all')
 }

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 const store = vi.hoisted(() => ({ data: null as unknown, saved: [] as unknown[] }))
 vi.mock('../lib/persist', () => ({ loadJSON: async () => store.data, saveJSON: async (_: string, d: unknown) => void store.saved.push(d) }))
 
-const { useDevices, loadDevices, ensureCode, joinGroup, renameDevice, unlinkHere, unlinkAll } = await import('./devices')
+const { useDevices, loadDevices, ensureCode, joinGroup, renameDevice, unlinkHere, unlinkAll, onUnlink } = await import('./devices')
 
 beforeEach(() => {
   store.data = null
@@ -52,5 +52,19 @@ describe('the linked devices of this one', () => {
     expect(useDevices.getState().code).not.toBe(code)
     unlinkHere()
     expect(useDevices.getState().code).toBeNull()
+  })
+})
+
+describe('unlinking and who listens', () => {
+  test('unlinking tells its listeners which kind: all devices, or this one', () => {
+    const heard: string[] = []
+    const off = onUnlink((kind) => heard.push(kind))
+    ensureCode()
+    unlinkAll()
+    unlinkHere()
+    joinGroup('K7QM-2XFD-9WRA-HT4C')
+    off()
+    unlinkAll()
+    expect(heard).toEqual(['all', 'here'])
   })
 })
