@@ -27,6 +27,7 @@ pub const UNREACHABLE: &str = "SoundCloud не отвечает — без VPN �
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ScError {
     SignedOut,
+    Challenge,
     Http { status: u16 },
     Network { message: String },
     Invalid { message: String },
@@ -84,9 +85,9 @@ fn system_urn(s: &str) -> bool {
     s.strip_prefix("soundcloud:system-playlists:").is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphanumeric() || b":_-".contains(&b)))
 }
 
-/// The requests the UI may make (the path is checked without its query). Reads only: SoundCloud's
-/// bot protection (DataDome) answers likes and other writes from anything but its site with a captcha.
+/// The requests the UI may make. Writes run in SoundCloud's own browser session, not reqwest.
 pub fn allowed(method: &str, path: &str) -> bool {
+    if method != "GET" && path.contains('?') { return false; }
     let path = path.split('?').next().unwrap_or_default();
     let Some(rest) = path.strip_prefix('/') else { return false };
     let segs: Vec<&str> = rest.split('/').collect();
@@ -95,6 +96,7 @@ pub fn allowed(method: &str, path: &str) -> bool {
         ("GET", ["tracks", n, "related"] | ["playlists", n] | ["users", n]) => numeric(n),
         ("GET", ["system-playlists", urn]) => system_urn(urn),
         ("GET", ["users", n, "track_likes" | "playlists_without_albums" | "albums" | "toptracks" | "tracks"]) => numeric(n),
+        ("PUT" | "DELETE", ["users", user, "track_likes", track]) => numeric(user) && numeric(track),
         _ => false,
     }
 }
@@ -208,6 +210,9 @@ pub async fn sc_api(app: AppHandle, method: String, path: String) -> Result<Valu
     if !allowed(&method, &path) {
         return Err(invalid("request not allowed"));
     }
+    if method != "GET" {
+        return super::web::request(&app, &method, &path).await;
+    }
     request(&app, &method, &path).await
 }
 
@@ -251,14 +256,15 @@ mod tests {
             ("GET", "/users/12/track_likes"),
             ("GET", "/system-playlists/soundcloud:system-playlists:weekly:123"),
             ("GET", "/me/library/all"),
+            ("PUT", "/users/1/track_likes/2"),
+            ("DELETE", "/users/1/track_likes/2"),
         ] {
             assert!(allowed(m, p), "{m} {p}");
         }
         for (m, p) in [
             ("PUT", "/me"),
-            // likes are behind SoundCloud's bot protection: never sent from here
-            ("PUT", "/users/1/track_likes/2"),
-            ("DELETE", "/users/1/track_likes/2"),
+            ("PUT", "/users/1/track_likes/abc"),
+            ("PUT", "/users/1/track_likes/2?x=1"),
             ("GET", "/users/abc"),
             ("POST", "/users/1/track_likes/2"),
             ("GET", "/oauth/token"),

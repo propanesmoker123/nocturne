@@ -51,7 +51,7 @@ impl Failure {
     }
 }
 
-fn profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(super) fn profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_local_data_dir().map(|d| d.join(PROFILE_DIR)).map_err(|e| e.to_string())
 }
 
@@ -236,6 +236,7 @@ pub async fn sc_logout(app: AppHandle) -> Result<(), String> {
     st.set_signed_out();
     store::clear_token();
     close_windows(&app);
+    super::web::close(&app);
     emit_status(&app);
     wipe_profile(&app).await
 }

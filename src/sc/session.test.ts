@@ -20,12 +20,14 @@ describe('SoundCloud session in the UI', () => {
   })
 
   test('signing out drops SoundCloud data only', () => {
+    applyStatus({ state: 'signed-in', user: { id: 7, name: 'n' } })
     queryClient.setQueryData(['sc-likes', 7], { items: [] })
     queryClient.setQueryData(['tracks', 1], { items: [] })
     applyStatus({ state: 'signed-out' })
     expect(queryClient.getQueryData(['sc-likes', 7])).toBeUndefined()
     expect(queryClient.getQueryData(['tracks', 1])).toBeDefined()
     expect(useScSession.getState().user).toBeNull()
+    expect(getScMeId()).toBe(0)
   })
 
   test('a closed login window ends signing in without an error', () => {

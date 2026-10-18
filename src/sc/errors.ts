@@ -2,9 +2,9 @@
 
 export const SC_UNREACHABLE = 'SoundCloud не отвечает — без VPN он в России не играет'
 
-export type ScErrorKind = 'signedOut' | 'http' | 'network' | 'invalid'
+export type ScErrorKind = 'signedOut' | 'challenge' | 'http' | 'network' | 'invalid'
 
-const KINDS: ScErrorKind[] = ['signedOut', 'http', 'network', 'invalid']
+const KINDS: ScErrorKind[] = ['signedOut', 'challenge', 'http', 'network', 'invalid']
 
 export class ScApiError extends Error {
   readonly kind: ScErrorKind
@@ -34,6 +34,8 @@ export function describeScError(e: unknown): string {
   switch (err.kind) {
     case 'signedOut':
       return 'Войдите в SoundCloud'
+    case 'challenge':
+      return 'Пройдите проверку SoundCloud в открывшемся окне и нажмите сердечко ещё раз'
     case 'network':
       return SC_UNREACHABLE
     case 'http':

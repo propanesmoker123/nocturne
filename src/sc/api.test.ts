@@ -14,11 +14,74 @@ function record(answer: (path: string, method: string) => unknown) {
   return calls
 }
 
-afterEach(() => sc.setTransport(null))
+afterEach(() => {
+  sc.setTransport(null)
+  sc.setScMeId(0)
+})
 
 const idsOf = (path: string) => new URLSearchParams(path.split('?')[1]).get('ids')!.split(',').map(Number)
 
 describe('SoundCloud API', () => {
+  test('likes and unlikes update subsequent track reads only after success', async () => {
+    sc.setScMeId(7)
+    const calls = record((_path, method) => method === 'GET' ? [trackRaw(402, 'a')] : null)
+    await sc.like({ id: 402 })
+    expect((await sc.getTracks([402]))[0].liked).toBe(true)
+    await sc.unlike({ id: 402 })
+    expect((await sc.getTracks([402]))[0].liked).toBe(false)
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([
+      { method: 'PUT', path: '/users/7/track_likes/402' },
+      { method: 'DELETE', path: '/users/7/track_likes/402' },
+    ])
+  })
+
+  test('a rejected like does not mark a track liked', async () => {
+    sc.setScMeId(7)
+    record((_path, method) => {
+      if (method !== 'GET') throw { kind: 'http', status: 403 }
+      return [trackRaw(402, 'a')]
+    })
+    await expect(sc.like({ id: 402 })).rejects.toMatchObject({ kind: 'http', status: 403 })
+    expect((await sc.getTracks([402]))[0].liked).toBe(false)
+  })
+
+  test('a signed-out like never sends a request', async () => {
+    sc.setScMeId(0)
+    const calls = record(() => null)
+    await expect(sc.like({ id: 402 })).rejects.toMatchObject({ kind: 'signedOut' })
+    expect(calls).toEqual([])
+  })
+
+  test('an earlier likes read cannot overwrite a completed unlike', async () => {
+    sc.setScMeId(7)
+    let finish!: (raw: unknown) => void
+    sc.setTransport(async (method, path) => {
+      if (path.startsWith('/users/7/track_likes?')) return new Promise((resolve) => { finish = resolve })
+      return method === 'GET' ? [trackRaw(402, 'a')] : null
+    })
+    await sc.like({ id: 402 })
+    const pendingRead = sc.getLikes(7)
+    await sc.unlike({ id: 402 })
+    finish({ collection: [{ track: trackRaw(402, 'a') }] })
+    await pendingRead
+    expect((await sc.getTracks([402]))[0].liked).toBe(false)
+  })
+
+  test('a write from an earlier login does not update the next login to the same account', async () => {
+    sc.setScMeId(7)
+    let finish!: () => void
+    sc.setTransport(async (method) => {
+      if (method !== 'GET') return new Promise<void>((resolve) => { finish = resolve })
+      return [trackRaw(402, 'a')]
+    })
+    const write = sc.like({ id: 402 })
+    sc.setScMeId(0)
+    sc.setScMeId(7)
+    finish()
+    await expect(write).rejects.toMatchObject({ kind: 'signedOut' })
+    expect((await sc.getTracks([402]))[0].liked).toBe(false)
+  })
+
   test('getTracks asks in chunks of 50 and keeps the order', async () => {
     const ids = Array.from({ length: 120 }, (_, i) => i + 1)
     const calls = record((path) => idsOf(path).filter((id) => id !== 7 && id !== 80).reverse().map((id) => trackRaw(id, `t${id}`)))
@@ -73,5 +136,6 @@ describe('SoundCloud API', () => {
     expect(describeScError(ScApiError.from({ kind: 'signedOut' }))).toBe('Войдите в SoundCloud')
     expect(describeScError(ScApiError.from({ kind: 'http', status: 404 }))).toBe('Не найдено в SoundCloud')
     expect(describeScError(ScApiError.from({ kind: 'http', status: 500 }))).toBe('SoundCloud ответил ошибкой 500')
+    expect(describeScError(ScApiError.from({ kind: 'challenge' }))).toBe('Пройдите проверку SoundCloud в открывшемся окне и нажмите сердечко ещё раз')
   })
 })

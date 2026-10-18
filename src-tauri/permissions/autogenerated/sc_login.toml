@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sc-login"
+description = "Enables the sc_login command without any pre-configured scope."
+commands.allow = ["sc_login"]
+
+[[permission]]
+identifier = "deny-sc-login"
+description = "Denies the sc_login command without any pre-configured scope."
+commands.deny = ["sc_login"]

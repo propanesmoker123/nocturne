@@ -1,4 +1,4 @@
-//! SoundCloud: sign-in, the key, api-v2 requests and stream links. The key never leaves Rust.
+//! SoundCloud: sign-in, api-v2 requests and stream links. The key never reaches the app's UI.
 
 pub mod api;
 pub mod auth;
@@ -6,6 +6,7 @@ pub mod client_id;
 pub mod login;
 pub mod store;
 pub mod stream;
+pub mod web;
 
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};

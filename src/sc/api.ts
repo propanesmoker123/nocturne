@@ -11,8 +11,9 @@ type Transport = (method: Method, path: string) => Promise<unknown>
 
 let transport: Transport | null = null
 let meId = 0
-/** Tracks the person liked, as far as their likes have been read: other lists mark them. Liking itself
- *  happens on SoundCloud's site (its bot protection refuses likes from elsewhere). */
+let accountVersion = 0
+let likesVersion = 0
+/** Tracks the person liked, as far as their likes have been read or changed. */
 const likedIds = new Set<number>()
 
 const defaultTransport: Transport = async (method, path) => {
@@ -27,7 +28,11 @@ export function setTransport(t: Transport | null) {
 }
 
 export function setScMeId(id: number) {
-  if (id !== meId) likedIds.clear()
+  if (id !== meId) {
+    likedIds.clear()
+    accountVersion++
+    likesVersion++
+  }
   meId = id
 }
 
@@ -113,11 +118,26 @@ export async function getStream(cursor?: string): Promise<{ tracks: Track[]; pla
 }
 
 export async function getLikes(userId: number, cursor?: string): Promise<ScPage<Track>> {
+  const version = likesVersion
   const raw = await get<RawScCollection<RawScLike>>(cursor ?? `/users/${userId}/track_likes?limit=200`)
   const items = fullOnes((raw.collection ?? []).map((l) => l.track)).map((r) => normalizeScTrack(r, true))
-  if (userId === meId) for (const t of items) likedIds.add(t.id)
+  if (userId === meId && version === likesVersion) for (const t of items) likedIds.add(t.id)
   return { items, next: nextPath(raw.next_href) }
 }
+
+async function setLiked(t: Pick<Track, 'id'>, liked: boolean): Promise<void> {
+  const account = meId
+  const version = accountVersion
+  if (!account) throw new ScApiError('signedOut', '')
+  await call(liked ? 'PUT' : 'DELETE', `/users/${account}/track_likes/${t.id}`)
+  if (meId !== account || version !== accountVersion) throw new ScApiError('signedOut', '')
+  likesVersion++
+  if (liked) likedIds.add(t.id)
+  else likedIds.delete(t.id)
+}
+
+export const like = (t: Pick<Track, 'id'>) => setLiked(t, true)
+export const unlike = (t: Pick<Track, 'id'>) => setLiked(t, false)
 
 const playlistKey = (p: Playlist) => `${p.id}_${p.urn ?? ''}`
 

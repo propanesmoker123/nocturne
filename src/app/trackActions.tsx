@@ -163,7 +163,7 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
   return items
 }
 
-/** The rest of a SoundCloud track's menu: its artist, its page (likes are put there). Nothing of VK's. */
+/** The rest of a SoundCloud track's menu: its artist and its page. Nothing of VK's. */
 function scTrackItems(track: Track): MenuItem[] {
   return [
     {

@@ -1,6 +1,9 @@
 import { sameSong } from '../lib/search'
+import type { InfiniteData } from '@tanstack/react-query'
 import { usePlayer } from '../player/store'
-import { openInSoundCloud } from '../sc/open'
+import * as sc from '../sc/api'
+import { describeScError } from '../sc/errors'
+import { scKeys } from '../sc/queries'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
 import { serviceOf, type Track } from '../vk/models'
@@ -14,9 +17,9 @@ export function isInLibrary(t: Track): boolean {
   return t.liked || t.ownerId === vk.getMeId()
 }
 
-/** What the heart button says: VK's «Моя музыка», or SoundCloud's likes (put on its site). */
+/** What the heart button says: VK's «Моя музыка», or SoundCloud's likes. */
 export function likeLabel(t: Track, liked: boolean): string {
-  if (serviceOf(t) === 'sc') return liked ? 'В ваших лайках SoundCloud' : 'Лайкнуть на сайте SoundCloud'
+  if (serviceOf(t) === 'sc') return liked ? 'Убрать из лайков' : 'Нравится'
   return liked ? 'Удалить из Моей музыки' : 'Добавить в Мою музыку'
 }
 
@@ -39,12 +42,48 @@ async function findLibraryCopy(t: Track): Promise<Track | null> {
   return first.items.find((x) => sameSong(x, t)) ?? null
 }
 
-/**
- * SoundCloud guards likes with bot protection (DataDome): a like from anything but its own site gets
- * a captcha. Nocturne does not work around that: the like is put on the track's page there.
- */
-function likeOnSoundCloud(t: Track) {
-  toast('Лайк в SoundCloud ставится только на его сайте', 'info', { label: 'Открыть', run: () => void openInSoundCloud(t.permalink) })
+const scPending = new Set<string>()
+
+async function likeOnSoundCloud(t: Track) {
+  if (scPending.has(t.key)) return
+  scPending.add(t.key)
+  const account = sc.getScMeId()
+  const liked = !t.liked
+  const likesKey = scKeys.likes(account)
+  const quickKey = ['sc-quick-likes', account]
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: likesKey })
+    void queryClient.invalidateQueries({ queryKey: quickKey })
+  }
+  try {
+    await (liked ? sc.like(t) : sc.unlike(t))
+    // An older list request must not put a removed track back after the write succeeds.
+    await Promise.all([
+      queryClient.cancelQueries({ queryKey: likesKey }),
+      queryClient.cancelQueries({ queryKey: quickKey }),
+    ])
+    if (sc.getScMeId() !== account) return
+    markLiked(t.key, liked)
+    queryClient.setQueryData<InfiniteData<sc.ScPage<Track>>>(likesKey, (old) => {
+      if (!old?.pages.length) return old
+      const pages = old.pages.map((page) => ({ ...page, items: page.items.filter((x) => x.key !== t.key) }))
+      if (liked) pages[0].items.unshift({ ...t, liked: true })
+      return { ...old, pages }
+    })
+    if (liked) {
+      toast('Добавлено в лайки SoundCloud', 'added')
+    } else {
+      toast('Убрано из лайков SoundCloud', 'removed', {
+        label: 'Вернуть',
+        run: () => void likeOnSoundCloud({ ...t, liked: false }),
+      })
+    }
+    refresh()
+  } catch (e) {
+    toast(describeScError(e), 'error')
+  } finally {
+    scPending.delete(t.key)
+  }
 }
 
 /** Adds the track to "Моя музыка" or removes it (with an undo action); for SoundCloud, its like. */

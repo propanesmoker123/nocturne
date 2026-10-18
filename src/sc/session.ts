@@ -44,7 +44,10 @@ export function applyStatus(s: { state: ScPhase; user?: ScUser | null }) {
   const prev = useScSession.getState()
   if (s.state === 'signed-in' && s.user) setScMeId(s.user.id)
   // what was read from the account goes with it; VK's data stays
-  if (s.state === 'signed-out') queryClient.removeQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sc-') })
+  if (s.state === 'signed-out') {
+    setScMeId(0)
+    queryClient.removeQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sc-') })
+  }
   useScSession.setState({
     phase: s.state,
     user: s.state === 'signed-out' ? null : (s.user ?? prev.user),
