@@ -10,7 +10,7 @@ import { useUpdates } from '../lib/updates'
 import s from './Login.module.css'
 
 /** Lets someone stuck on login send what happened to whoever helps them. */
-function CopyJournalLink() {
+export function CopyJournalLink() {
   const [state, setState] = useState<'idle' | 'copied' | 'empty' | 'failed'>('idle')
   const label = { idle: 'Скопировать журнал входа', copied: 'Журнал скопирован — отправьте его', empty: 'Журнал пока пуст', failed: 'Не получилось скопировать' }[state]
   return (

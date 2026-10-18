@@ -308,7 +308,8 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
                 let _ = app.emit("session:busy", true);
                 tokio::time::sleep(wait).await;
                 round += 1;
-                result = refresh_with_retries(&app).await;
+                // one request a round: when VK means «too many requests», a burst would keep it so
+                result = refresh(&app).await;
             }
             BEING_PATIENT.store(false, Ordering::SeqCst);
             let _ = app.emit("session:busy", false);

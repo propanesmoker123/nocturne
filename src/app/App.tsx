@@ -8,7 +8,7 @@ import { Explore } from '../pages/Explore'
 import { FriendPage, Friends } from '../pages/Friends'
 import { Home } from '../pages/Home'
 import { Library } from '../pages/Library'
-import { Login } from '../pages/Login'
+import { CopyJournalLink, Login } from '../pages/Login'
 import { PlaylistPage } from '../pages/PlaylistPage'
 import { Playlists } from '../pages/Playlists'
 import { Recent } from '../pages/Recent'
@@ -25,7 +25,7 @@ import { ScrollerContext } from './scroller'
 import { useSession } from './session'
 import { Sheets } from './Sheets'
 import { Sidebar } from './Sidebar'
-import { Titlebar } from './Titlebar'
+import { Titlebar, WindowControls } from './Titlebar'
 import { Toasts } from './Toasts'
 
 function Page({ route }: { route: Route }) {
@@ -103,8 +103,20 @@ export function App() {
   if (phase === 'pending') {
     return (
       <div className={s.splash} data-tauri-drag-region>
+        <div className={s.splashChrome}>
+          <WindowControls />
+        </div>
         <Spinner size={24} />
-        {busy && <p className={s.splashNote}>VK пока не выдаёт доступ — пробуем ещё раз…</p>}
+        {busy && (
+          <>
+            <p className={s.splashNote}>VK пока не выдаёт доступ — пробуем ещё раз…</p>
+            {/* VK may be down for hours: a way to look at it and to send what happened */}
+            <button type="button" className={s.splashLink} onClick={() => void useSession.getState().login()}>
+              Открыть окно VK
+            </button>
+            <CopyJournalLink />
+          </>
+        )}
       </div>
     )
   }

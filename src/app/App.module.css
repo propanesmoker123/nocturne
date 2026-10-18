@@ -94,6 +94,7 @@
 }
 
 .splash {
+  position: relative;
   display: grid;
   place-items: center;
   align-content: center;
@@ -106,4 +107,13 @@
   margin: 0;
   text-align: center;
   font: var(--t-callout);
+}
+.splashChrome {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+.splashLink {
+  color: var(--accent-text);
+  font: 500 14px/18px var(--font);
 }
