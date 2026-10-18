@@ -219,8 +219,10 @@ pub fn closed(app: &AppHandle, label: &str) {
     }
 }
 
+/// Async on purpose: a sync command runs on the main thread, and building a webview window there
+/// deadlocks on Windows (the window stays white and the app stops answering).
 #[tauri::command]
-pub fn sc_login(app: AppHandle) -> Result<(), String> {
+pub async fn sc_login(app: AppHandle) -> Result<(), String> {
     open(&app, false).map(|_| ())
 }
 
