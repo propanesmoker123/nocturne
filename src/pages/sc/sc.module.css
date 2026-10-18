@@ -38,3 +38,31 @@
   color: var(--label-3);
   font-size: 12px;
 }
+
+.person {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
+  border-radius: 12px;
+}
+
+.person:hover .personName {
+  color: var(--label);
+}
+
+.personName {
+  max-width: 100%;
+  color: var(--label-2);
+  font: var(--t-headline);
+}
+
+/* a profile picture in the page header: round, smaller than a cover */
+.avatar {
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  box-shadow: var(--shadow-art);
+}

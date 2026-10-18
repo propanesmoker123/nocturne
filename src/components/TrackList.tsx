@@ -1,7 +1,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import { isInLibrary, toggleLibrary } from '../app/library'
-import { useRouter } from '../app/router'
+import { artistRoute, useRouter } from '../app/router'
 import { useScroller } from '../app/scroller'
 import { openTrackMenu } from '../app/trackActions'
 import { formatTime } from '../lib/format'
@@ -31,7 +31,7 @@ export function ArtistLinks({ track }: { track: Track }) {
             type="button"
             onClick={(e) => {
               e.stopPropagation()
-              push({ name: 'artist', id: a.id, artist: a.name })
+              push(artistRoute(track, a))
             }}
           >
             {a.name}

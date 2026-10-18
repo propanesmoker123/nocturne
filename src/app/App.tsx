@@ -13,6 +13,13 @@ import { PlaylistPage } from '../pages/PlaylistPage'
 import { Playlists } from '../pages/Playlists'
 import { Recent } from '../pages/Recent'
 import { SectionPage } from '../pages/SectionPage'
+import { ScHome } from '../pages/sc/ScHome'
+import { ScLikes } from '../pages/sc/ScLikes'
+import { ScPlaylistPage } from '../pages/sc/ScPlaylistPage'
+import { ScPlaylists } from '../pages/sc/ScPlaylists'
+import { ScSearch } from '../pages/sc/ScSearch'
+import { ScStream } from '../pages/sc/ScStream'
+import { ScUser } from '../pages/sc/ScUser'
 import { SearchPage } from '../pages/Search'
 import { SettingsPage } from '../pages/Settings'
 import s from './App.module.css'
@@ -55,11 +62,25 @@ function Page({ route }: { route: Route }) {
       return <SectionPage title={route.title} id={route.id} block={route.block} cards={route.cards} />
     case 'settings':
       return <SettingsPage />
+    case 'sc-home':
+      return <ScHome />
+    case 'sc-stream':
+      return <ScStream />
+    case 'sc-likes':
+      return <ScLikes />
+    case 'sc-playlists':
+      return <ScPlaylists />
+    case 'sc-playlist':
+      return <ScPlaylistPage id={route.id} urn={route.urn} title={route.title} />
+    case 'sc-user':
+      return <ScUser id={route.id} title={route.title} />
+    case 'sc-search':
+      return <ScSearch q={route.q ?? ''} />
   }
 }
 
 /** Search keeps one page instance while the query changes. */
-const routeKey = (r: Route) => (r.name === 'search' ? 'search' : JSON.stringify(r))
+const routeKey = (r: Route) => (r.name === 'search' || r.name === 'sc-search' ? r.name : JSON.stringify(r))
 
 function Shell() {
   const route = useRouter((r) => r.route)

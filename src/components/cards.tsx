@@ -7,6 +7,8 @@ import { formatPlays, formatPlaysShort, formatTime, pluralRu } from '../lib/form
 import { useSettings, type WallpaperConfig } from '../lib/settings'
 import { upcoming } from '../player/queue'
 import { usePlayer } from '../player/store'
+import * as sc from '../sc/api'
+import { describeScError } from '../sc/errors'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
 import type { Playlist, RecommendedPlaylist } from '../vk/models'
@@ -75,22 +77,23 @@ export function playlistSubtitle(p: Playlist): string {
 }
 
 async function playPlaylist(p: Playlist, shuffle = false) {
+  const isSc = p.service === 'sc'
   try {
-    const page = await vk.getPlaylistTracks(p, 0, 500)
-    if (!page.items.length) {
+    const items = isSc ? (await sc.getPlaylistWithTracks(p)).tracks : (await vk.getPlaylistTracks(p, 0, 500)).items
+    if (!items.length) {
       toast('В плейлисте пока нет треков', 'info')
       return
     }
-    usePlayer.getState().playList(page.items, 0, { shuffle })
+    usePlayer.getState().playList(items, 0, { shuffle, ...(isSc ? { source: { kind: 'list' as const, label: p.title } } : {}) })
   } catch (e) {
-    toast(describeError(e), 'error')
+    toast(isSc ? describeScError(e) : describeError(e), 'error')
   }
 }
 
 export function PlaylistCard({ playlist: p }: { playlist: Playlist }) {
   const push = useRouter((r) => r.push)
   const [busy, setBusy] = useState(false)
-  const open = () => push({ name: 'playlist', ownerId: p.ownerId, id: p.id, accessKey: p.accessKey })
+  const open = () => push(p.service === 'sc' ? { name: 'sc-playlist', id: p.id, urn: p.urn, title: p.title } : { name: 'playlist', ownerId: p.ownerId, id: p.id, accessKey: p.accessKey })
   return (
     <div className={s.card}>
       <div

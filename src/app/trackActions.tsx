@@ -1,8 +1,9 @@
-import { Copy, Disc3, ListEnd, ListPlus, ListX, Mic2, Plus, Send, Trash2 } from 'lucide-react'
+import { Copy, Disc3, ExternalLink, ListEnd, ListPlus, ListX, Mic2, Plus, Send, Trash2 } from 'lucide-react'
 import type { MouseEvent } from 'react'
 import { IconCheck, IconPlay, IconPlus } from '../components/Icons'
 import { fullTrackName } from '../lib/format'
 import { usePlayer } from '../player/store'
+import { openInSoundCloud } from '../sc/open'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
 import type { Playlist, Track } from '../vk/models'
@@ -164,6 +165,11 @@ export function playlistMenuItems(p: Playlist, tracks: Track[] | undefined): Men
     { label: 'Играть следующим', icon: <ListPlus {...ic} />, disabled: !tracks?.length, onSelect: () => tracks && player.playNext(tracks) },
     { label: 'В конец очереди', icon: <ListEnd {...ic} />, disabled: !tracks?.length, onSelect: () => tracks && player.addToQueue(tracks) },
   ]
+  // a SoundCloud playlist is only listened to here; editing it stays in SoundCloud
+  if (p.service === 'sc') {
+    if (p.permalink) items.push({ separator: true }, { label: 'Открыть в SoundCloud', icon: <ExternalLink {...ic} />, onSelect: () => void openInSoundCloud(p.permalink) })
+    return items
+  }
   if (p.canEdit) {
     items.push(
       { separator: true },
