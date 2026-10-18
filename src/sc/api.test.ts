@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from 'vitest'
-import type { Track } from '../vk/models'
 import * as sc from './api'
 import { describeScError, SC_UNREACHABLE, ScApiError } from './errors'
 import { playlistRaw, systemPlaylistRaw, trackRaw, tracks } from './fixtures'
@@ -48,18 +47,6 @@ describe('SoundCloud API', () => {
     const { tracks: got } = await sc.getPlaylistWithTracks({ id: 0, urn: 'soundcloud:system-playlists:mixed-for-you:7' })
     expect(calls[0].path).toBe('/system-playlists/soundcloud:system-playlists:mixed-for-you:7')
     expect(got.map((t) => t.id)).toEqual([402, 403, 404, 405])
-  })
-
-  test('like and unlike use the signed-in user', async () => {
-    sc.setScMeId(7)
-    const calls = record(() => null)
-    const t = { id: 402 } as Track
-    await sc.like(t)
-    await sc.unlike(t)
-    expect(calls).toEqual([
-      { method: 'PUT', path: '/users/7/track_likes/402' },
-      { method: 'DELETE', path: '/users/7/track_likes/402' },
-    ])
   })
 
   test('tracks the person liked come marked liked', async () => {

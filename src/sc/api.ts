@@ -11,7 +11,8 @@ type Transport = (method: Method, path: string) => Promise<unknown>
 
 let transport: Transport | null = null
 let meId = 0
-/** Tracks the person liked, as far as their likes have been read: other lists mark them. */
+/** Tracks the person liked, as far as their likes have been read: other lists mark them. Liking itself
+ *  happens on SoundCloud's site (its bot protection refuses likes from elsewhere). */
 const likedIds = new Set<number>()
 
 const defaultTransport: Transport = async (method, path) => {
@@ -116,16 +117,6 @@ export async function getLikes(userId: number, cursor?: string): Promise<ScPage<
   const items = fullOnes((raw.collection ?? []).map((l) => l.track)).map((r) => normalizeScTrack(r, true))
   if (userId === meId) for (const t of items) likedIds.add(t.id)
   return { items, next: nextPath(raw.next_href) }
-}
-
-export async function like(t: Pick<Track, 'id'>): Promise<void> {
-  await call('PUT', `/users/${meId}/track_likes/${t.id}`)
-  likedIds.add(t.id)
-}
-
-export async function unlike(t: Pick<Track, 'id'>): Promise<void> {
-  await call('DELETE', `/users/${meId}/track_likes/${t.id}`)
-  likedIds.delete(t.id)
 }
 
 const playlistKey = (p: Playlist) => `${p.id}_${p.urn ?? ''}`

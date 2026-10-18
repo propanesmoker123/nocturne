@@ -84,7 +84,8 @@ fn system_urn(s: &str) -> bool {
     s.strip_prefix("soundcloud:system-playlists:").is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphanumeric() || b":_-".contains(&b)))
 }
 
-/// The requests the UI may make (the path is checked without its query).
+/// The requests the UI may make (the path is checked without its query). Reads only: SoundCloud's
+/// bot protection (DataDome) answers likes and other writes from anything but its site with a captcha.
 pub fn allowed(method: &str, path: &str) -> bool {
     let path = path.split('?').next().unwrap_or_default();
     let Some(rest) = path.strip_prefix('/') else { return false };
@@ -94,7 +95,6 @@ pub fn allowed(method: &str, path: &str) -> bool {
         ("GET", ["tracks", n, "related"] | ["playlists", n] | ["users", n]) => numeric(n),
         ("GET", ["system-playlists", urn]) => system_urn(urn),
         ("GET", ["users", n, "track_likes" | "playlists_without_albums" | "albums" | "toptracks" | "tracks"]) => numeric(n),
-        ("PUT" | "DELETE", ["users", n, "track_likes", t]) => numeric(n) && numeric(t),
         _ => false,
     }
 }
@@ -249,8 +249,6 @@ mod tests {
             ("GET", "/me"),
             ("GET", "/stream?limit=5"),
             ("GET", "/users/12/track_likes"),
-            ("PUT", "/users/1/track_likes/2"),
-            ("DELETE", "/users/1/track_likes/2"),
             ("GET", "/system-playlists/soundcloud:system-playlists:weekly:123"),
             ("GET", "/me/library/all"),
         ] {
@@ -258,6 +256,9 @@ mod tests {
         }
         for (m, p) in [
             ("PUT", "/me"),
+            // likes are behind SoundCloud's bot protection: never sent from here
+            ("PUT", "/users/1/track_likes/2"),
+            ("DELETE", "/users/1/track_likes/2"),
             ("GET", "/users/abc"),
             ("POST", "/users/1/track_likes/2"),
             ("GET", "/oauth/token"),
