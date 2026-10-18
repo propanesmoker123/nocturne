@@ -1,3 +1,4 @@
+import { serviceOf, type Track } from '../vk/models'
 import type { Presence } from './protocol'
 
 /** A device that said nothing for this long is gone. */
@@ -63,4 +64,18 @@ export function fitOrder<O extends { tracks: unknown[]; index: number }>(order: 
     fitted = fitted.tracks.length - 1 > fitted.index ? { ...fitted, tracks: fitted.tracks.slice(0, -1) } : { ...fitted, tracks: fitted.tracks.slice(1), index: fitted.index - 1 }
   }
   return fitted
+}
+
+/** The queue without SoundCloud tracks (they do not travel between devices yet), the current one
+ *  kept in place; null when the current track is a SoundCloud one. */
+export function vkOnly(tracks: Track[], index: number): { tracks: Track[]; index: number } | null {
+  if (tracks[index] && serviceOf(tracks[index]) === 'sc') return null
+  const kept: Track[] = []
+  let at = 0
+  tracks.forEach((t, i) => {
+    if (serviceOf(t) === 'sc') return
+    if (i === index) at = kept.length
+    kept.push(t)
+  })
+  return { tracks: kept, index: at }
 }

@@ -52,7 +52,7 @@ vi.mock('../vk/api', () => ({ getByIds: async (ids: { id: number }[]) => ids.map
 const { usePlayer } = await import('../player/store')
 const { useDevices, unlinkHere } = await import('./devices')
 const { useTogether } = await import('../together/session')
-const { startConnect, stopConnect, tickConnect, playOn } = await import('./runtime')
+const { startConnect, stopConnect, tickConnect, playOn, playHere } = await import('./runtime')
 
 const ME = 'aaaaaaaaaaaaaaaa'
 const PHONE = 'bbbbbbbbbbbbbbbb'
@@ -137,6 +137,29 @@ describe('linked devices and the player', () => {
     expect(order.to).toBe(PHONE)
     expect(order.msg).toMatchObject({ type: 'play', index: 1 })
     expect(h.calls.pause).toBeGreaterThan(0)
+  })
+
+  test('a SoundCloud track is not handed over on pull; this device keeps playing', async () => {
+    usePlayer.getState().playList([{ ...track(1), service: 'sc', key: 'sc_1' }], 0)
+    await settle()
+    hear({ type: 'pull' }, PHONE)
+    expect(sent.find((s) => s.msg.type === 'play')).toBeUndefined()
+    expect(h.calls.pause).toBe(0)
+  })
+
+  test('a queue with SoundCloud tracks moves without them', async () => {
+    usePlayer.getState().playList([track(1), { ...track(2), service: 'sc', key: 'sc_2' }, track(3)], 0)
+    await settle()
+    playOn(PHONE)
+    const order = sent.find((s) => s.msg.type === 'play')!.msg as Extract<ConnectMessage, { type: 'play' }>
+    expect(order.tracks.map((t) => t.id)).toEqual([1, 3])
+  })
+
+  test('a remote does not ask for a SoundCloud track', () => {
+    hear({ type: 'presence', presence: presence({ track: { owner: 0, id: 0, title: 'midnight demo', artist: 'Night Owl', duration: 201 } }) }, PHONE)
+    expect(useDevices.getState().remoteId).toBe(PHONE)
+    playHere()
+    expect(sent.find((s) => s.msg.type === 'pull')).toBeUndefined()
   })
 
   test('moving the music to another device sends it there and pauses here', async () => {

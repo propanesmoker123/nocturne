@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   toasts: [] as { text: string; action?: { label: string } }[],
   guard: null as ((intent: string) => boolean) | null,
   offline: false,
+  searched: 0,
 }))
 
 vi.mock('../player/store', async () => {
@@ -66,7 +67,10 @@ vi.mock('../vk/api', () => ({
     if (h.offline) throw new Error('offline')
     return [trackOf(w.ownerId, w.id)]
   },
-  searchTracks: async () => ({ count: 0, items: [] }),
+  searchTracks: async () => {
+    h.searched++
+    return { count: 0, items: [] }
+  },
 }))
 
 function trackOf(owner: number, id: number): Track {
@@ -88,7 +92,7 @@ function trackOf(owner: number, id: number): Track {
 }
 
 const { usePlayer } = await import('../player/store')
-const { joinSession, leaveSession, setTransportFactory, startHosting, useTogether } = await import('./session')
+const { joinSession, leaveSession, resolveTrack, setTransportFactory, startHosting, toWire, useTogether } = await import('./session')
 type Events = Parameters<Parameters<typeof setTransportFactory>[0]>[1]
 
 let ev: Events
@@ -345,5 +349,20 @@ describe('listening', () => {
     await joinSession('привет')
     expect(useTogether.getState()).toMatchObject({ phase: 'idle', error: 'code' })
     expect(sent.length).toBe(0)
+  })
+})
+
+describe('SoundCloud tracks', () => {
+  test('a SoundCloud track goes out as display-only', () => {
+    const t = { service: 'sc', id: 402, ownerId: 501, key: 'sc_402', artist: 'Night Owl', title: 'midnight demo', duration: 201 } as Track
+    expect(toWire(t)).toEqual({ owner: 0, id: 0, title: 'midnight demo', artist: 'Night Owl', duration: 201 })
+  })
+
+  test('a display-only track is never looked up in VK', async () => {
+    h.offline = true
+    h.searched = 0
+    await expect(resolveTrack({ owner: 0, id: 0, title: 'midnight demo', artist: 'Night Owl', duration: 201 })).resolves.toBeNull()
+    expect(h.searched).toBe(0)
+    h.offline = false
   })
 })

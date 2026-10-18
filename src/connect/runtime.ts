@@ -2,14 +2,14 @@ import { toast } from '../app/toast'
 import { journal } from '../lib/journal'
 import { isAndroid } from '../lib/platform'
 import { livePosition, remoteActive, setPlayerRemote, showRemote, usePlayer, type PlayerRemote } from '../player/store'
-import type { WireTrack } from '../together/protocol'
+import { isResolvable, type WireTrack } from '../together/protocol'
 import { toWire, useTogether } from '../together/session'
 import * as Q from '../player/queue'
 import * as vk from '../vk/api'
-import type { Track } from '../vk/models'
+import { serviceOf, type Track } from '../vk/models'
 import { openConnectBus, type ConnectBus } from './bus'
 import { loadDevices, useDevices } from './devices'
-import { fitOrder, queueWindow, remoteHolds, remotePosition, shouldYield, OFFLINE_MS, type SeenDevice } from './logic'
+import { fitOrder, queueWindow, remoteHolds, remotePosition, shouldYield, vkOnly, OFFLINE_MS, type SeenDevice } from './logic'
 import { MAX_PLAY_TRACKS, type CommandAction, type ConnectMessage, type PlayOrder, type Presence } from './protocol'
 
 /**
@@ -114,15 +114,30 @@ function announceSoon(force = false) {
 }
 
 /** This device's queue as an order for another one: up to MAX_PLAY_TRACKS around the current track, in play order. */
+const SC_NO_TRANSFER = 'Треки SoundCloud пока нельзя перенести на другое устройство'
+
+const playingSoundCloud = () => {
+  const t = usePlayer.getState().current
+  return !remoteOn() && !!t && serviceOf(t) === 'sc'
+}
+
+/** The device this one steers plays a track known by name only (a SoundCloud one). */
+const steeredPlaysSoundCloud = () => {
+  const { remoteId, devices } = useDevices.getState()
+  const t = remoteId ? devices[remoteId]?.presence.track : null
+  return !!t && !isResolvable(t)
+}
+
 function myOrder(): PlayOrder | null {
   const p = usePlayer.getState()
   const q = p.queue
   if (remoteOn() || !q || !p.current) return null
-  const w = queueWindow(
+  const vkQueue = vkOnly(
     q.order.map((i) => q.items[i]),
     q.pos,
-    MAX_PLAY_TRACKS,
   )
+  if (!vkQueue) return null
+  const w = queueWindow(vkQueue.tracks, vkQueue.index, MAX_PLAY_TRACKS)
   return fitOrder({
     tracks: w.items.map(toWire),
     index: w.index,
@@ -224,7 +239,9 @@ function remoteFor(id: string): PlayerRemote {
     cycleRepeat: () => cmd('repeat'),
     playMix: () => cmd('mix'),
     playList: (tracks, index, opts) => {
-      const w = queueWindow(tracks, index, MAX_PLAY_TRACKS)
+      const vkTracks = vkOnly(tracks, index)
+      if (!vkTracks) return void toast(SC_NO_TRANSFER, 'info')
+      const w = queueWindow(vkTracks.tracks, vkTracks.index, MAX_PLAY_TRACKS)
       const label = opts?.source?.label
       const order = fitOrder({
         tracks: w.items.map(toWire),
@@ -311,6 +328,7 @@ function onMessage(msg: ConnectMessage, from: string) {
   // a remote steers; it is not the one playing
   if (remoteOn()) return
   if (msg.type === 'command') return runCommand(msg.action, msg.value)
+  if (playingSoundCloud()) return toast(SC_NO_TRANSFER, 'info')
   const order = myOrder()
   if (!order) return
   bus?.send({ type: 'play', ...order }, msg.type === 'pull' ? from : msg.target)
@@ -332,9 +350,11 @@ export function playOn(id: string) {
   if (together()) return toast('Сначала завершите совместное прослушивание', 'info')
   if (id === deviceId) return playHere()
   if (remoteId) {
+    if (steeredPlaysSoundCloud()) return toast(SC_NO_TRANSFER, 'info')
     if (remoteId !== id) bus?.send({ type: 'move', target: id }, remoteId)
     return
   }
+  if (playingSoundCloud()) return toast(SC_NO_TRANSFER, 'info')
   const order = myOrder()
   if (!order) return toast('Сначала включите что-нибудь', 'info')
   bus?.send({ type: 'play', ...order }, id)
@@ -345,7 +365,9 @@ export function playOn(id: string) {
 export function playHere() {
   const { remoteId } = useDevices.getState()
   if (together()) return toast('Сначала завершите совместное прослушивание', 'info')
-  if (remoteId) bus?.send({ type: 'pull' }, remoteId)
+  if (!remoteId) return
+  if (steeredPlaysSoundCloud()) return toast(SC_NO_TRANSFER, 'info')
+  bus?.send({ type: 'pull' }, remoteId)
 }
 
 function closeBus() {

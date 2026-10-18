@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { IDLE_REMOTE_MS, OFFLINE_MS, ORDER_BUDGET, fitOrder, onlineDevices, playingDevice, queueWindow, remoteHolds, remotePosition, shouldYield, type SeenDevice } from './logic'
+import type { Track } from '../vk/models'
+import { IDLE_REMOTE_MS, OFFLINE_MS, ORDER_BUDGET, fitOrder, onlineDevices, playingDevice, queueWindow, remoteHolds, remotePosition, shouldYield, vkOnly, type SeenDevice } from './logic'
 import type { Presence } from './protocol'
 
 const P: Presence = { name: 'ПК', platform: 'desktop', track: null, position: 10, duration: 100, playing: true, since: 1000, volume: 1, shuffle: false, repeat: 'off', queue: { pos: 0, total: 1 } }
@@ -58,5 +59,20 @@ describe('the device remote rules', () => {
     expect(fitted.tracks.length).toBeGreaterThan(1)
     const small = { tracks: [long(1)], index: 0 }
     expect(fitOrder(small)).toEqual(small)
+  })
+})
+
+describe('SoundCloud tracks do not travel', () => {
+  const vk = (id: number) => ({ id, key: `1_${id}` }) as Track
+  const sc = (id: number) => ({ id, key: `sc_${id}`, service: 'sc' }) as Track
+
+  test('vkOnly drops SoundCloud tracks and keeps the current one in place', () => {
+    const got = vkOnly([vk(1), sc(2), vk(3), sc(4), vk(5)], 2)
+    expect(got?.tracks.map((t) => t.key)).toEqual(['1_1', '1_3', '1_5'])
+    expect(got?.index).toBe(1)
+  })
+
+  test('vkOnly refuses when the current track is SoundCloud', () => {
+    expect(vkOnly([vk(1), sc(2), vk(3)], 1)).toBeNull()
   })
 })

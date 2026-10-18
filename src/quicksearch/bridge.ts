@@ -1,9 +1,13 @@
 import type { InfiniteData } from '@tanstack/react-query'
 import { myTracksKey } from '../app/library'
 import { queryClient } from '../app/queryClient'
+import { useService } from '../app/service'
 import { EV, type QuickPlay, type QuickQuery, type QuickResults } from '../lib/events'
 import { emitTo, invoke, listen } from '../lib/tauri'
 import { usePlayer } from '../player/store'
+import * as sc from '../sc/api'
+import { describeScError } from '../sc/errors'
+import { scKeys } from '../sc/queries'
 import * as vk from '../vk/api'
 import type { Page } from '../vk/api'
 import { describeError } from '../vk/errors'
@@ -44,6 +48,14 @@ function wholeLibrary(): Promise<Track[]> {
   return ownLoading
 }
 
+/** SoundCloud's «own» list is the person's likes: from the likes page's cache, else the first page, once a minute. */
+function scLikes(): Promise<Track[]> {
+  const me = sc.getScMeId()
+  const shared = queryClient.getQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me))
+  if (shared) return Promise.resolve(shared.pages.flatMap((p) => p.items))
+  return queryClient.fetchQuery({ queryKey: ['sc-quick-likes', me], queryFn: async () => (await sc.getLikes(me)).items, staleTime: LIBRARY_TTL })
+}
+
 let newest = -1
 let shown: { q: string; own: Track[]; others: Track[] } = { q: '', own: [], others: [] }
 
@@ -74,13 +86,18 @@ function answer({ seq, q }: QuickQuery) {
     global = []
     return publish()
   }
-  wholeLibrary().then(
+  // the service picked in the main window is the one searched
+  const soundcloud = useService.getState().current === 'sc'
+  ;(soundcloud ? scLikes() : wholeLibrary()).then(
     (items) => ((own = items), publish()),
     () => ((own = []), publish()),
   )
-  queryClient.fetchQuery({ queryKey: ['search-tracks', term], queryFn: () => vk.searchTracks(term, 0, 80) }).then(
-    (page) => ((global = page.items), publish()),
-    (e: unknown) => ((error = describeError(e)), publish()),
+  const found = soundcloud
+    ? queryClient.fetchQuery({ queryKey: scKeys.search(term), queryFn: () => sc.search(term) }).then((r) => r.tracks)
+    : queryClient.fetchQuery({ queryKey: ['search-tracks', term], queryFn: () => vk.searchTracks(term, 0, 80) }).then((page) => page.items)
+  found.then(
+    (items) => ((global = items), publish()),
+    (e: unknown) => ((error = soundcloud ? describeScError(e) : describeError(e)), publish()),
   )
 }
 
@@ -96,7 +113,7 @@ function play({ key, next }: QuickPlay) {
 
 /** The hotkey: show the panel over whatever is in front (or hide it if it already is). */
 export function openQuickSearch() {
-  void wholeLibrary().catch(() => {})
+  void (useService.getState().current === 'sc' ? scLikes() : wholeLibrary()).catch(() => {})
   void invoke('search_open').catch(() => {})
 }
 

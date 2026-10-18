@@ -43,6 +43,9 @@ const int = (v: unknown, min: number, max: number): v is number => Number.isSafe
 const num = (v: unknown, min: number, max: number): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
 const text = (v: unknown, max: number): string | null => (typeof v === 'string' ? v.trim().slice(0, max) : null)
 
+/** `owner: 0, id: 0` is a track shown by name only (a SoundCloud one): never looked up in VK. */
+export const isResolvable = (w: Pick<WireTrack, 'owner' | 'id'>) => !(w.owner === 0 && w.id === 0)
+
 export function wireTrack(v: unknown): WireTrack | null | undefined {
   if (v === null) return null
   if (!isObj(v)) return undefined
