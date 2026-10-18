@@ -6,9 +6,10 @@ import { useSheet } from '../app/sheetStore'
 import { renameDevice, unlinkAll, unlinkHere, useDevices } from '../connect/devices'
 import { onlineDevices } from '../connect/logic'
 import { toast } from '../app/toast'
-import { Button, Segmented, Switch } from '../components/controls'
+import { Button, Segmented, Spinner, Switch } from '../components/controls'
 import { HotkeyInput } from '../components/HotkeyInput'
 import { PageHeader } from '../components/PageHeader'
+import { ServiceLogo } from '../components/ServiceLogo'
 import { Slider } from '../components/Slider'
 import { PRESETS, PresetLayer } from '../components/Wallpaper'
 import { useHotkeyStatus } from '../lib/globalHotkeys'
@@ -19,6 +20,7 @@ import { isTauri } from '../lib/tauri'
 import { deleteWallpaper, listWallpapers, pickWallpaper, wallpaperKind, wallpaperUrl } from '../lib/wallpaper'
 import { useUpdates } from '../lib/updates'
 import { usePlayer } from '../player/store'
+import { useScSession } from '../sc/session'
 import { IslandProgressPicker } from '../components/IslandProgressPicker'
 import s from './Settings.module.css'
 
@@ -42,6 +44,30 @@ function Row({ title, sub, stacked, children }: { title: string; sub?: ReactNode
         {sub && <div className={s.rowSub}>{sub}</div>}
       </div>
       {children}
+    </div>
+  )
+}
+
+/** The SoundCloud row of «Аккаунты»: who is signed in, and the way out or in. */
+function SoundCloudAccount() {
+  const sc = useScSession()
+  const signedIn = sc.phase !== 'signed-out'
+  return (
+    <div className={s.row}>
+      {sc.user?.avatar ? <img className={s.avatar} src={sc.user.avatar} alt="" referrerPolicy="no-referrer" /> : <ServiceLogo id="sc" size={36} />}
+      <div className={s.rowText}>
+        <div className={s.rowTitle}>{sc.user?.name || 'SoundCloud'}</div>
+        <div className={s.rowSub}>{signedIn ? 'Вход выполнен. В России SoundCloud играет только через VPN.' : 'Вход не выполнен'}</div>
+      </div>
+      {signedIn ? (
+        <Button variant="danger" onClick={() => void sc.logout()}>
+          Выйти
+        </Button>
+      ) : (
+        <Button variant="primary" disabled={sc.signingIn} onClick={() => void sc.login()}>
+          {sc.signingIn && <Spinner size={14} />} Войти в SoundCloud
+        </Button>
+      )}
     </div>
   )
 }
@@ -156,7 +182,7 @@ export function SettingsPage() {
     <div className={s.wrap}>
       <PageHeader title="Настройки" />
 
-      <Group title="Аккаунт">
+      <Group title="Аккаунты">
         <div className={s.row}>
           {user?.photo ? <img className={s.avatar} src={user.photo} alt="" referrerPolicy="no-referrer" /> : <span className={s.avatar} />}
           <div className={s.rowText}>
@@ -167,6 +193,7 @@ export function SettingsPage() {
             Выйти
           </Button>
         </div>
+        <SoundCloudAccount />
       </Group>
 
       <Group title="Обои" note="Свои обои — картинка, GIF или видео (MP4, WebM). Видео играет без звука и ставится на паузу, когда окно скрыто.">
