@@ -76,6 +76,11 @@
 .rowTitle {
   font: 600 14px/18px var(--font);
 }
+/* SoundCloud's mark before a queued SoundCloud track */
+.rowMark {
+  margin-right: 6px;
+  vertical-align: -2px;
+}
 .rowArtist {
   font: 400 13px/17px var(--font);
   color: rgba(255, 255, 255, 0.55);

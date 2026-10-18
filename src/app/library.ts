@@ -1,15 +1,24 @@
 import { sameSong } from '../lib/search'
 import { usePlayer } from '../player/store'
+import * as sc from '../sc/api'
+import { describeScError } from '../sc/errors'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
-import type { Track } from '../vk/models'
+import { serviceOf, type Track } from '../vk/models'
 import { patchTrackInCache, queryClient } from './queryClient'
 import { toast } from './toast'
 
 export const myTracksKey = () => ['tracks', vk.getMeId()] as const
 
 export function isInLibrary(t: Track): boolean {
+  if (serviceOf(t) === 'sc') return t.liked
   return t.liked || t.ownerId === vk.getMeId()
+}
+
+/** What the heart button says: VK's «Моя музыка» or SoundCloud's likes. */
+export function likeLabel(t: Track, liked: boolean): string {
+  if (serviceOf(t) === 'sc') return liked ? 'Убрать из лайков' : 'Нравится'
+  return liked ? 'Удалить из Моей музыки' : 'Добавить в Мою музыку'
 }
 
 function markLiked(key: string, liked: boolean) {
@@ -31,9 +40,40 @@ async function findLibraryCopy(t: Track): Promise<Track | null> {
   return first.items.find((x) => sameSong(x, t)) ?? null
 }
 
-/** Adds the track to "Моя музыка" or removes it (with an undo action). */
+/** A SoundCloud like, or taking it back (with an undo action). */
+async function toggleScLike(t: Track): Promise<void> {
+  const likes = () => void queryClient.invalidateQueries({ queryKey: ['sc-likes'] })
+  try {
+    if (!t.liked) {
+      await sc.like(t)
+      markLiked(t.key, true)
+      toast('Добавлено в лайки SoundCloud', 'added')
+      likes()
+      return
+    }
+    await sc.unlike(t)
+    markLiked(t.key, false)
+    likes()
+    toast('Убрано из лайков SoundCloud', 'removed', {
+      label: 'Вернуть',
+      run: () =>
+        void sc
+          .like(t)
+          .then(() => {
+            markLiked(t.key, true)
+            likes()
+          })
+          .catch((e) => toast(describeScError(e), 'error')),
+    })
+  } catch (e) {
+    toast(describeScError(e), 'error')
+  }
+}
+
+/** Adds the track to "Моя музыка" or removes it (with an undo action); for SoundCloud, its like. */
 export async function toggleLibrary(t: Track | null | undefined): Promise<void> {
   if (!t) return
+  if (serviceOf(t) === 'sc') return toggleScLike(t)
   try {
     if (!isInLibrary(t)) {
       await vk.addTrack(t)

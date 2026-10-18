@@ -11,9 +11,9 @@ import { usePlayer } from '../player/store'
 import { useControlledBy } from '../together/TogetherControls'
 import type { Track } from '../vk/models'
 import { CoverViewer } from './CoverViewer'
-import { isInLibrary, toggleLibrary } from './library'
+import { isInLibrary, likeLabel, toggleLibrary } from './library'
 import s from './NowPlaying.module.css'
-import { useRouter } from './router'
+import { artistRoute, useRouter } from './router'
 import { WindowControls } from './Titlebar'
 import { LyricsPanel, QueuePanel } from './SidePanels'
 import { copyTrackName, openTrackMenu } from './trackActions'
@@ -167,13 +167,13 @@ export function NowPlaying() {
                       style={{ maxWidth: '100%' }}
                       onClick={() => {
                         useUi.getState().closeNowPlaying()
-                        push({ name: 'artist', id: current.artists[0]?.id, artist: current.artists[0]?.name ?? current.artist })
+                        push(artistRoute(current))
                       }}
                     >
                       {current.artist}
                     </button>
                   </div>
-                  <IconButton className={s.roundBtn} size={34} label={liked ? 'Убрать из Моей музыки' : 'Добавить в Мою музыку'} onClick={() => void toggleLibrary(current)}>
+                  <IconButton className={s.roundBtn} size={34} label={likeLabel(current, liked)} onClick={() => void toggleLibrary(current)}>
                     {liked ? <IconCheck size={18} /> : <IconPlus size={18} />}
                   </IconButton>
                   <IconButton className={s.roundBtn} size={34} label="Ещё" onClick={(e) => openTrackMenu(e, current, { inNowPlaying: true })}>

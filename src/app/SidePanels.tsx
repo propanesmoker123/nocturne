@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Artwork } from '../components/Artwork'
+import { ServiceLogo } from '../components/ServiceLogo'
 import { EqualizerBars, IconButton, Spinner } from '../components/controls'
 import { IconLyrics } from '../components/Icons'
 import { formatTime, pluralRu } from '../lib/format'
@@ -9,7 +10,7 @@ import { remainingSeconds } from '../player/logic'
 import { allInOrder } from '../player/queue'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
-import type { Track } from '../vk/models'
+import { serviceOf, type Track } from '../vk/models'
 import { describeError } from '../vk/errors'
 import s from './SidePanels.module.css'
 import { openTrackMenu } from './trackActions'
@@ -134,7 +135,10 @@ export function QueuePanel() {
               >
                 <Artwork src={t.cover?.s} size={40} radius={6} seed={t.key} />
                 <div className={s.rowText}>
-                  <div className={`${s.rowTitle} truncate`}>{t.title}</div>
+                  <div className={`${s.rowTitle} truncate`}>
+                    {serviceOf(t) === 'sc' && <ServiceLogo id="sc" size={13} className={s.rowMark} />}
+                    {t.title}
+                  </div>
                   <div className={`${s.rowArtist} truncate`}>{t.artist}</div>
                 </div>
                 <div className={s.rowEnd}>

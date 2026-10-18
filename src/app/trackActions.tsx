@@ -6,11 +6,11 @@ import { usePlayer } from '../player/store'
 import { openInSoundCloud } from '../sc/open'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
-import type { Playlist, Track } from '../vk/models'
-import { isInLibrary, toggleLibrary } from './library'
+import { serviceOf, type Playlist, type Track } from '../vk/models'
+import { isInLibrary, likeLabel, toggleLibrary } from './library'
 import { showMenu, type MenuItem } from './menu'
 import { queryClient } from './queryClient'
-import { useRouter } from './router'
+import { artistRoute, useRouter } from './router'
 import { useSheet } from './sheetStore'
 import { toast } from './toast'
 import { useUi } from './ui'
@@ -45,11 +45,21 @@ export async function removeTracksFromPlaylist(p: Playlist, tracks: Track[]) {
   }
 }
 
-/** The track's page in VK: what «Скопировать ссылку» copies and what goes out when sharing. */
-export const trackLink = (t: Pick<Track, 'ownerId' | 'id'>) => `https://vk.com/audio${t.ownerId}_${t.id}`
+/** The track's page (in VK, or SoundCloud's): what «Скопировать ссылку» copies and what goes out when sharing. */
+export const trackLink = (t: Pick<Track, 'ownerId' | 'id' | 'service' | 'permalink'>) =>
+  serviceOf(t) === 'sc' ? (t.permalink ?? 'https://soundcloud.com/') : `https://vk.com/audio${t.ownerId}_${t.id}`
 
-export async function copyTrackLink(t: Pick<Track, 'ownerId' | 'id'>) {
+export async function copyTrackLink(t: Pick<Track, 'ownerId' | 'id' | 'service' | 'permalink'>) {
   await navigator.clipboard.writeText(trackLink(t))
+}
+
+/** «Поделиться треком»: a VK track goes to a friend; a SoundCloud one has its link copied. */
+export function shareTrack(t: Track) {
+  if (serviceOf(t) !== 'sc') return useSheet.getState().open({ kind: 'send-track', track: t })
+  void copyTrackLink(t).then(
+    () => toast('Ссылка скопирована', 'info'),
+    () => toast('Не получилось скопировать', 'error'),
+  )
 }
 
 /** A click on the title in the player copies «Исполнитель — Название». */
@@ -96,9 +106,10 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
       { separator: true },
     )
   }
+  if (serviceOf(track) === 'sc') return items.concat(scTrackItems(track, liked))
   items.push(
     {
-      label: liked ? 'Удалить из Моей музыки' : 'Добавить в Мою музыку',
+      label: likeLabel(track, liked),
       icon: liked ? <IconCheck size={16} /> : <IconPlus size={16} />,
       onSelect: () => void toggleLibrary(track),
     },
@@ -127,7 +138,7 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
     icon: <Mic2 {...ic} />,
     onSelect: () => {
       useUi.getState().closeNowPlaying()
-      router.push({ name: 'artist', id: artist?.id, artist: artist?.name ?? track.artist })
+      router.push(artistRoute(track, artist))
     },
   })
   if (track.album) {
@@ -150,6 +161,31 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
     },
   })
   return items
+}
+
+/** The rest of a SoundCloud track's menu: its like, its artist, its page. Nothing of VK's. */
+function scTrackItems(track: Track, liked: boolean): MenuItem[] {
+  return [
+    { label: likeLabel(track, liked), icon: liked ? <IconCheck size={16} /> : <IconPlus size={16} />, onSelect: () => void toggleLibrary(track) },
+    { separator: true },
+    {
+      label: 'Перейти к исполнителю',
+      icon: <Mic2 {...ic} />,
+      onSelect: () => {
+        useUi.getState().closeNowPlaying()
+        useRouter.getState().push(artistRoute(track))
+      },
+    },
+    { label: 'Открыть в SoundCloud', icon: <ExternalLink {...ic} />, disabled: !track.permalink, onSelect: () => void openInSoundCloud(track.permalink) },
+    {
+      label: 'Скопировать ссылку',
+      icon: <Copy {...ic} />,
+      onSelect: () => {
+        void copyTrackLink(track)
+        toast('Ссылка скопирована', 'info')
+      },
+    },
+  ]
 }
 
 export function openTrackMenu(e: MouseEvent, track: Track, ctx: TrackMenuContext = {}) {

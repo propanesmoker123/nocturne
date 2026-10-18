@@ -9,11 +9,10 @@ import { WaveformScrubber } from '../components/Waveform'
 import { formatTime, fullTrackName } from '../lib/format'
 import { usePlayer } from '../player/store'
 import { TogetherBanner, TogetherButton, useControlledBy } from '../together/TogetherControls'
-import { isInLibrary, toggleLibrary } from './library'
+import { isInLibrary, likeLabel, toggleLibrary } from './library'
 import s from './MiniPlayer.module.css'
-import { useRouter } from './router'
-import { useSheet } from './sheetStore'
-import { copyTrackName } from './trackActions'
+import { artistRoute, useRouter } from './router'
+import { copyTrackName, shareTrack } from './trackActions'
 import { useUi } from './ui'
 
 export function speakerLevel(volume: number, muted: boolean): 0 | 1 | 2 | 3 {
@@ -89,13 +88,13 @@ export function MiniPlayer() {
                   {current.explicit && <span className={s.explicit} aria-label="Нецензурное">E</span>}
                 </div>
                 <div className={`${s.artist} truncate`}>
-                  <button type="button" onClick={() => push({ name: 'artist', id: current.artists[0]?.id, artist: current.artists[0]?.name ?? current.artist })}>
+                  <button type="button" onClick={() => push(artistRoute(current))}>
                     {current.artist}
                   </button>
                 </div>
                 {remoteName && <div className={`${s.remote} truncate`}>Играет на «{remoteName}»</div>}
               </div>
-              <IconButton size={30} label={liked ? 'Убрать из Моей музыки' : 'Добавить в Мою музыку'} active={liked} onClick={() => void toggleLibrary(current)}>
+              <IconButton size={30} label={likeLabel(current, liked)} active={liked} onClick={() => void toggleLibrary(current)}>
                 {liked ? <IconCheck size={18} /> : <IconPlus size={18} />}
               </IconButton>
             </>
@@ -140,7 +139,7 @@ export function MiniPlayer() {
         <div className={s.right}>
           <DevicesButton />
           <TogetherButton />
-          <IconButton size={32} label="Поделиться треком" onClick={() => current && useSheet.getState().open({ kind: 'send-track', track: current })} disabled={!current}>
+          <IconButton size={32} label="Поделиться треком" onClick={() => current && shareTrack(current)} disabled={!current}>
             <Send size={17} strokeWidth={2} />
           </IconButton>
           <IconButton size={32} label="Очередь" active={nowPlayingTab === 'queue'} onClick={() => toggleNowPlaying('queue')} disabled={!current}>

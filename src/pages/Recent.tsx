@@ -29,7 +29,7 @@ export function Recent() {
       {history.length === 0 ? (
         <EmptyState icon={<Clock3 size={26} />} title="История пуста" text="Здесь появятся треки, которые вы дослушаете хотя бы до половины." />
       ) : (
-        <TrackList tracks={history} />
+        <TrackList tracks={history} markService />
       )}
     </>
   )

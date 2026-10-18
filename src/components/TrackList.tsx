@@ -1,12 +1,13 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
-import { isInLibrary, toggleLibrary } from '../app/library'
+import { isInLibrary, likeLabel, toggleLibrary } from '../app/library'
 import { artistRoute, useRouter } from '../app/router'
+import { ServiceLogo } from './ServiceLogo'
 import { useScroller } from '../app/scroller'
 import { openTrackMenu } from '../app/trackActions'
 import { formatTime } from '../lib/format'
 import { usePlayer } from '../player/store'
-import type { Playlist, Track } from '../vk/models'
+import { serviceOf, type Playlist, type Track } from '../vk/models'
 import { Artwork } from './Artwork'
 import { EqualizerBars, IconButton } from './controls'
 import c from './cards.module.css'
@@ -49,11 +50,12 @@ interface RowProps {
   isCurrent: boolean
   isPlaying: boolean
   showAlbum: boolean
+  markService: boolean
   onPlay(index: number): void
   onMenu(e: MouseEvent, track: Track, index: number): void
 }
 
-const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, onPlay, onMenu }: RowProps) {
+const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, markService, onPlay, onMenu }: RowProps) {
   const push = useRouter((r) => r.push)
   const liked = isInLibrary(track)
   return (
@@ -64,6 +66,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
       tabIndex={0}
       data-current={isCurrent || undefined}
       data-disabled={!track.playable || undefined}
+      title={!track.playable && serviceOf(track) === 'sc' ? 'Доступно только в SoundCloud' : undefined}
       onClick={(e) => playClick(e) && track.playable && onPlay(index)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && track.playable) onPlay(index)
@@ -91,6 +94,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
             <span className="truncate">{track.title}</span>
             {track.subtitle && <span className="truncate" style={{ color: 'var(--label-3)', flexShrink: 2 }}>{track.subtitle}</span>}
             {track.explicit && <span className={s.explicit} aria-label="Нецензурное">E</span>}
+            {markService && serviceOf(track) === 'sc' && <ServiceLogo id="sc" size={14} />}
           </div>
           <div className={s.artists}>
             <ArtistLinks track={track} />
@@ -112,7 +116,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
           data-active={liked || undefined}
           size={30}
           active={liked}
-          label={liked ? 'Убрать из Моей музыки' : 'Добавить в Мою музыку'}
+          label={likeLabel(track, liked)}
           onClick={() => void toggleLibrary(track)}
         >
           {liked ? <IconCheck size={17} /> : <IconPlus size={17} />}
@@ -133,10 +137,12 @@ interface TrackListProps {
   playlist?: Playlist
   showAlbum?: boolean
   showHeader?: boolean
+  /** a small SoundCloud mark on its tracks, for lists that mix services («Недавние») */
+  markService?: boolean
 }
 
 /** Apple Music-style song table, virtualized against the page scroller. */
-export function TrackList({ tracks, queueSource, playlist, showAlbum = true, showHeader = true }: TrackListProps) {
+export function TrackList({ tracks, queueSource, playlist, showAlbum = true, showHeader = true, markService = false }: TrackListProps) {
   const scroller = useScroller()
   const listRef = useRef<HTMLDivElement>(null)
   const [margin, setMargin] = useState(0)
@@ -197,6 +203,7 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
               isCurrent={t.key === currentKey}
               isPlaying={isPlaying}
               showAlbum={showAlbum}
+              markService={markService}
               onPlay={onPlay}
               onMenu={onMenu}
             />
