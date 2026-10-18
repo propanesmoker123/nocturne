@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Button, Spinner } from '../components/controls'
 import * as vk from '../vk/api'
 import { LinkDevice } from '../connect/DevicesPanel'
@@ -262,6 +262,7 @@ function Layer({ children, onDismiss }: { children: ReactNode; onDismiss(): void
 
 export function Sheets() {
   const sheet = useSheet((x) => x.sheet)
+  const seq = useSheet((x) => x.seq)
   const close = useSheet((x) => x.close)
 
   useEffect(() => {
@@ -284,25 +285,28 @@ export function Sheets() {
             exit={{ y: 12, scale: 0.98, opacity: 0 }}
             transition={{ type: 'spring', stiffness: 420, damping: 34 }}
           >
-            {sheet.kind === 'confirm' ? (
-              <ConfirmBody req={sheet} />
-            ) : sheet.kind === 'notes' ? (
-              <NotesBody req={sheet} />
-            ) : sheet.kind === 'captcha' ? (
-              <CaptchaBody req={sheet} />
-            ) : sheet.kind === 'send-track' ? (
-              <SendTrackBody req={sheet} />
-            ) : sheet.kind === 'link-device' ? (
-              <LinkDeviceBody />
-            ) : sheet.kind === 'album-create' || sheet.kind === 'album-rename' ? (
-              <AlbumNameForm req={sheet} />
-            ) : sheet.kind === 'album-share' ? (
-              <AlbumShareBody req={sheet} />
-            ) : sheet.kind === 'album-join' ? (
-              <AlbumJoinBody />
-            ) : (
-              <PlaylistForm req={sheet} />
-            )}
+            {/* a new opening is a new body: a form opened again starts empty */}
+            <Fragment key={seq}>
+              {sheet.kind === 'confirm' ? (
+                <ConfirmBody req={sheet} />
+              ) : sheet.kind === 'notes' ? (
+                <NotesBody req={sheet} />
+              ) : sheet.kind === 'captcha' ? (
+                <CaptchaBody req={sheet} />
+              ) : sheet.kind === 'send-track' ? (
+                <SendTrackBody req={sheet} />
+              ) : sheet.kind === 'link-device' ? (
+                <LinkDeviceBody />
+              ) : sheet.kind === 'album-create' || sheet.kind === 'album-rename' ? (
+                <AlbumNameForm req={sheet} />
+              ) : sheet.kind === 'album-share' ? (
+                <AlbumShareBody req={sheet} />
+              ) : sheet.kind === 'album-join' ? (
+                <AlbumJoinBody />
+              ) : (
+                <PlaylistForm req={sheet} />
+              )}
+            </Fragment>
           </motion.div>
         </Layer>
       )}

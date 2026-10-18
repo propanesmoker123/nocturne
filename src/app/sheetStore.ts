@@ -17,17 +17,20 @@ export type SheetRequest =
 
 interface SheetState {
   sheet: SheetRequest | null
+  /** Which opening this is: a sheet opened again gets a fresh body, not the one still fading out. */
+  seq: number
   open(s: SheetRequest): void
   close(): void
 }
 
 export const useSheet = create<SheetState>((set, get) => ({
   sheet: null,
+  seq: 0,
   open: (sheet) => {
     // a captcha pushed aside is answered «no», or its VK request would wait for ever
     const cur = get().sheet
     if (cur?.kind === 'captcha' && cur !== sheet) cur.resolve(null)
-    set({ sheet })
+    set({ sheet, seq: get().seq + 1 })
   },
   close: () => {
     const cur = get().sheet
