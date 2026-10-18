@@ -166,6 +166,8 @@
   min-height: 240px;
   padding: 24px;
   text-align: center;
-  color: rgba(255, 255, 255, 0.55);
+  /* readable over a light cover too */
+  color: rgba(255, 255, 255, 0.78);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
   font: 500 14px/20px var(--font);
 }

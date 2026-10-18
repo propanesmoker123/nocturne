@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Artwork } from '../components/Artwork'
+import { findLyrics } from './lyrics'
 import { ServiceLogo } from '../components/ServiceLogo'
 import { EqualizerBars, IconButton, Spinner } from '../components/controls'
 import { IconLyrics } from '../components/Icons'
@@ -9,7 +10,6 @@ import { scrollWithin } from '../lib/scrollWithin'
 import { remainingSeconds } from '../player/logic'
 import { allInOrder } from '../player/queue'
 import { usePlayer } from '../player/store'
-import * as vk from '../vk/api'
 import { serviceOf, type Track } from '../vk/models'
 import { describeError } from '../vk/errors'
 import s from './SidePanels.module.css'
@@ -178,10 +178,12 @@ export function LyricsPanel() {
   const position = usePlayer((p) => p.position)
   const seek = usePlayer((p) => p.seek)
   const box = useRef<HTMLDivElement>(null)
+  // a SoundCloud track has none of its own: the same song's lyrics are looked up in VK
+  const fromVk = !!track && serviceOf(track) === 'sc'
   const q = useQuery({
     queryKey: ['lyrics', track?.key],
-    queryFn: () => vk.getLyrics(track!),
-    enabled: !!track && track.hasLyrics,
+    queryFn: () => findLyrics(track!),
+    enabled: !!track && (fromVk || track.hasLyrics),
     staleTime: Infinity,
   })
   const lyrics = q.data
@@ -204,7 +206,7 @@ export function LyricsPanel() {
   }, [activeIndex])
 
   if (!track) return null
-  if (!track.hasLyrics) {
+  if (!track.hasLyrics && !fromVk) {
     return (
       <div className={s.empty}>
         <IconLyrics size={28} />
@@ -220,6 +222,14 @@ export function LyricsPanel() {
     )
   }
   if (q.isError || !lyrics) {
+    if (fromVk && !q.isError) {
+      return (
+        <div className={s.empty}>
+          <IconLyrics size={28} />
+          <span>Текст этой песни не нашёлся в VK</span>
+        </div>
+      )
+    }
     return <div className={s.empty}>{q.isError ? describeError(q.error) : 'Текст не найден'}</div>
   }
   return (
@@ -238,6 +248,7 @@ export function LyricsPanel() {
         </button>
       ))}
       {lyrics.credits && <div className={s.credits}>{lyrics.credits}</div>}
+      {fromVk && <div className={s.credits}>Текст того же трека из VK</div>}
     </div>
   )
 }
