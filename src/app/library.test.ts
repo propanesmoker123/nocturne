@@ -50,10 +50,24 @@ describe('likes per service', () => {
     expect(h.sc.like).toHaveBeenCalledOnce()
   })
 
-  test('a failed like leaves the heart unchanged', async () => {
+  test('the heart turns at once, before SoundCloud answers (its first like opens the site, which takes a while)', async () => {
+    let answer: () => void = () => {}
+    h.sc.like.mockReturnValue(new Promise<void>((r) => (answer = r)))
+    const done = toggleLibrary(sc(false))
+    await Promise.resolve()
+    expect(h.updates).toEqual([['sc_402', { liked: true }]])
+    answer()
+    await done
+    expect(h.toasts[0].m).toBe('Добавлено в лайки SoundCloud')
+  })
+
+  test('a failed like turns the heart back and says why', async () => {
     h.sc.like.mockRejectedValue({ kind: 'http', status: 403 })
     await toggleLibrary(sc(false))
-    expect(h.updates).toEqual([])
+    expect(h.updates).toEqual([
+      ['sc_402', { liked: true }],
+      ['sc_402', { liked: false }],
+    ])
     expect(h.toasts[0]).toMatchObject({ kind: 'error' })
     expect(h.opened).toEqual([])
   })

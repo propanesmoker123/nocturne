@@ -55,6 +55,8 @@ async function likeOnSoundCloud(t: Track) {
     void queryClient.invalidateQueries({ queryKey: likesKey })
     void queryClient.invalidateQueries({ queryKey: quickKey })
   }
+  // the heart turns now: SoundCloud's first like of a run opens its site in the background, which takes a while
+  markLiked(t.key, liked)
   try {
     await (liked ? sc.like(t) : sc.unlike(t))
     // An older list request must not put a removed track back after the write succeeds.
@@ -63,7 +65,6 @@ async function likeOnSoundCloud(t: Track) {
       queryClient.cancelQueries({ queryKey: quickKey }),
     ])
     if (sc.getScMeId() !== account) return
-    markLiked(t.key, liked)
     queryClient.setQueryData<InfiniteData<sc.ScPage<Track>>>(likesKey, (old) => {
       if (!old?.pages.length) return old
       const pages = old.pages.map((page) => ({ ...page, items: page.items.filter((x) => x.key !== t.key) }))
@@ -80,6 +81,7 @@ async function likeOnSoundCloud(t: Track) {
     }
     refresh()
   } catch (e) {
+    if (sc.getScMeId() === account) markLiked(t.key, !liked)
     toast(describeScError(e), 'error')
   } finally {
     scPending.delete(t.key)
