@@ -11,7 +11,8 @@ test("a SoundCloud track's menu has no VK-only items", () => {
   const t = { service: 'sc', id: 402, ownerId: 5, key: 'sc_402', artist: 'A', title: 'T', duration: 1, urlFetchedAt: 0, explicit: false, artists: [{ id: '5', name: 'A' }], playable: true, hasLyrics: false, liked: false, permalink: 'https://soundcloud.com/a/t', album: { id: 1, ownerId: 1, title: 'x' } } as Track
   const got = labels(t)
   for (const vkOnly of ['Добавить в плейлист', 'Отправить другу', 'Перейти к альбому', 'Добавить в Мою музыку']) expect(got).not.toContain(vkOnly)
-  expect(got).not.toContain('Нравится')
+  expect(got).toContain('Нравится')
   expect(got).toContain('Открыть в SoundCloud')
   expect(got).toContain('Скопировать ссылку')
+  expect(labels({ ...t, liked: true })).toContain('Убрать из лайков')
 })

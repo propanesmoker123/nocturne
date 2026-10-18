@@ -106,7 +106,7 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
       { separator: true },
     )
   }
-  if (serviceOf(track) === 'sc') return items.concat(scTrackItems(track))
+  if (serviceOf(track) === 'sc') return items.concat(scTrackItems(track, liked))
   items.push(
     {
       label: likeLabel(track, liked),
@@ -163,9 +163,11 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
   return items
 }
 
-/** The rest of a SoundCloud track's menu: its artist and its page. Nothing of VK's. */
-function scTrackItems(track: Track): MenuItem[] {
+/** The rest of a SoundCloud track's menu: its like, its artist, its page. Nothing of VK's. */
+function scTrackItems(track: Track, liked: boolean): MenuItem[] {
   return [
+    { label: likeLabel(track, liked), icon: liked ? <IconCheck size={16} /> : <IconPlus size={16} />, onSelect: () => void toggleLibrary(track) },
+    { separator: true },
     {
       label: 'Перейти к исполнителю',
       icon: <Mic2 {...ic} />,
