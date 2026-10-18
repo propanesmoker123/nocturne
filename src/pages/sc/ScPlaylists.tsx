@@ -18,12 +18,13 @@ export function ScPlaylists() {
 }
 
 function PlaylistsBody() {
-  const me = useScSession((x) => x.user?.id ?? sc.getScMeId())
-  const q = useQuery({ queryKey: scKeys.myPlaylists(me), queryFn: sc.getMyPlaylists })
+  // 0 until the profile came: nothing is asked for «user 0»
+  const me = useScSession((x) => x.user?.id ?? 0)
+  const q = useQuery({ queryKey: scKeys.myPlaylists(me), queryFn: sc.getMyPlaylists, enabled: me > 0 })
   return (
     <>
       <PageHeader title="Плейлисты" subtitle="Ваши и те, что вам понравились" />
-      {q.isLoading && <CardsSkeleton />}
+      {(q.isLoading || !me) && <CardsSkeleton />}
       {q.isError && <EmptyState title="Плейлисты не загрузились" text={describeScError(q.error)} action={<Button onClick={() => void q.refetch()}>Повторить</Button>} />}
       {q.data && !q.data.length && <EmptyState icon={<ListMusic size={26} />} title="Плейлистов пока нет" text="Плейлисты, которые вы создадите или лайкнете в SoundCloud, появятся здесь." />}
       {q.data && q.data.length > 0 && (

@@ -171,8 +171,12 @@ async fn exchange(app: &AppHandle, p: &Pending, url: &Url) -> Result<(), Failure
     }
     st.set_token(Some(token.clone()));
     let user = api::me_with(&http, &ids, &token).await.ok();
+    let missing = user.is_none();
     st.set_signed_in(user);
     emit_status(app);
+    if missing {
+        super::repair_profile(app);
+    }
     Ok(())
 }
 

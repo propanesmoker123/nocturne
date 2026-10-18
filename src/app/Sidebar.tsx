@@ -113,8 +113,10 @@ function ScPlaylistLinks() {
   const route = useRouter((r) => r.route)
   const push = useRouter((r) => r.push)
   const phase = useScSession((x) => x.phase)
-  const q = useQuery({ queryKey: ['sc-my-playlists', sc.getScMeId()], queryFn: sc.getMyPlaylists, enabled: phase === 'signed-in' })
+  const me = useScSession((x) => x.user?.id ?? 0)
+  const q = useQuery({ queryKey: ['sc-my-playlists', me], queryFn: sc.getMyPlaylists, enabled: phase === 'signed-in' && me > 0 })
   if (phase !== 'signed-in') return null
+  if (!me) return <div className={s.hint}>Загружаем…</div>
   if (q.isLoading) return <div className={s.hint}>Загружаем…</div>
   if (q.isError) return <div className={s.hint}>Плейлисты не загрузились</div>
   const items = q.data ?? []

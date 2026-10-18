@@ -9,8 +9,10 @@ pub mod stream;
 pub mod web;
 
 use std::path::PathBuf;
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -188,6 +190,71 @@ pub fn init(app: &AppHandle) {
     }
 }
 
+/// Pauses between tries to read the profile when a sign-in came without it (no network yet, a 5xx);
+/// the last one repeats for as long as it takes.
+const PROFILE_RETRY: [Duration; 4] = [Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30), Duration::from_secs(60)];
+/// One such loop at a time.
+static REPAIRING: AtomicBool = AtomicBool::new(false);
+
+/// Tries `fetch` until it gives the profile, while `alive` says the same sign-in still stands.
+pub(crate) async fn until_profile<F, Fut>(mut fetch: F, mut alive: impl FnMut() -> bool, delays: &[Duration]) -> Option<ScUser>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<ScUser>>,
+{
+    let mut round = 0;
+    loop {
+        if !alive() {
+            return None;
+        }
+        if let Some(user) = fetch().await {
+            return Some(user);
+        }
+        let wait = delays.get(round).or(delays.last()).copied().unwrap_or(Duration::from_secs(60));
+        tokio::time::sleep(wait).await;
+        round += 1;
+    }
+}
+
+/// Signed in, but the profile did not come: without it likes and the person's own lists cannot
+/// work, so it is read again in the background until it comes (or the key changes).
+pub(crate) fn repair_profile(app: &AppHandle) {
+    if app.state::<ScState>().status().user.is_some() || REPAIRING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let token = app.state::<ScState>().token();
+        let fetch = {
+            let app = app.clone();
+            move || {
+                let app = app.clone();
+                async move {
+                    let st = app.state::<ScState>();
+                    let t = st.token()?;
+                    api::me_with(&app.state::<crate::http::Http>(), &st.ids(), &t).await.ok()
+                }
+            }
+        };
+        let alive = {
+            let app = app.clone();
+            let token = token.clone();
+            move || {
+                let st = app.state::<ScState>();
+                st.token().is_some() && st.token() == token && st.status().user.is_none()
+            }
+        };
+        let user = until_profile(fetch, alive, &PROFILE_RETRY).await;
+        REPAIRING.store(false, Ordering::SeqCst);
+        let st = app.state::<ScState>();
+        if let Some(user) = user.filter(|_| st.token() == token) {
+            trace!("profile read");
+            st.set_signed_in(Some(user));
+            emit_status(&app);
+        }
+    });
+}
+
 /// The key from the last run still works? Without a network it stays (pages say SoundCloud does
 /// not answer); a 401 goes the way of every request: the site's id, a silent sign-in, else out.
 async fn check_key(app: &AppHandle) {
@@ -204,6 +271,9 @@ async fn check_key(app: &AppHandle) {
         Err(_) => st.set_signed_in(None),
     }
     emit_status(app);
+    if st.status().state == ScPhase::SignedIn {
+        repair_profile(app);
+    }
 }
 
 #[cfg(test)]
@@ -229,6 +299,34 @@ mod tests {
         assert_eq!(s.state, ScPhase::SignedOut);
         assert_eq!(s.user, None);
         assert_eq!(st.token(), None);
+    }
+
+    #[test]
+    fn a_missing_profile_is_read_again_until_it_comes() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        let tries = Arc::new(AtomicU32::new(0));
+        let fetch = {
+            let tries = tries.clone();
+            move || {
+                let tries = tries.clone();
+                async move { (tries.fetch_add(1, Ordering::SeqCst) >= 2).then(user) }
+            }
+        };
+        let got = tauri::async_runtime::block_on(until_profile(fetch, || true, &[std::time::Duration::ZERO]));
+        assert_eq!(got, Some(user()));
+        assert_eq!(tries.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn reading_the_profile_stops_when_the_key_is_gone() {
+        let mut left = 2;
+        let alive = move || {
+            left -= 1;
+            left >= 0
+        };
+        let got = tauri::async_runtime::block_on(until_profile(|| async { None }, alive, &[std::time::Duration::ZERO]));
+        assert_eq!(got, None);
     }
 
     #[test]

@@ -19,9 +19,18 @@ export function ScLikes() {
 }
 
 function LikesBody() {
-  const me = useScSession((x) => x.user?.id ?? sc.getScMeId())
-  const q = useAllCursorPages(scKeys.likes(me), (cursor) => sc.getLikes(me, cursor), { max: 2000 })
+  // 0 until the profile came: nothing is asked for «user 0»
+  const me = useScSession((x) => x.user?.id ?? 0)
+  const q = useAllCursorPages(scKeys.likes(me), (cursor) => sc.getLikes(me, cursor), { max: 2000, enabled: me > 0 })
   const n = q.items.length
+  if (!me) {
+    return (
+      <>
+        <PageHeader title="Лайки" />
+        <TrackListSkeleton rows={10} />
+      </>
+    )
+  }
   return (
     <>
       <PageHeader title="Лайки" subtitle={n ? `${n} ${pluralRu(n, 'трек', 'трека', 'треков')}${q.hasNextPage ? '…' : ''}` : undefined} />

@@ -51,6 +51,8 @@ function wholeLibrary(): Promise<Track[]> {
 /** SoundCloud's «own» list is the person's likes: from the likes page's cache, else the first page, once a minute. */
 function scLikes(): Promise<Track[]> {
   const me = sc.getScMeId()
+  // the profile has not come yet: no likes to search
+  if (me <= 0) return Promise.resolve([])
   const shared = queryClient.getQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me))
   if (shared) return Promise.resolve(shared.pages.flatMap((p) => p.items))
   return queryClient.fetchQuery({ queryKey: ['sc-quick-likes', me], queryFn: async () => (await sc.getLikes(me)).items, staleTime: LIBRARY_TTL })
