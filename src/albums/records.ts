@@ -1,5 +1,5 @@
 import { normalizeCode } from '../together/code'
-import { bucketOf, BUCKETS, mergeAlbum, type AlbumDoc, type AlbumEntry, type AlbumMeta, type AlbumTrack } from './model'
+import { bucketOf, BUCKETS, MAX_DURATION, MAX_TEXT, mergeAlbum, okAccessKey, okCover, okPermalink, type AlbumDoc, type AlbumEntry, type AlbumMeta, type AlbumTrack } from './model'
 
 /**
  * What goes to the relays: per album and per author one `meta` record and 16 bucket records,
@@ -132,30 +132,30 @@ const hex16 = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{1
 const text = (v: unknown, max: number): v is string => typeof v === 'string' && v.length <= max
 const optInt = (v: unknown) => v === undefined || int(v)
 
+/** A track as read: what it must have checked, what it may have left out when it is off. */
 function track(v: unknown): AlbumTrack | null {
   if (!isObj(v)) return null
   if (v.service !== undefined && v.service !== 'sc') return null
-  if (!int(v.id) || !int(v.ownerId, -Number.MAX_SAFE_INTEGER) || !text(v.title, 300) || !text(v.artist, 300)) return null
-  if (typeof v.duration !== 'number' || !Number.isFinite(v.duration) || v.duration < 0 || v.duration > 36_000) return null
-  if (v.accessKey !== undefined && !(typeof v.accessKey === 'string' && /^[0-9A-Za-z_-]{1,64}$/.test(v.accessKey))) return null
-  if (v.cover !== undefined && !(text(v.cover, 1000) && v.cover.startsWith('https://'))) return null
-  if (v.permalink !== undefined && !(text(v.permalink, 500) && /^https:\/\/([a-z0-9-]+\.)*soundcloud\.com\//.test(v.permalink))) return null
+  if (!int(v.id) || !int(v.ownerId, -Number.MAX_SAFE_INTEGER) || !text(v.title, MAX_TEXT) || !text(v.artist, MAX_TEXT)) return null
+  if (typeof v.duration !== 'number' || !Number.isFinite(v.duration) || v.duration < 0 || v.duration > MAX_DURATION) return null
   return {
     ...(v.service ? { service: 'sc' as const } : {}),
     id: v.id,
     ownerId: v.ownerId,
-    ...(v.accessKey ? { accessKey: v.accessKey as string } : {}),
+    ...(okAccessKey(v.accessKey) ? { accessKey: v.accessKey } : {}),
     title: v.title,
     artist: v.artist,
     duration: v.duration,
-    ...(v.cover ? { cover: v.cover as string } : {}),
-    ...(v.permalink ? { permalink: v.permalink as string } : {}),
+    ...(okCover(v.cover) ? { cover: v.cover } : {}),
+    ...(okPermalink(v.permalink) ? { permalink: v.permalink } : {}),
   }
 }
 
 function entry(v: unknown): AlbumEntry | null {
   if (!isObj(v) || !hex16(v.eid) || !hex16(v.by) || !int(v.addedAt) || !int(v.updatedAt) || !optInt(v.removedAt)) return null
-  if (!(typeof v.pos === 'string' && /^[0-9a-z]{0,64}$/.test(v.pos))) return null
+  // a track's place never ends in 0 (there would be no room before it); a removed one has none
+  const place = v.removedAt === undefined ? /^[0-9a-z]{0,127}[1-9a-z]$/ : /^[0-9a-z]{0,128}$/
+  if (!(typeof v.pos === 'string' && place.test(v.pos))) return null
   const t = v.track === undefined ? undefined : track(v.track)
   if (t === null) return null
   if (!t && v.removedAt === undefined) return null
@@ -178,24 +178,30 @@ export function parseRecord(raw: unknown): MetaRecord | BucketRecord | null {
   const entries: AlbumEntry[] = []
   for (const e of raw.entries) {
     const clean = entry(e)
-    // an entry lives in one bucket only
-    if (!clean || bucketOf(clean.eid) !== raw.bucket) return null
-    entries.push(clean)
+    // an entry that is off (or not of this bucket: an entry lives in one only) is left out, the rest kept
+    if (clean && bucketOf(clean.eid) === raw.bucket) entries.push(clean)
   }
   return { v: 1, id: raw.id, bucket: raw.bucket, entries }
 }
 
 // ── the list of a person's albums ──────────────────────────────────────────────────────────────
 
+/**
+ * One album in a person's list. Its fields merge each on its own: the code by when it was set
+ * (a rename elsewhere must not bring an old code back), the name by `updatedAt`, «shared» once
+ * set stays, and a removal holds until the album is added again (`joinedAt`).
+ */
 export interface ListEntry {
   id: string
   code: string
+  codeAt: number
   name: string
   /** shared with someone (or joined by code) */
   shared: boolean
   updatedAt: number
   by: string
   removedAt?: number
+  joinedAt?: number
 }
 
 export interface ListRecord {
@@ -203,11 +209,27 @@ export interface ListRecord {
   albums: ListEntry[]
 }
 
-const newerEntry = (a: ListEntry, b: ListEntry) => (b.updatedAt > a.updatedAt || (b.updatedAt === a.updatedAt && b.by > a.by) ? b : a)
+function mergeListEntry(a: ListEntry, b: ListEntry): ListEntry {
+  const named = b.updatedAt > a.updatedAt || (b.updatedAt === a.updatedAt && b.by > a.by) ? b : a
+  const coded = b.codeAt > a.codeAt || (b.codeAt === a.codeAt && b.code > a.code) ? b : a
+  const joinedAt = Math.max(a.joinedAt ?? 0, b.joinedAt ?? 0)
+  const removedAt = Math.max(a.removedAt ?? 0, b.removedAt ?? 0)
+  return {
+    id: a.id,
+    code: coded.code,
+    codeAt: coded.codeAt,
+    name: named.name,
+    shared: a.shared || b.shared,
+    updatedAt: named.updatedAt,
+    by: named.by,
+    ...(removedAt > joinedAt ? { removedAt } : {}),
+    ...(joinedAt ? { joinedAt } : {}),
+  }
+}
 
 export function mergeList(a: ListEntry[], b: ListEntry[]): ListEntry[] {
-  const out = new Map(a.map((e) => [e.id, e]))
-  for (const e of b) out.set(e.id, out.has(e.id) ? newerEntry(out.get(e.id)!, e) : e)
+  const out = new Map(a.map((e) => [e.id, mergeListEntry(e, e)]))
+  for (const e of b) out.set(e.id, mergeListEntry(out.get(e.id) ?? e, e))
   return [...out.values()]
 }
 
@@ -216,8 +238,19 @@ export function parseList(raw: unknown): ListRecord | null {
   const albums: ListEntry[] = []
   for (const v of raw.albums) {
     if (!isObj(v) || !hex16(v.id) || typeof v.code !== 'string' || normalizeCode(v.code) !== v.code || !text(v.name, 100)) return null
-    if (typeof v.shared !== 'boolean' || !int(v.updatedAt) || !hex16(v.by) || !optInt(v.removedAt)) return null
-    albums.push({ id: v.id, code: v.code, name: v.name, shared: v.shared, updatedAt: v.updatedAt, by: v.by, ...(v.removedAt !== undefined ? { removedAt: v.removedAt as number } : {}) })
+    if (typeof v.shared !== 'boolean' || !int(v.updatedAt) || !hex16(v.by) || !optInt(v.removedAt) || !optInt(v.codeAt) || !optInt(v.joinedAt)) return null
+    albums.push({
+      id: v.id,
+      code: v.code,
+      // a list from before codes had their own time
+      codeAt: (v.codeAt as number | undefined) ?? v.updatedAt,
+      name: v.name,
+      shared: v.shared,
+      updatedAt: v.updatedAt,
+      by: v.by,
+      ...(v.removedAt !== undefined ? { removedAt: v.removedAt as number } : {}),
+      ...(v.joinedAt !== undefined ? { joinedAt: v.joinedAt as number } : {}),
+    })
   }
   return { v: 1, albums }
 }

@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import { generateCode } from '../together/code'
 import type { Track } from '../vk/models'
-import { addTracks, liveEntries, newAlbum, removeEntry, sameDoc, type AlbumDoc } from './model'
-import { albumBase, albumCodeFromLink, albumKey, albumLink, albumTags, applyRecord, mergeList, openRecord, parseRecord, sealRecord, splitDoc, type ListEntry } from './records'
+import { addTracks, bucketOf, liveEntries, newAlbum, removeEntry, sameDoc, type AlbumDoc } from './model'
+import { albumBase, albumCodeFromLink, albumKey, albumLink, albumTags, applyRecord, mergeList, openRecord, parseList, parseRecord, sealRecord, splitDoc, type BucketRecord, type ListEntry } from './records'
 
 const DEV = 'aaaaaaaaaaaaaaaa'
 
@@ -74,12 +74,13 @@ describe('records', () => {
     expect(parseRecord(JSON.parse(JSON.stringify(meta)))).toEqual(meta)
     expect(parseRecord({ ...full, extra: 1 })).toEqual(full)
     const entry = full.entries[0]
-    expect(parseRecord({ ...full, entries: [{ ...entry, eid: undefined }] })).toBeNull()
-    expect(parseRecord({ ...full, entries: [{ ...entry, pos: 5 }] })).toBeNull()
+    // a bad entry is left out, its record kept
+    expect(parseRecord({ ...full, entries: [{ ...entry, eid: undefined }] })).toEqual({ ...full, entries: [] })
+    expect(parseRecord({ ...full, entries: [{ ...entry, pos: 5 }] })).toEqual({ ...full, entries: [] })
+    expect(parseRecord({ ...full, entries: [{ ...entry, track: { ...entry.track, title: 'x'.repeat(301) } }] })).toEqual({ ...full, entries: [] })
+    expect(parseRecord({ ...full, bucket: (full.bucket + 1) % 16 })).toEqual({ ...full, bucket: (full.bucket + 1) % 16, entries: [] })
     expect(parseRecord({ ...full, bucket: 16 })).toBeNull()
-    expect(parseRecord({ ...full, entries: [{ ...entry, track: { ...entry.track, title: 'x'.repeat(301) } }] })).toBeNull()
     expect(parseRecord({ ...full, entries: Array.from({ length: 2001 }, () => entry) })).toBeNull()
-    expect(parseRecord({ ...full, bucket: (full.bucket + 1) % 16 })).toBeNull()
     expect(parseRecord('junk')).toBeNull()
   })
 
@@ -94,7 +95,7 @@ describe('records', () => {
     for (const r of [meta, ...buckets]) {
       const sealed = await sealRecord(key, r)
       expect(sealed.length).toBeLessThanOrEqual(61_440)
-      expect(await openRecord(key, sealed)).toEqual(JSON.parse(JSON.stringify(r)))
+      expect(parseRecord(await openRecord(key, sealed))).toEqual(JSON.parse(JSON.stringify(r)))
     }
   })
 
@@ -107,12 +108,87 @@ describe('records', () => {
   })
 
   test('mergeList: a later code wins, a removal stays', () => {
-    const one: ListEntry = { id: '0123456789abcdef', code: generateCode(), name: 'A', shared: false, updatedAt: 1, by: DEV }
-    const moved = { ...one, code: generateCode(), updatedAt: 2 }
+    const one: ListEntry = { id: '0123456789abcdef', code: generateCode(), codeAt: 1, name: 'A', shared: false, updatedAt: 1, by: DEV }
+    const moved = { ...one, code: generateCode(), codeAt: 2 }
     expect(mergeList([one], [moved])[0].code).toBe(moved.code)
     expect(mergeList([moved], [one])[0].code).toBe(moved.code)
     const gone = { ...one, removedAt: 3, updatedAt: 3 }
     expect(mergeList([gone], [moved])[0].removedAt).toBe(3)
     expect(mergeList([moved], [gone])[0].removedAt).toBe(3)
+  })
+})
+
+describe('what readers accept', () => {
+  test('1000 tracks added one by one: readers accept every record this device publishes', async () => {
+    let d = newAlbum('По одному', 1, DEV)
+    for (let i = 0; i < 1000; i++) d = addTracks(d, [vk(i + 1)], 2 + i, DEV).doc
+    const key = await albumKey(generateCode())
+    const { meta, buckets } = splitDoc(d)
+    for (const r of [meta, ...buckets]) {
+      const sealed = await sealRecord(key, r)
+      expect(sealed.length).toBeLessThanOrEqual(61_440)
+      expect(parseRecord(await openRecord(key, sealed))).toEqual(JSON.parse(JSON.stringify(r)))
+    }
+  })
+
+  test('a track with odd fields is stored so that readers keep it', () => {
+    const odd: Track = { ...vk(7), title: 'т'.repeat(500), artist: 'а'.repeat(500), duration: 12 * 3600, accessKey: 'bad key!', cover: { s: 'x', m: 'https://tracker.example/pixel.gif', l: 'x' } }
+    const d = addTracks(newAlbum('Странный', 1, DEV), [odd], 2, DEV).doc
+    const bucket = splitDoc(d).buckets.find((b) => b.entries.length)!
+    const back = parseRecord(JSON.parse(JSON.stringify(bucket))) as BucketRecord
+    expect(back.entries).toHaveLength(1)
+    const t = back.entries[0].track!
+    expect([t.title.length, t.artist.length, t.duration, t.accessKey, t.cover]).toEqual([300, 300, 36_000, undefined, undefined])
+  })
+
+  test('one bad entry is left out, the rest of its bucket is kept', () => {
+    const d = addTracks(newAlbum('Два', 1, DEV), [vk(1)], 2, DEV).doc
+    const bucket = splitDoc(d).buckets.find((b) => b.entries.length)!
+    const good = bucket.entries[0]
+    let eid = 1
+    while (bucketOf(eid.toString(16).padStart(16, '0')) !== bucket.bucket) eid++
+    const bad = { ...good, eid: eid.toString(16).padStart(16, '0'), track: { ...good.track!, duration: -1 } }
+    expect((parseRecord(JSON.parse(JSON.stringify({ ...bucket, entries: [bad, good] }))) as BucketRecord).entries).toEqual([good])
+  })
+
+  test('a cover from anywhere but VK or SoundCloud is dropped, the track kept', () => {
+    const d = addTracks(newAlbum('Обложки', 1, DEV), [vk(1)], 2, DEV).doc
+    const bucket = splitDoc(d).buckets.find((b) => b.entries.length)!
+    const e = bucket.entries[0]
+    const coverOf = (cover: string) => (parseRecord({ ...bucket, entries: [{ ...e, track: { ...e.track!, cover } }] }) as BucketRecord).entries[0]?.track?.cover
+    expect(coverOf('https://tracker.example/pixel.gif?who=me')).toBeUndefined()
+    expect(coverOf('https://sun9-54.vkuserphoto.ru/impg/a.jpg')).toBe('https://sun9-54.vkuserphoto.ru/impg/a.jpg')
+    expect(coverOf('https://sun9-1.userapi.com/impg/a.jpg')).toBe('https://sun9-1.userapi.com/impg/a.jpg')
+    expect(coverOf('https://i1.sndcdn.com/artworks-x-t500x500.jpg')).toBe('https://i1.sndcdn.com/artworks-x-t500x500.jpg')
+    expect(coverOf('https://sndcdn.com.tracker.example/a.jpg')).toBeUndefined()
+  })
+})
+
+describe('the list of albums, field by field', () => {
+  const one: ListEntry = { id: '0123456789abcdef', code: 'AAAA-BBBB-CCCC-DDDD', codeAt: 1, name: 'A', shared: false, updatedAt: 1, by: DEV }
+
+  test('a rename on another device does not bring an old code back', () => {
+    const recoded = { ...one, code: 'EEEE-FFFF-GGGG-HHHH', codeAt: 5 }
+    const renamedElsewhere = { ...one, name: 'B', updatedAt: 9, by: 'bbbbbbbbbbbbbbbb' }
+    for (const m of [mergeList([recoded], [renamedElsewhere]), mergeList([renamedElsewhere], [recoded])]) expect(m[0]).toMatchObject({ code: 'EEEE-FFFF-GGGG-HHHH', name: 'B' })
+  })
+
+  test('a removal stays when a later rename comes; adding it again brings it back', () => {
+    const gone = { ...one, removedAt: 5 }
+    const renamed = { ...one, name: 'B', updatedAt: 9 }
+    expect(mergeList([gone], [renamed])[0].removedAt).toBe(5)
+    expect(mergeList([renamed], [gone])[0].removedAt).toBe(5)
+    const again = { ...one, joinedAt: 12 }
+    expect(mergeList([gone], [again])[0].removedAt).toBeUndefined()
+    expect(mergeList([again], [gone])[0].removedAt).toBeUndefined()
+  })
+
+  test('a shared album stays shared', () => {
+    expect(mergeList([{ ...one, shared: true }], [{ ...one, updatedAt: 9 }])[0].shared).toBe(true)
+  })
+
+  test('a list kept before codes had their own time still reads', () => {
+    const { codeAt: _, ...old } = one
+    expect(parseList({ v: 1, albums: [{ ...old, updatedAt: 7 }] })?.albums[0]).toMatchObject({ code: one.code, codeAt: 7 })
   })
 })

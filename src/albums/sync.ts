@@ -17,6 +17,8 @@ import { loadAlbums, onAlbumsChanged, useAlbums } from './store'
 export const ALBUM_RELAYS = ['wss://nos.lol', 'wss://cdn.satellite.earth', 'wss://nostr.chaima.info', 'wss://nostr.christiansass.de', 'wss://nostr.rblb.it', 'wss://nostr.stakey.net']
 export const PUBLISH_DELAY_MS = 2000
 export const REPUBLISH_MS = 12 * 3600_000
+/** A sealed record bigger than this is not sent: readers would refuse it. */
+const MAX_RECORD = 60 * 1024
 
 type Route = { kind: 'album'; id: string; key: CryptoKey } | { kind: 'list'; key: CryptoKey }
 
@@ -49,6 +51,8 @@ async function rebuild() {
   if (group) next.set(await listTag(group), { kind: 'list', key: await listKey(group) })
   if (mine !== version || !store) return
   routes = next
+  // an album no longer here (left, or the device left) is not published again
+  for (const tag of published.keys()) if (!routes.has(tag)) published.delete(tag)
   store.watch([...routes.keys()])
 }
 
@@ -56,6 +60,8 @@ async function onRecord(r: StoredRecord) {
   const route = routes.get(r.d)
   if (!route) return
   const data = await openRecord(route.key, r.content)
+  // read while the device left (or the album went): not taken in after all
+  if (!routes.has(r.d)) return
   if (route.kind === 'list') {
     const list = data === null ? null : parseList(data)
     if (!list) return journal('albums', 'ignored record')
@@ -80,22 +86,30 @@ async function publishAlbum(id: string) {
   for (const [tag, record] of out) {
     const text = JSON.stringify(record)
     if (published.get(tag) === text) continue
+    const sealed = await sealRecord(key, record)
+    if (sealed.length > MAX_RECORD) {
+      journal('albums', 'record too big')
+      continue
+    }
     published.set(tag, text)
-    await s.publish(tag, await sealRecord(key, record))
+    await s.publish(tag, sealed)
     sent++
   }
   if (sent) journal('albums', `published ${sent}`)
 }
 
 async function publishList() {
+  const s = store
   const group = useDevices.getState().code
-  if (!store || !group) return
+  if (!s || !group) return
   const tag = await listTag(group)
   const record = { v: 1, albums: useAlbums.getState().list }
   const text = JSON.stringify(record)
   if (published.get(tag) === text) return
+  const sealed = await sealRecord(await listKey(group), record)
+  if (sealed.length > MAX_RECORD) return journal('albums', 'record too big')
   published.set(tag, text)
-  await store.publish(tag, await sealRecord(await listKey(group), record))
+  await s.publish(tag, sealed)
 }
 
 function schedule(ids: string[]) {
@@ -119,6 +133,7 @@ async function publishAll() {
 export async function startAlbumSync(o: Options = {}): Promise<void> {
   if (store) return
   opts = o
+  // normally loaded at start already (main.tsx), so nothing made meanwhile is lost
   if (!useAlbums.getState().ready) await loadAlbums()
   const keys = await loadDeviceKeys()
   store = openRelayStore({ relays: ALBUM_RELAYS, WebSocketImpl: o.WebSocketImpl, keys, onRecord: (r) => void onRecord(r) })

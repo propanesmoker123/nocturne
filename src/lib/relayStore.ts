@@ -105,8 +105,12 @@ export function openRelayStore(o: { relays: string[]; WebSocketImpl?: typeof Web
 
   return {
     watch(next) {
+      const want = [...new Set(next)]
+      // the same tags again (an edit that changed no album's code): the relays are not asked again
+      const have = new Set(tags)
+      if (want.length === have.size && want.every((t) => have.has(t))) return
       const before = chunks
-      tags = [...new Set(next)]
+      tags = want
       chunks = Math.ceil(tags.length / CHUNK)
       for (const ws of sockets) {
         if (ws.readyState !== OPEN) continue

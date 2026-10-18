@@ -10,7 +10,7 @@ import d from '../connect/devices.module.css'
 import { pluralRu } from '../lib/format'
 import { liveEntries, type AlbumDoc } from './model'
 import { albumCodeFromLink, albumLink } from './records'
-import { useAlbums } from './store'
+import { joinKind, useAlbums } from './store'
 import { readAlbum } from './sync'
 
 /** «Новый альбом» and «Переименовать». */
@@ -99,7 +99,7 @@ export function AlbumJoinBody() {
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [found, setFound] = useState<{ code: string; doc: AlbumDoc } | null>(null)
+  const [found, setFound] = useState<{ code: string; doc: AlbumDoc; recode: boolean } | null>(null)
 
   const look = async (e: FormEvent) => {
     e.preventDefault()
@@ -110,13 +110,36 @@ export function AlbumJoinBody() {
     const doc = await readAlbum(code, 10_000)
     setBusy(false)
     if (!doc || doc.meta.deletedAt) return setError('Альбом с этим кодом не найден. Проверьте код или подключение к сети')
-    const mine = useAlbums.getState().list.find((x) => x.id === doc.id && !x.removedAt)
-    if (mine) {
+    const kind = joinKind(doc.id, code)
+    if (kind === 'have') {
       close()
       useRouter.getState().push({ name: 'album', id: doc.id })
       return toast('Этот альбом уже есть у вас', 'info')
     }
-    setFound({ code, doc })
+    setFound({ code, doc, recode: kind === 'recode' })
+  }
+
+  const add = () => {
+    const id = useAlbums.getState().join(found!.code, found!.doc)
+    close()
+    useRouter.getState().push({ name: 'album', id })
+  }
+
+  if (found?.recode) {
+    // named as it is here, not as the code says: a code can only move an album that is already yours
+    const name = useAlbums.getState().list.find((x) => x.id === found.doc.id)?.name ?? found.doc.meta.name
+    return (
+      <>
+        <h2 className={s.sheetTitle}>Перейти на новый код?</h2>
+        <p className={s.sheetText}>У вас уже есть альбом «{name}» со старым кодом. Похоже, код сменили: с новым альбом снова будет обновляться у вас и у остальных.</p>
+        <div className={s.sheetActions}>
+          <Button onClick={close}>Отмена</Button>
+          <Button variant="primary" onClick={add}>
+            Перейти
+          </Button>
+        </div>
+      </>
+    )
   }
 
   if (found) {
@@ -129,14 +152,7 @@ export function AlbumJoinBody() {
         </p>
         <div className={s.sheetActions}>
           <Button onClick={close}>Отмена</Button>
-          <Button
-            variant="primary"
-            onClick={() => {
-              const id = useAlbums.getState().join(found.code, found.doc)
-              close()
-              useRouter.getState().push({ name: 'album', id })
-            }}
-          >
+          <Button variant="primary" onClick={add}>
             Добавить
           </Button>
         </div>

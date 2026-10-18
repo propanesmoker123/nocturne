@@ -3,7 +3,7 @@ import { onUnlink, useDevices } from '../connect/devices'
 import { debouncedSaver, loadJSON } from '../lib/persist'
 import { generateCode } from '../together/code'
 import type { Track } from '../vk/models'
-import { addTracks, deleteAlbum, mergeAlbum, moveEntry, newAlbum, removeEntry, renameAlbum, sameDoc, type AlbumDoc } from './model'
+import { addTracks, deleteAlbum, liveEntries, MAX_TRACKS, mergeAlbum, moveEntry, newAlbum, removeEntry, renameAlbum, sameDoc, type AlbumDoc } from './model'
 import { mergeList, type ListEntry } from './records'
 
 /**
@@ -52,6 +52,21 @@ export function onAlbumsChanged(fn: (ids: string[]) => void): () => void {
 
 const me = () => useDevices.getState().deviceId || '0000000000000000'
 
+/** Limits on what copies from elsewhere may make of an album: a little over the tracks one may add, removal markers of a long life. */
+const LIVE_SLACK = 200
+const MAX_ENTRIES = 12_000
+const tooBig = (next: AlbumDoc, prev?: AlbumDoc) => {
+  const n = Object.keys(next.entries).length
+  const live = liveEntries(next).length
+  return (n > MAX_ENTRIES && n > (prev ? Object.keys(prev.entries).length : 0)) || (live > MAX_TRACKS + LIVE_SLACK && live > (prev ? liveEntries(prev).length : 0))
+}
+
+/** What a code for album `id` means here: a new album, one already here by this code, or one here by another code. */
+export function joinKind(id: string, code: string): 'new' | 'have' | 'recode' {
+  const e = useAlbums.getState().list.find((x) => x.id === id && !x.removedAt)
+  return !e ? 'new' : e.code === code ? 'have' : 'recode'
+}
+
 export const useAlbums = create<AlbumsState>((set, get) => {
   const changed = (ids: string[]) => {
     const { docs, list } = get()
@@ -59,8 +74,9 @@ export const useAlbums = create<AlbumsState>((set, get) => {
     for (const fn of listeners) fn(ids)
   }
   const setDoc = (id: string, doc: AlbumDoc) => set({ docs: { ...get().docs, [id]: doc } })
-  const setEntry = (id: string, patch: Partial<ListEntry>) =>
-    set({ list: get().list.map((e) => (e.id === id ? { ...e, ...patch, updatedAt: Date.now(), by: me() } : e)) })
+  // each field of the list carries its own time (see ListEntry): callers set it with the field
+  const setEntry = (id: string, patch: Partial<ListEntry>) => set({ list: get().list.map((e) => (e.id === id ? { ...e, ...patch } : e)) })
+  const codeAt = (id: string) => Math.max(Date.now(), (get().list.find((e) => e.id === id)?.codeAt ?? 0) + 1)
   const edit = (id: string, fn: (d: AlbumDoc, now: number, by: string) => AlbumDoc) => {
     const d = get().docs[id]
     if (!d) return
@@ -75,7 +91,7 @@ export const useAlbums = create<AlbumsState>((set, get) => {
     create(name) {
       const now = Date.now()
       const doc = newAlbum(name, now, me())
-      set({ docs: { ...get().docs, [doc.id]: doc }, list: [...get().list, { id: doc.id, code: generateCode(), name, shared: false, updatedAt: now, by: me() }] })
+      set({ docs: { ...get().docs, [doc.id]: doc }, list: [...get().list, { id: doc.id, code: generateCode(), codeAt: now, name, shared: false, updatedAt: now, by: me() }] })
       changed([doc.id])
       return doc.id
     },
@@ -83,7 +99,7 @@ export const useAlbums = create<AlbumsState>((set, get) => {
       const d = get().docs[id]
       if (!d) return
       setDoc(id, renameAlbum(d, name, Date.now(), me()))
-      setEntry(id, { name })
+      setEntry(id, { name, updatedAt: Date.now(), by: me() })
       changed([id])
     },
     add(id, tracks, at) {
@@ -114,7 +130,8 @@ export const useAlbums = create<AlbumsState>((set, get) => {
     join(code, doc) {
       const now = Date.now()
       const existing = get().list.find((e) => e.id === doc.id)
-      const entry: ListEntry = { id: doc.id, code, name: doc.meta.name, shared: true, updatedAt: now, by: me() }
+      // a new code for an album already here moves it to that code; one left before comes back
+      const entry: ListEntry = { id: doc.id, code, codeAt: codeAt(doc.id), name: doc.meta.name, shared: true, updatedAt: now, by: me(), joinedAt: Math.max(now, (existing?.removedAt ?? 0) + 1) }
       set({
         docs: { ...get().docs, [doc.id]: get().docs[doc.id] ? mergeAlbum(get().docs[doc.id], doc) : doc },
         list: existing ? get().list.map((e) => (e.id === doc.id ? entry : e)) : [...get().list, entry],
@@ -129,23 +146,28 @@ export const useAlbums = create<AlbumsState>((set, get) => {
     },
     rotate(id) {
       const code = generateCode()
-      setEntry(id, { code })
+      setEntry(id, { code, codeAt: codeAt(id) })
       changed([id])
       return code
     },
     rotateAll() {
       const live = get().list.filter((e) => !e.removedAt)
-      for (const e of live) setEntry(e.id, { code: generateCode() })
+      for (const e of live) setEntry(e.id, { code: generateCode(), codeAt: codeAt(e.id) })
       if (live.length) changed(live.map((e) => e.id))
     },
     wipe() {
       set({ docs: {}, list: [] })
-      saver.save({ docs: {}, list: [] })
+      // the sync hears it too: it stops reading these albums and forgets what it published
+      changed([])
     },
     applyRemote(id, doc) {
+      // only albums in the list: not one left, nor one of a device that left (a deletion still comes through)
+      const e = get().list.find((x) => x.id === id)
+      if (!e || (e.removedAt && !doc.meta.deletedAt)) return false
       const local = get().docs[id]
       const merged = local ? mergeAlbum(local, doc) : doc
       if (local && sameDoc(merged, local)) return false
+      if (tooBig(merged, local)) return false
       setDoc(id, merged)
       // the list's label follows a rename made elsewhere (the document's name is the one shown)
       if (merged.meta.name && get().list.some((e) => e.id === id && e.name !== merged.meta.name)) {
@@ -171,8 +193,17 @@ export const useAlbums = create<AlbumsState>((set, get) => {
 // album's code, and a device that leaves forgets its albums
 onUnlink((kind) => (kind === 'all' ? useAlbums.getState().rotateAll() : useAlbums.getState().wipe()))
 
-/** Reads what the last run kept. Call once, before the sync starts. */
+/**
+ * Reads what the last run kept (call once, at start). Anything made before it came is merged
+ * with it, never dropped, and the two are saved together.
+ */
 export async function loadAlbums(): Promise<void> {
   const saved = await loadJSON<Saved>('albums')
-  useAlbums.setState({ ready: true, docs: saved?.docs ?? {}, list: saved?.list ?? [] })
+  // a list from before codes had their own time
+  const list = (saved?.list ?? []).map((e) => ({ ...e, codeAt: e.codeAt ?? e.updatedAt }))
+  const docs = { ...(saved?.docs ?? {}) }
+  const made = useAlbums.getState()
+  for (const [id, d] of Object.entries(made.docs)) docs[id] = docs[id] ? mergeAlbum(docs[id], d) : d
+  useAlbums.setState({ ready: true, docs, list: mergeList(list, made.list) })
+  if (made.list.length) saver.save({ docs, list: useAlbums.getState().list })
 }

@@ -114,3 +114,17 @@ describe('stored records on relays', () => {
     expect(h.saved.has('album-keys')).toBe(true)
   })
 })
+
+describe('asking the relays', () => {
+  test('watching the same tags again asks the relays for nothing new', async () => {
+    const a = device()
+    await until(() => (FakeSocket.hub.get('wss://r1')?.size ?? 0) > 0 && (FakeSocket.hub.get('wss://r2')?.size ?? 0) > 0)
+    a.store.watch(['d1', 'd2'])
+    await new Promise((r) => setTimeout(r, 20))
+    const n = FakeSocket.frames.length
+    a.store.watch(['d2', 'd1'])
+    await new Promise((r) => setTimeout(r, 20))
+    expect(FakeSocket.frames.length).toBe(n)
+    a.store.close()
+  })
+})

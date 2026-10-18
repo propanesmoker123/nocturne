@@ -12,6 +12,7 @@ import { askCaptcha, useSheet } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
 import { startSystemSync } from './app/systemSync'
 import { toast } from './app/toast'
+import { loadAlbums } from './albums/store'
 import { startAlbumSync } from './albums/sync'
 import { startConnect } from './connect/runtime'
 import { startGlobalHotkeys } from './lib/globalHotkeys'
@@ -61,6 +62,8 @@ async function boot() {
   setCaptchaHandler((e) => (e.captchaImg ? askCaptcha(e.captchaImg) : Promise.resolve(null)))
   installShortcuts()
   await initSettings()
+  // the saved albums before anything shows: one made at once is added to them, not saved over them
+  await loadAlbums()
   await initService()
   if (isTauri()) void invoke('set_user_agent', { ua: navigator.userAgent }).catch(() => {})
 

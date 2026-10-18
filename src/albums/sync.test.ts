@@ -4,7 +4,8 @@ import { FakeSocket } from '../test/fakeRelay'
 import type { Track } from '../vk/models'
 
 vi.mock('../lib/persist', () => ({ loadJSON: async () => null, saveJSON: async () => {}, debouncedSaver: () => ({ save() {}, flush() {} }) }))
-vi.mock('../lib/journal', () => ({ journal: () => {} }))
+const h = vi.hoisted(() => ({ journal: [] as string[] }))
+vi.mock('../lib/journal', () => ({ journal: (...a: unknown[]) => void h.journal.push(a.join(' ')) }))
 
 const WS = FakeSocket as unknown as typeof WebSocket
 const G = 'K7QM-2XFD-9WRA-HT4C'
@@ -51,6 +52,7 @@ const codeOf = (d: Device, id: string) => d.albums.useAlbums.getState().list.fin
 beforeEach(() => {
   FakeSocket.hub.clear()
   FakeSocket.stored.clear()
+  h.journal.length = 0
 })
 
 afterEach(() => {
@@ -150,5 +152,50 @@ describe('albums between devices', () => {
     await new Promise((r) => setTimeout(r, 200))
     intruder.close()
     expect(JSON.stringify(a.albums.useAlbums.getState().docs[id])).toBe(before)
+  })
+})
+
+describe('albums over the relays, carefully', () => {
+  test('a device that leaves keeps nothing: an edit elsewhere afterwards does not come back', async () => {
+    const a = await device('aaaaaaaaaaaaaaaa', G)
+    const b = await device('bbbbbbbbbbbbbbbb', G)
+    const id = a.albums.useAlbums.getState().create('Уходящий')
+    a.albums.useAlbums.getState().add(id, [track(1)])
+    expect(await until(() => titles(b, id).length === 1)).toBe(true)
+    b.devices.unlinkHere()
+    a.albums.useAlbums.getState().add(id, [track(2)])
+    await new Promise((r) => setTimeout(r, 300))
+    expect(b.albums.useAlbums.getState().docs).toEqual({})
+    expect(b.albums.useAlbums.getState().list).toEqual([])
+  })
+
+  test('an edit does not ask the relays for everything again', async () => {
+    const a = await device('aaaaaaaaaaaaaaaa', G)
+    const id = a.albums.useAlbums.getState().create('Тихий')
+    await new Promise((r) => setTimeout(r, 150))
+    const asks = () => FakeSocket.frames.filter((f) => f.frame[0] === 'REQ').length
+    const before = asks()
+    for (let i = 1; i <= 5; i++) a.albums.useAlbums.getState().add(id, [track(i)])
+    await new Promise((r) => setTimeout(r, 200))
+    expect(asks()).toBe(before)
+  })
+
+  test('a record too big is not sent; the journal says so with nothing from the album', async () => {
+    const a = await device('aaaaaaaaaaaaaaaa', null)
+    const id = a.albums.useAlbums.getState().create('Огромный')
+    const hex = () => Array.from(crypto.getRandomValues(new Uint8Array(150)), (b) => b.toString(16).padStart(2, '0')).join('')
+    const many = Array.from({ length: 4000 }, (_, i): Track => ({ ...track(i + 1), title: hex(), artist: hex() }))
+    const doc = a.albums.useAlbums.getState().docs[id]
+    // what no device would make itself: thousands of long, random tracks
+    a.albums.useAlbums.setState({ docs: { [id]: { ...doc, entries: a.model.addTracks({ ...doc, entries: {} }, many.slice(0, 1000), 2, 'aaaaaaaaaaaaaaaa').doc.entries } } })
+    for (let k = 1; k < 4; k++) {
+      const cur = a.albums.useAlbums.getState().docs[id]
+      const more = a.model.addTracks({ ...cur, entries: {} }, many.slice(k * 1000, (k + 1) * 1000), 2, 'aaaaaaaaaaaaaaaa').doc.entries
+      a.albums.useAlbums.setState({ docs: { [id]: { ...cur, entries: { ...cur.entries, ...more } } } })
+    }
+    a.albums.useAlbums.getState().rename(id, 'Огромный!')
+    expect(await until(() => h.journal.some((l) => l.includes('record too big')))).toBe(true)
+    const code = codeOf(a, id)
+    expect(h.journal.filter((l) => l.includes(code) || l.includes(code.replace(/-/g, '')) || l.includes('Огромный') || l.includes(id))).toEqual([])
   })
 })

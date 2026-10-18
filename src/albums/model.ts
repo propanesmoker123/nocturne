@@ -48,9 +48,36 @@ export const BUCKETS = 16
 export const MAX_TRACKS = 1000
 
 const DIGITS = '0123456789abcdefghijklmnopqrstuvwxyz'
+const WIDTH = 4
+const pad = (k: string) => (k + '0'.repeat(WIDTH)).slice(0, WIDTH)
 
-/** A position key strictly between `a` and `b` (either may be open). Keys compare as strings. */
+/** `k` (WIDTH digits) as a number moved by one, never ending in 0; null past either end. */
+function step(k: string, dir: 1 | -1): string | null {
+  const d = [...k].map((c) => DIGITS.indexOf(c))
+  do {
+    let i = d.length - 1
+    for (; i >= 0; i--) {
+      d[i] += dir
+      if (d[i] >= 0 && d[i] < DIGITS.length) break
+      d[i] = dir === 1 ? 0 : DIGITS.length - 1
+    }
+    if (i < 0) return null
+  } while (d[d.length - 1] === 0)
+  return d.map((x) => DIGITS[x]).join('')
+}
+
+/**
+ * A position key strictly between `a` and `b` (either may be open). Keys compare as strings and
+ * never end in 0 (so there is always room before one). Adding at either end counts on in four
+ * digits — a million steps without the key growing — and only a place in the middle halves a gap.
+ */
 export function between(a?: string, b?: string): string {
+  if (b === undefined) return (a === undefined ? 'i' : step(pad(a), 1)) ?? midpoint(a, b)
+  if (a === undefined) return step(pad(b), -1) ?? midpoint(a, b)
+  return midpoint(a, b)
+}
+
+function midpoint(a?: string, b?: string): string {
   const low = a ?? ''
   let high = b
   let out = ''
@@ -80,18 +107,28 @@ const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (b)
 
 const sameKeyOf = (t: { service?: ServiceId; ownerId: number; id: number }) => `${t.service ?? 'vk'}:${t.ownerId}_${t.id}`
 
+// What an album's track may carry, the same for what is kept here and what is read from relays.
+export const MAX_TEXT = 300
+export const MAX_DURATION = 36_000
+export const okAccessKey = (v: unknown): v is string => typeof v === 'string' && /^[0-9A-Za-z_-]{1,64}$/.test(v)
+/** Only VK's and SoundCloud's image servers: a cover from anywhere else would tell that server who looks. */
+export const okCover = (v: unknown): v is string =>
+  typeof v === 'string' && v.length <= 1000 && /^https:\/\/([a-z0-9-]+\.)+(userapi\.com|vkuserphoto\.ru|vkuser\.net|vk-cdn\.net|sndcdn\.com)\//.test(v)
+export const okPermalink = (v: unknown): v is string => typeof v === 'string' && v.length <= 500 && /^https:\/\/([a-z0-9-]+\.)*soundcloud\.com\//.test(v)
+
 export function snapshot(t: Track): AlbumTrack {
   const sc = t.service === 'sc'
+  const cover = t.cover?.m
   return {
     ...(sc ? { service: 'sc' as const } : {}),
     id: t.id,
     ownerId: t.ownerId,
-    ...(!sc && t.accessKey ? { accessKey: t.accessKey } : {}),
-    title: t.title,
-    artist: t.artist,
-    duration: t.duration,
-    ...(t.cover?.m ? { cover: t.cover.m } : {}),
-    ...(sc && t.permalink ? { permalink: t.permalink } : {}),
+    ...(!sc && okAccessKey(t.accessKey) ? { accessKey: t.accessKey } : {}),
+    title: t.title.slice(0, MAX_TEXT),
+    artist: t.artist.slice(0, MAX_TEXT),
+    duration: Math.min(Math.max(0, Number.isFinite(t.duration) ? t.duration : 0), MAX_DURATION),
+    ...(okCover(cover) ? { cover } : {}),
+    ...(sc && okPermalink(t.permalink) ? { permalink: t.permalink } : {}),
   }
 }
 
@@ -181,7 +218,8 @@ export function deleteAlbum(d: AlbumDoc, now: number, by: string): AlbumDoc {
 
 const newer = <T extends { updatedAt: number; by: string }>(a: T, b: T): T => (b.updatedAt > a.updatedAt || (b.updatedAt === a.updatedAt && b.by > a.by) ? b : a)
 
-export const mergeEntry = (a: AlbumEntry, b: AlbumEntry): AlbumEntry => newer(a, b)
+/** A removal wins over any change to the entry (ids are never used again, so nothing undoes it). */
+export const mergeEntry = (a: AlbumEntry, b: AlbumEntry): AlbumEntry => (a.removedAt && !b.removedAt ? a : b.removedAt && !a.removedAt ? b : newer(a, b))
 
 export function mergeAlbum(a: AlbumDoc, b: AlbumDoc): AlbumDoc {
   const entries: Record<string, AlbumEntry> = { ...a.entries }
