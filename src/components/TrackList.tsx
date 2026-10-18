@@ -1,6 +1,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
 import { isInLibrary, likeLabel, toggleLibrary } from '../app/library'
+import type { MenuItem } from '../app/menu'
 import { artistRoute, useRouter } from '../app/router'
 import { ServiceLogo } from './ServiceLogo'
 import { useScroller } from '../app/scroller'
@@ -53,9 +54,11 @@ interface RowProps {
   markService: boolean
   onPlay(index: number): void
   onMenu(e: MouseEvent, track: Track, index: number): void
+  /** set: rows can be dragged to a new place */
+  onDrop?(from: number, to: number): void
 }
 
-const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, markService, onPlay, onMenu }: RowProps) {
+const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, markService, onPlay, onMenu, onDrop }: RowProps) {
   const push = useRouter((r) => r.push)
   const liked = isInLibrary(track)
   return (
@@ -72,6 +75,17 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
         if (e.key === 'Enter' && track.playable) onPlay(index)
       }}
       onContextMenu={(e) => onMenu(e, track, index)}
+      draggable={!!onDrop}
+      onDragStart={onDrop ? (e) => e.dataTransfer.setData('text/x-nocturne-row', String(index)) : undefined}
+      onDragOver={onDrop ? (e) => e.dataTransfer.types.includes('text/x-nocturne-row') && e.preventDefault() : undefined}
+      onDrop={
+        onDrop
+          ? (e) => {
+              const from = Number(e.dataTransfer.getData('text/x-nocturne-row'))
+              if (Number.isInteger(from) && from !== index) onDrop(from, index)
+            }
+          : undefined
+      }
     >
       <div className={s.index}>
         {isCurrent ? (
@@ -139,10 +153,14 @@ interface TrackListProps {
   showHeader?: boolean
   /** a small SoundCloud mark on its tracks, for lists that mix services («Недавние») */
   markService?: boolean
+  /** more menu items for a row (an album's own) */
+  menuExtra?(track: Track, index: number): MenuItem[]
+  /** rows can be dragged to a new place */
+  onReorder?(from: number, to: number): void
 }
 
 /** Apple Music-style song table, virtualized against the page scroller. */
-export function TrackList({ tracks, queueSource, playlist, showAlbum = true, showHeader = true, markService = false }: TrackListProps) {
+export function TrackList({ tracks, queueSource, playlist, showAlbum = true, showHeader = true, markService = false, menuExtra, onReorder }: TrackListProps) {
   const scroller = useScroller()
   const listRef = useRef<HTMLDivElement>(null)
   const [margin, setMargin] = useState(0)
@@ -176,7 +194,7 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
     const at = source === tracks ? index : source.findIndex((x) => x.key === t.key)
     usePlayer.getState().playList(source, Math.max(0, at))
   }
-  const onMenu = (e: MouseEvent, track: Track, index: number) => openTrackMenu(e, track, { list: source, index, playlist })
+  const onMenu = (e: MouseEvent, track: Track, index: number) => openTrackMenu(e, track, { list: source, index, playlist, extra: menuExtra?.(track, index) })
   const cols = showAlbum ? '28px minmax(0, 1.6fr) minmax(0, 1fr) 34px 52px 30px' : '28px minmax(0, 1fr) 34px 52px 30px'
 
   return (
@@ -204,6 +222,7 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
               isPlaying={isPlaying}
               showAlbum={showAlbum}
               markService={markService}
+              onDrop={onReorder}
               onPlay={onPlay}
               onMenu={onMenu}
             />

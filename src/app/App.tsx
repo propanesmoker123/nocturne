@@ -3,6 +3,8 @@ import { useEffect, useRef } from 'react'
 import { Spinner } from '../components/controls'
 import { Wallpaper } from '../components/Wallpaper'
 import { useSettings } from '../lib/settings'
+import { AlbumPage } from '../pages/albums/AlbumPage'
+import { AlbumsPage } from '../pages/albums/AlbumsPage'
 import { Artist } from '../pages/Artist'
 import { Explore } from '../pages/Explore'
 import { FriendPage, Friends } from '../pages/Friends'
@@ -76,6 +78,10 @@ function Page({ route }: { route: Route }) {
       return <ScUser id={route.id} title={route.title} />
     case 'sc-search':
       return <ScSearch q={route.q ?? ''} />
+    case 'albums':
+      return <AlbumsPage />
+    case 'album':
+      return <AlbumPage id={route.id} />
   }
 }
 

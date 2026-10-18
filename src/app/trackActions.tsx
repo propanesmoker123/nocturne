@@ -77,6 +77,8 @@ interface TrackMenuContext {
   inNowPlaying?: boolean
   /** Opened on a queue row: «Играть следующим» moves that entry instead of adding a copy. */
   queuePos?: number
+  /** Items of the list the track is in (an album's «Выше», «Ниже», «Убрать из альбома»). */
+  extra?: MenuItem[]
 }
 
 export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuItem[] {
@@ -106,7 +108,7 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
       { separator: true },
     )
   }
-  if (serviceOf(track) === 'sc') return items.concat(scTrackItems(track, liked))
+  if (serviceOf(track) === 'sc') return withExtra(items.concat(scTrackItems(track, liked)), ctx.extra)
   items.push(
     {
       label: likeLabel(track, liked),
@@ -160,8 +162,10 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
       toast('Ссылка скопирована', 'info')
     },
   })
-  return items
+  return withExtra(items, ctx.extra)
 }
+
+const withExtra = (items: MenuItem[], extra?: MenuItem[]) => (extra?.length ? [...items, { separator: true } as MenuItem, ...extra] : items)
 
 /** The rest of a SoundCloud track's menu: its like, its artist, its page. Nothing of VK's. */
 function scTrackItems(track: Track, liked: boolean): MenuItem[] {

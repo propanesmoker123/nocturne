@@ -13,6 +13,7 @@ import { useSheet, type SheetRequest } from './sheetStore'
 import { toast } from './toast'
 import { addTracksToPlaylist, copyTrackLink, myPlaylistsKey } from './trackActions'
 import { splitNotes } from '../lib/whatsNew'
+import { AlbumJoinBody, AlbumNameForm, AlbumShareBody } from '../albums/AlbumSheets'
 
 function PlaylistForm({ req }: { req: Extract<SheetRequest, { kind: 'playlist-create' | 'playlist-edit' }> }) {
   const editing = req.kind === 'playlist-edit' ? req.playlist : null
@@ -117,7 +118,8 @@ function ConfirmBody({ req }: { req: Extract<SheetRequest, { kind: 'confirm' }> 
             setBusy(true)
             try {
               await req.onConfirm()
-              close()
+              // an action that opened another sheet (a new album code) keeps that one
+              if (useSheet.getState().sheet === req) close()
             } catch (e) {
               toast(describeError(e), 'error')
               setBusy(false)
@@ -292,6 +294,12 @@ export function Sheets() {
               <SendTrackBody req={sheet} />
             ) : sheet.kind === 'link-device' ? (
               <LinkDeviceBody />
+            ) : sheet.kind === 'album-create' || sheet.kind === 'album-rename' ? (
+              <AlbumNameForm req={sheet} />
+            ) : sheet.kind === 'album-share' ? (
+              <AlbumShareBody req={sheet} />
+            ) : sheet.kind === 'album-join' ? (
+              <AlbumJoinBody />
             ) : (
               <PlaylistForm req={sheet} />
             )}

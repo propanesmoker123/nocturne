@@ -8,6 +8,10 @@ export type SheetRequest =
   | { kind: 'captcha'; img: string; resolve: (key: string | null) => void }
   | { kind: 'send-track'; track: Track }
   | { kind: 'link-device' }
+  | { kind: 'album-create'; addTracks?: Track[] }
+  | { kind: 'album-rename'; id: string }
+  | { kind: 'album-share'; id: string }
+  | { kind: 'album-join' }
   /** «Что нового»: release notes as a short list, with an optional action (e.g. «Обновить»). */
   | { kind: 'notes'; title: string; notes: string; action?: { label: string; run: () => void } }
 
