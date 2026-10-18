@@ -69,9 +69,9 @@ export async function unseal(key: CryptoKey, text: string): Promise<unknown | nu
 }
 
 /** A signed Nostr event (NIP-01): relays only pass events whose id and signature check out. */
-export async function signedEvent(keys: EventKeys, kind: number, topic: string, content: string, createdAt = Math.floor(Date.now() / 1000)): Promise<NostrEvent> {
+export async function signedEvent(keys: EventKeys, kind: number, topic: string, content: string, createdAt = Math.floor(Date.now() / 1000), tagList?: string[][]): Promise<NostrEvent> {
   const pubkey = hex(keys.publicKey)
-  const tags = [['x', topic]]
+  const tags = tagList ?? [['x', topic]]
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(JSON.stringify([0, pubkey, createdAt, kind, tags, content]))))
   const sig = await schnorr.signAsync(hash, keys.secretKey)
   return { id: hex(hash), pubkey, created_at: createdAt, kind, tags, content, sig: hex(sig) }
