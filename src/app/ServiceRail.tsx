@@ -28,7 +28,7 @@ export function ServiceRail() {
               style={{ ['--ring' as string]: info.color }}
               onClick={() => select(info.id)}
             >
-              <ServiceLogo id={info.id} size={36} />
+              <ServiceLogo id={info.id} size={36} tone="dark" />
             </button>
           )
         })}

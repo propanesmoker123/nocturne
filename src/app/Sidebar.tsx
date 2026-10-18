@@ -228,7 +228,7 @@ export function Sidebar() {
   return (
     <nav className={s.sidebar} aria-label="Разделы">
       <div className={s.brand} data-tauri-drag-region>
-        <ServiceLogo id={service} size={22} />
+        <ServiceLogo id={service} size={22} tone="dark" />
         {serviceInfo(service).name}
       </div>
       <SearchField />

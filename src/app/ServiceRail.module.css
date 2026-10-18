@@ -37,8 +37,9 @@
   width: 44px;
   height: 44px;
   border-radius: 14px;
-  opacity: 0.55;
-  filter: saturate(0.6);
+  /* a service not picked is a grey mark on its dark tile; the picked one shows its colour */
+  opacity: 0.7;
+  filter: grayscale(1);
 }
 
 /* the ring in the service's colour around the chosen one */
