@@ -22,6 +22,7 @@ import { MiniPlayer } from './MiniPlayer'
 import { NowPlaying } from './NowPlaying'
 import { useRouter, type Route } from './router'
 import { ScrollerContext } from './scroller'
+import { ServiceRail } from './ServiceRail'
 import { useSession } from './session'
 import { Sheets } from './Sheets'
 import { Sidebar } from './Sidebar'
@@ -78,6 +79,7 @@ function Shell() {
     <ScrollerContext.Provider value={scroller}>
       <div className={s.root}>
         <Wallpaper config={wallpaper} look={{ blur, dim }} />
+        <ServiceRail />
         <Sidebar />
         <main className={s.main}>
           <div ref={scroller} className={s.scroller} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 36)}>

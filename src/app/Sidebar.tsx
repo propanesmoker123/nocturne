@@ -1,12 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
-import { Clock3, Compass, Home, LibraryBig, ListMusic, Plus, Search, Settings, Users } from 'lucide-react'
+import { Clock3, Compass, Heart, Home, LibraryBig, ListMusic, Plus, Rss, Search, Settings, Users } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import appIcon from '../assets/app-icon.png'
 import { Artwork } from '../components/Artwork'
 import { IconButton } from '../components/controls'
+import { ServiceLogo } from '../components/ServiceLogo'
+import * as sc from '../sc/api'
+import { useScSession } from '../sc/session'
 import * as vk from '../vk/api'
 import s from './Sidebar.module.css'
 import { useRouter, type Route } from './router'
+import { serviceInfo, useService } from './service'
 import { useSession } from './session'
 import { useSheet } from './sheetStore'
 import { myPlaylistsKey, playlistMenuItems } from './trackActions'
@@ -28,21 +31,25 @@ function NavItem({ route, icon, label }: { route: Route; icon: ReactNode; label:
   )
 }
 
+/** The search of the selected service: VK's `search` page or SoundCloud's `sc-search`. */
 function SearchField() {
   const route = useRouter((r) => r.route)
   const push = useRouter((r) => r.push)
   const replace = useRouter((r) => r.replace)
-  const [value, setValue] = useState(route.name === 'search' ? (route.q ?? '') : '')
+  const service = useService((x) => x.current)
+  const page = service === 'sc' ? 'sc-search' : 'search'
+  const here = route.name === page
+  const [value, setValue] = useState(route.name === 'search' || route.name === 'sc-search' ? (route.q ?? '') : '')
   const ref = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (route.name !== 'search') setValue('')
-  }, [route.name])
+    if (!here) setValue('')
+  }, [here])
 
   const update = (q: string) => {
     setValue(q)
-    if (route.name === 'search') replace({ name: 'search', q })
-    else push({ name: 'search', q })
+    if (here) replace({ name: page, q })
+    else push({ name: page, q })
   }
 
   return (
@@ -52,10 +59,10 @@ function SearchField() {
         ref={ref}
         id="global-search"
         className={s.searchInput}
-        placeholder="Поиск"
+        placeholder={service === 'sc' ? 'Поиск в SoundCloud' : 'Поиск в VK'}
         value={value}
         spellCheck={false}
-        onFocus={() => route.name !== 'search' && push({ name: 'search', q: value })}
+        onFocus={() => !here && push({ name: page, q: value })}
         onChange={(e) => update(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
@@ -101,6 +108,86 @@ function PlaylistLinks() {
   )
 }
 
+/** The person's SoundCloud playlists (own and liked), once signed in. */
+function ScPlaylistLinks() {
+  const route = useRouter((r) => r.route)
+  const push = useRouter((r) => r.push)
+  const phase = useScSession((x) => x.phase)
+  const q = useQuery({ queryKey: ['sc-my-playlists', sc.getScMeId()], queryFn: sc.getMyPlaylists, enabled: phase === 'signed-in' })
+  if (phase !== 'signed-in') return null
+  if (q.isLoading) return <div className={s.hint}>Загружаем…</div>
+  if (q.isError) return <div className={s.hint}>Плейлисты не загрузились</div>
+  const items = q.data ?? []
+  if (!items.length) return <div className={s.hint}>Плейлистов пока нет</div>
+  return (
+    <>
+      {items.map((p) => {
+        const active = route.name === 'sc-playlist' && route.id === p.id && route.urn === p.urn
+        return (
+          <button
+            key={`${p.id}_${p.urn ?? ''}`}
+            type="button"
+            className={`${s.item} ${s.playlistItem}`}
+            aria-current={active ? 'page' : undefined}
+            onClick={() => push({ name: 'sc-playlist', id: p.id, urn: p.urn, title: p.title })}
+          >
+            <Artwork src={p.cover} size={24} radius={5} seed={p.title} />
+            <span className={`${s.itemLabel} truncate`}>{p.title}</span>
+          </button>
+        )
+      })}
+    </>
+  )
+}
+
+function VkNav() {
+  return (
+    <>
+      <div className={s.group}>
+        <NavItem route={{ name: 'home' }} icon={<Home {...ic} />} label="Для вас" />
+        <NavItem route={{ name: 'explore' }} icon={<Compass {...ic} />} label="Обзор" />
+      </div>
+      <div className={s.group}>
+        <div className={s.groupHead}>Медиатека</div>
+        <NavItem route={{ name: 'library' }} icon={<LibraryBig {...ic} />} label="Моя музыка" />
+        <NavItem route={{ name: 'playlists' }} icon={<ListMusic {...ic} />} label="Плейлисты" />
+        <NavItem route={{ name: 'recent' }} icon={<Clock3 {...ic} />} label="Недавние" />
+        <NavItem route={{ name: 'friends' }} icon={<Users {...ic} />} label="Друзья" />
+      </div>
+      <div className={s.group}>
+        <div className={s.groupHead}>
+          Мои плейлисты
+          <IconButton size={22} label="Новый плейлист" onClick={() => useSheet.getState().open({ kind: 'playlist-create' })}>
+            <Plus size={15} strokeWidth={2.4} />
+          </IconButton>
+        </div>
+        <PlaylistLinks />
+      </div>
+    </>
+  )
+}
+
+function ScNav() {
+  return (
+    <>
+      <div className={s.group}>
+        <NavItem route={{ name: 'sc-home' }} icon={<Home {...ic} />} label="Для вас" />
+        <NavItem route={{ name: 'sc-stream' }} icon={<Rss {...ic} />} label="Лента" />
+      </div>
+      <div className={s.group}>
+        <div className={s.groupHead}>Медиатека</div>
+        <NavItem route={{ name: 'sc-likes' }} icon={<Heart {...ic} />} label="Лайки" />
+        <NavItem route={{ name: 'sc-playlists' }} icon={<ListMusic {...ic} />} label="Плейлисты" />
+        <NavItem route={{ name: 'recent' }} icon={<Clock3 {...ic} />} label="Недавние" />
+      </div>
+      <div className={s.group}>
+        <div className={s.groupHead}>Мои плейлисты</div>
+        <ScPlaylistLinks />
+      </div>
+    </>
+  )
+}
+
 function UpdateCard() {
   const { phase, version, notes, progress, install } = useUpdates()
   if (phase !== 'available' && phase !== 'downloading') return null
@@ -132,35 +219,15 @@ function UpdateCard() {
 export function Sidebar() {
   const user = useSession((x) => x.user)
   const push = useRouter((r) => r.push)
+  const service = useService((x) => x.current)
   return (
     <nav className={s.sidebar} aria-label="Разделы">
       <div className={s.brand} data-tauri-drag-region>
-        <img src={appIcon} alt="" />
-        Nocturne
+        <ServiceLogo id={service} size={22} />
+        {serviceInfo(service).name}
       </div>
       <SearchField />
-      <div className={s.scroll}>
-        <div className={s.group}>
-          <NavItem route={{ name: 'home' }} icon={<Home {...ic} />} label="Для вас" />
-          <NavItem route={{ name: 'explore' }} icon={<Compass {...ic} />} label="Обзор" />
-        </div>
-        <div className={s.group}>
-          <div className={s.groupHead}>Медиатека</div>
-          <NavItem route={{ name: 'library' }} icon={<LibraryBig {...ic} />} label="Моя музыка" />
-          <NavItem route={{ name: 'playlists' }} icon={<ListMusic {...ic} />} label="Плейлисты" />
-          <NavItem route={{ name: 'recent' }} icon={<Clock3 {...ic} />} label="Недавние" />
-          <NavItem route={{ name: 'friends' }} icon={<Users {...ic} />} label="Друзья" />
-        </div>
-        <div className={s.group}>
-          <div className={s.groupHead}>
-            Мои плейлисты
-            <IconButton size={22} label="Новый плейлист" onClick={() => useSheet.getState().open({ kind: 'playlist-create' })}>
-              <Plus size={15} strokeWidth={2.4} />
-            </IconButton>
-          </div>
-          <PlaylistLinks />
-        </div>
-      </div>
+      <div className={s.scroll}>{service === 'sc' ? <ScNav /> : <VkNav />}</div>
       <UpdateCard />
       <div className={s.footer}>
         <button type="button" className={s.user} onClick={() => push({ name: 'settings' })}>

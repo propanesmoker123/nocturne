@@ -88,6 +88,7 @@
   --dur-3: 380ms;
 
   /* Layout */
+  --rail-w: 64px;
   --sidebar-w: 248px;
   --titlebar-h: 44px;
   --player-h: 76px;

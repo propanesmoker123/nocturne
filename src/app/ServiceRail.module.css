@@ -1,0 +1,88 @@
+.rail {
+  position: relative;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 0;
+  background: var(--mat-thick);
+  backdrop-filter: var(--mat-blur-strong);
+  -webkit-backdrop-filter: var(--mat-blur-strong);
+  box-shadow: 0.5px 0 0 var(--separator-soft);
+}
+
+.drag {
+  width: 100%;
+  height: var(--titlebar-h);
+  flex: none;
+}
+
+.rest {
+  width: 100%;
+  flex: 1;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.service {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  opacity: 0.55;
+  filter: saturate(0.6);
+}
+
+/* the ring in the service's colour around the chosen one */
+.service::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: 14px;
+  box-shadow: 0 0 0 2px var(--ring);
+  opacity: 0;
+  transform: scale(0.92);
+  pointer-events: none;
+}
+
+.service:hover,
+.service[data-on] {
+  opacity: 1;
+  filter: none;
+}
+
+.service[data-on]::after {
+  opacity: 1;
+  transform: none;
+}
+
+.service[data-out]:not([data-on]) {
+  opacity: 0.35;
+}
+
+.service[data-out]:not([data-on]):hover {
+  opacity: 0.8;
+}
+
+.service:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .service,
+  .service::after {
+    transition:
+      opacity 160ms var(--ease-out),
+      filter 160ms var(--ease-out),
+      transform 160ms var(--ease-out);
+  }
+}
