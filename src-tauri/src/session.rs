@@ -30,16 +30,13 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Extra attempts after a failure that is not VK saying "unauthorized".
 const TRANSIENT_RETRIES: [Duration; 3] = [Duration::from_millis(1500), Duration::from_secs(4), Duration::from_secs(10)];
-/// VK still answers «try again» (or the network is down) after those: rounds of attempts this far
-/// apart (about four minutes in all) before the login screen is shown after all.
-const PATIENCE: [Duration; 6] = [
-    Duration::from_secs(15),
-    Duration::from_secs(30),
-    Duration::from_secs(30),
-    Duration::from_secs(60),
-    Duration::from_secs(60),
-    Duration::from_secs(60),
-];
+/// VK still answers «try again», or is down, or the network is: the session is not gone, so the
+/// app keeps trying — soon at first, then once a minute for as long as it takes (VK has been down
+/// for hours) — and only VK saying «unauthorized» shows the login screen.
+pub fn patience(round: usize) -> Duration {
+    const FIRST: [u64; 3] = [15, 30, 30];
+    Duration::from_secs(FIRST.get(round).copied().unwrap_or(60))
+}
 /// VK's answer that its own web client simply retries (its «too many requests» / a failed check).
 const VK_TRY_AGAIN: &str = "check result failure";
 /// One patient retry loop at a time: page loads must not multiply requests while VK asks to wait.
@@ -297,21 +294,31 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
         // VK keeps asking to try again, or the network is down: the session is not gone, so keep
         // trying for a while (one such loop at a time) instead of showing the login screen
         if matches!(&result, Err(e) if !is_signed_out(e)) && !BEING_PATIENT.swap(true, Ordering::SeqCst) {
-            for wait in PATIENCE {
-                let Err(e) = &result else { break };
-                if is_signed_out(e) {
+            let mut round = 0;
+            while let Err(e) = &result {
+                if is_signed_out(e) || app.state::<SessionState>().valid_token(120).is_some() {
                     break;
                 }
-                let why = if is_busy(e) { "VK asked to try again" } else { e.as_str() };
-                trace!("no token yet ({why}), trying again in {}s", wait.as_secs());
+                let wait = patience(round);
+                // the journal hears about it now and then, not every minute of a long VK outage
+                if round < 3 || round % 10 == 0 {
+                    let why = if is_busy(e) { "VK asked to try again" } else { e.as_str() };
+                    trace!("no token yet ({why}), trying again in {}s", wait.as_secs());
+                }
                 let _ = app.emit("session:busy", true);
                 tokio::time::sleep(wait).await;
+                round += 1;
                 result = refresh_with_retries(&app).await;
             }
             BEING_PATIENT.store(false, Ordering::SeqCst);
             let _ = app.emit("session:busy", false);
         }
         let st = app.state::<SessionState>();
+        // another check got the token meanwhile
+        let result = match result {
+            Err(_) if st.valid_token(120).is_some() => Ok(()),
+            r => r.map(|_| ()),
+        };
         match result {
             Ok(_) => {
                 if visible {
@@ -327,11 +334,13 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
                     let _ = m.set_focus();
                 }
             }
-            Err(e) if !visible => {
+            Err(e) if !visible && is_signed_out(&e) => {
                 trace!("no VK session ({e}), showing the login screen");
                 st.set_phase(Phase::None);
                 let _ = app.emit("session:logged-out", ());
             }
+            // a patient loop is already waiting for VK: this check leaves it to that one
+            Err(e) if !visible => trace!("still waiting for VK ({e})"),
             Err(e) => trace!("login window: not signed in yet ({e})"),
         }
     });
@@ -525,6 +534,13 @@ mod tests {
         // vk.ru now hands its own pages a web token (window.vk.webToken); the script parks it like an answer
         let raw = r#"{"ok":true,"body":{"type":"okay","data":{"access_token":"tok","expires":1791268053,"user_id":42}},"from":"page"}"#;
         assert_eq!(parse_poll_result(raw), Some(Ok(WebToken { access_token: "tok".into(), expires: 1791268053, user_id: 42 })));
+    }
+
+    #[test]
+    fn patience_is_soon_at_first_then_once_a_minute_for_good() {
+        let waits: Vec<u64> = (0..6).map(|r| patience(r).as_secs()).collect();
+        assert_eq!(waits, vec![15, 30, 30, 60, 60, 60]);
+        assert_eq!(patience(500).as_secs(), 60);
     }
 
     #[test]
