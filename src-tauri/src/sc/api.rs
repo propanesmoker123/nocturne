@@ -129,6 +129,11 @@ impl Unauthorized {
     }
 }
 
+/// A 401's last step signs out only the key that failed (not a fresh one another sign-in brought).
+pub fn signs_out(current: Option<&str>, failed: &str) -> bool {
+    current == Some(failed)
+}
+
 fn with_client_id(url: &Url, client_id: &str) -> Url {
     let mut url = url.clone();
     let kept: Vec<(String, String)> = url.query_pairs().into_owned().filter(|(k, _)| k != "client_id").collect();
@@ -183,16 +188,23 @@ pub async fn request_url(app: &AppHandle, method: Method, mut url: Url) -> Resul
                     }
                 }
                 Step::Reauth => {
-                    if login::silent(app).await.is_ok() {
+                    if login::silent(app, &token).await.is_ok() {
                         break;
                     }
                 }
                 Step::SignOut => {
-                    trace!("the key no longer works, signing out");
-                    st.set_signed_out();
-                    store::clear_token();
-                    emit_status(app);
-                    return Err(ScError::SignedOut);
+                    if signs_out(st.token().as_deref(), &token) {
+                        trace!("the key no longer works, signing out");
+                        st.set_signed_out();
+                        store::clear_token();
+                        emit_status(app);
+                        return Err(ScError::SignedOut);
+                    }
+                    // the key changed meanwhile: a new one gets its own try; none — someone signed out
+                    if st.token().is_none() {
+                        return Err(ScError::SignedOut);
+                    }
+                    break;
                 }
             }
         }
@@ -274,6 +286,13 @@ mod tests {
         ] {
             assert!(!allowed(m, p), "{m} {p}");
         }
+    }
+
+    #[test]
+    fn only_the_key_that_failed_is_signed_out() {
+        assert!(signs_out(Some("k"), "k"));
+        assert!(!signs_out(Some("k2"), "k"));
+        assert!(!signs_out(None, "k"));
     }
 
     #[test]

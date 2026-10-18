@@ -180,14 +180,32 @@ async fn exchange(app: &AppHandle, p: &Pending, url: &Url) -> Result<(), Failure
     Ok(())
 }
 
-/// Signs in again without the person, from the profile's session, when the key stopped working.
-pub async fn silent(app: &AppHandle) -> Result<(), String> {
+/// What a silent sign-in that waited for the one before it finds.
+#[derive(Debug, PartialEq)]
+enum Waited {
+    /// the person signed out meanwhile: never sign back in behind their back
+    SignedOut,
+    /// another request's silent sign-in already got a new key
+    Renewed,
+    Try,
+}
+
+fn after_wait(current: Option<&str>, failed: &str) -> Waited {
+    match current {
+        None => Waited::SignedOut,
+        Some(t) if t != failed => Waited::Renewed,
+        _ => Waited::Try,
+    }
+}
+
+/// Signs in again without the person, from the profile's session, when the key `failed` stopped working.
+pub async fn silent(app: &AppHandle, failed: &str) -> Result<(), String> {
     let st = app.state::<ScState>();
-    let before = st.token();
     let _one = SILENT.lock().await;
-    // another request's silent sign-in already got a new key
-    if st.token().is_some() && st.token() != before {
-        return Ok(());
+    match after_wait(st.token().as_deref(), failed) {
+        Waited::SignedOut => return Err("signed out".to_string()),
+        Waited::Renewed => return Ok(()),
+        Waited::Try => {}
     }
     // never take the window from someone signing in right now
     if st.pending.lock().map(|g| g.as_ref().is_some_and(|p| !p.silent)).unwrap_or(false) {
@@ -259,4 +277,24 @@ async fn wipe_profile(app: &AppHandle) -> Result<(), String> {
     tokio::time::sleep(WIPE_GRACE).await;
     let _ = w.destroy();
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_silent_sign_in_queued_after_sign_out_gives_up() {
+        assert_eq!(after_wait(None, "k"), Waited::SignedOut);
+    }
+
+    #[test]
+    fn a_silent_sign_in_queued_behind_one_that_worked_takes_its_key() {
+        assert_eq!(after_wait(Some("k2"), "k"), Waited::Renewed);
+    }
+
+    #[test]
+    fn a_silent_sign_in_with_the_failed_key_still_there_tries() {
+        assert_eq!(after_wait(Some("k"), "k"), Waited::Try);
+    }
 }

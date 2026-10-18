@@ -152,7 +152,7 @@ pub async fn request(app: &AppHandle, method: &str, path: &str) -> Result<Value,
     }
     let token = st.token().ok_or(ScError::SignedOut)?;
     let mut answer = send(app, method, path, &token).await;
-    if matches!(answer, Err(ScError::Http { status: 401 })) && login::silent(app).await.is_ok() {
+    if matches!(answer, Err(ScError::Http { status: 401 })) && login::silent(app, &token).await.is_ok() {
         let token = st.token().ok_or(ScError::SignedOut)?;
         if st.status().user.map(|u| u.id) != Some(me) { return Err(ScError::SignedOut); }
         answer = send(app, method, path, &token).await;
