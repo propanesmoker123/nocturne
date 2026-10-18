@@ -54,6 +54,7 @@ pub fn run() {
         .manage(http::Http::new())
         .manage(vk::Limiter::new())
         .manage(session::SessionState::new())
+        .manage(sc::ScState::new())
         .manage(island::IslandState::new())
         .manage(media_state())
         .invoke_handler(tauri::generate_handler![
@@ -62,6 +63,7 @@ pub fn run() {
             session::session_status,
             session::session_login,
             session::session_logout,
+            sc::sc_status,
             http::set_user_agent,
             island::island_set_hit_rect,
             island::island_configure,
@@ -103,6 +105,7 @@ pub fn run() {
         .setup(|app| {
             journal::init(app.handle());
             session::create_window(app.handle())?;
+            sc::init(app.handle());
             island::create_window(app.handle())?;
             island::start(app.handle());
             quicksearch::create_window(app.handle())?;
