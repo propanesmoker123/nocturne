@@ -4,7 +4,17 @@ export interface Cover {
   l: string
 }
 
+/** Where a track or a playlist comes from. */
+export type ServiceId = 'vk' | 'sc'
+
+/** Older saved queues and history have no `service`: they are VK's. */
+export const serviceOf = (x: { service?: ServiceId }): ServiceId => x.service ?? 'vk'
+
 export interface Track {
+  /** Absent for VK (and for everything saved before SoundCloud came). */
+  service?: ServiceId
+  /** SoundCloud: the track's page — what «Скопировать ссылку» copies. */
+  permalink?: string
   id: number
   ownerId: number
   /** "owner_id" — stable identity of the track in VK. */
@@ -29,6 +39,10 @@ export interface Track {
 }
 
 export interface Playlist {
+  service?: ServiceId
+  /** SoundCloud system playlists («Mixed for you»…) are known by urn, not by id. */
+  urn?: string
+  permalink?: string
   id: number
   ownerId: number
   accessKey?: string
