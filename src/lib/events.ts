@@ -20,6 +20,8 @@ export const EV = {
   quickPlay: 'quick:play',
   sessionReady: 'session:ready',
   sessionLoggedOut: 'session:logged-out',
+  /** VK keeps asking to try again (or the network is down): the app retries for a few minutes. */
+  sessionBusy: 'session:busy',
 } as const
 
 export interface IslandTrack {

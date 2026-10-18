@@ -99,10 +99,12 @@ function Shell() {
 
 export function App() {
   const phase = useSession((x) => x.phase)
+  const busy = useSession((x) => x.busy)
   if (phase === 'pending') {
     return (
       <div className={s.splash} data-tauri-drag-region>
         <Spinner size={24} />
+        {busy && <p className={s.splashNote}>VK пока не выдаёт доступ — пробуем ещё раз…</p>}
       </div>
     )
   }

@@ -4,6 +4,7 @@
 //! with `eval_with_callback` (no navigation, so the page is never disturbed). The token
 //! lives only in Rust memory.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +29,21 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long one script round trip into the session page may take.
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Extra attempts after a failure that is not VK saying "unauthorized".
-const TRANSIENT_RETRIES: [Duration; 2] = [Duration::from_millis(1500), Duration::from_secs(4)];
+const TRANSIENT_RETRIES: [Duration; 3] = [Duration::from_millis(1500), Duration::from_secs(4), Duration::from_secs(10)];
+/// VK still answers «try again» (or the network is down) after those: rounds of attempts this far
+/// apart (about four minutes in all) before the login screen is shown after all.
+const PATIENCE: [Duration; 6] = [
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+];
+/// VK's answer that its own web client simply retries (its «too many requests» / a failed check).
+const VK_TRY_AGAIN: &str = "check result failure";
+/// One patient retry loop at a time: page loads must not multiply requests while VK asks to wait.
+static BEING_PATIENT: AtomicBool = AtomicBool::new(false);
 
 /// Journal entry for the session flow. Never pass tokens, queries or fragments.
 macro_rules! trace {
@@ -55,6 +70,8 @@ pub enum SessionMsgError {
     Script(String),
     /// login.vk.ru answered without a token (not logged in, captcha, …).
     Rejected(String),
+    /// login.vk.ru asked to try again (VK's own client retries it): the session is still there.
+    Busy(String),
 }
 
 #[derive(Deserialize)]
@@ -81,6 +98,9 @@ pub fn parse_poll_result(raw: &str) -> Option<Result<WebToken, SessionMsgError>>
     }
     let body = parked.body.unwrap_or(serde_json::Value::Null);
     if body.get("type").and_then(|t| t.as_str()) != Some("okay") {
+        if body.get("error_info").and_then(|v| v.as_str()) == Some(VK_TRY_AGAIN) {
+            return Some(Err(SessionMsgError::Busy(VK_TRY_AGAIN.to_string())));
+        }
         let info = body.get("error_info").or_else(|| body.get("error")).map(|v| v.to_string()).unwrap_or_else(|| body.to_string());
         return Some(Err(SessionMsgError::Rejected(info)));
     }
@@ -94,6 +114,11 @@ pub fn parse_poll_result(raw: &str) -> Option<Result<WebToken, SessionMsgError>>
 /// Does a failed refresh mean the VK session is gone (as opposed to a transient failure)?
 pub fn is_signed_out(err: &str) -> bool {
     err.starts_with("Rejected(")
+}
+
+/// Did VK ask to try again later (the session is fine)?
+pub fn is_busy(err: &str) -> bool {
+    err.starts_with("Busy(")
 }
 
 /// Lets only genuine page loads (Started → Finished) trigger a session check, and not more
@@ -191,6 +216,12 @@ fn token_script(nonce: &str) -> String {
     format!(
         r#"(() => {{
   const box = (window.__nocturne = window.__nocturne || {{}});
+  // vk.ru now hands its own pages their web token (window.vk.webToken); take it when this page has one
+  const vkPage = window.vk, own = vkPage && vkPage.webToken;
+  if (own && !own.is_anonym && typeof own.access_token === 'string' && own.access_token && Number(own.expired_at) * 1000 - Date.now() > 120000 && Number(vkPage.id) > 0) {{
+    box['{nonce}'] = {{ ok: true, from: 'page', body: {{ type: 'okay', data: {{ access_token: own.access_token, expires: Number(own.expired_at), user_id: Number(vkPage.id) }} }} }};
+    return true;
+  }}
   fetch('https://login.vk.ru/?act=web_token', {{
     method: 'POST', credentials: 'include',
     headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
@@ -262,17 +293,23 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
     let app = app.clone();
     let visible = window.is_visible().unwrap_or(false);
     tauri::async_runtime::spawn(async move {
-        // A busy WebView (app start, slow PC) can miss the eval deadline; only VK saying
-        // "unauthorized" means there is no session, so give hiccups a couple more tries.
-        let mut result = refresh(&app).await;
-        for delay in TRANSIENT_RETRIES {
-            match &result {
-                Err(e) if !is_signed_out(e) => {
-                    tokio::time::sleep(delay).await;
-                    result = refresh(&app).await;
+        let mut result = refresh_with_retries(&app).await;
+        // VK keeps asking to try again, or the network is down: the session is not gone, so keep
+        // trying for a while (one such loop at a time) instead of showing the login screen
+        if matches!(&result, Err(e) if !is_signed_out(e)) && !BEING_PATIENT.swap(true, Ordering::SeqCst) {
+            for wait in PATIENCE {
+                let Err(e) = &result else { break };
+                if is_signed_out(e) {
+                    break;
                 }
-                _ => break,
+                let why = if is_busy(e) { "VK asked to try again" } else { e.as_str() };
+                trace!("no token yet ({why}), trying again in {}s", wait.as_secs());
+                let _ = app.emit("session:busy", true);
+                tokio::time::sleep(wait).await;
+                result = refresh_with_retries(&app).await;
             }
+            BEING_PATIENT.store(false, Ordering::SeqCst);
+            let _ = app.emit("session:busy", false);
         }
         let st = app.state::<SessionState>();
         match result {
@@ -315,6 +352,22 @@ async fn eval_value(window: &WebviewWindow, script: String) -> Result<String, St
 
 /// Requests a fresh web token through the session page. Serialized and spaced out so a
 /// misbehaving trigger can never hammer login.vk.ru.
+/// A refresh, and a few more tries after a failure that is not VK saying "unauthorized" (a busy
+/// WebView can miss the eval deadline at app start; VK sometimes asks to try again).
+async fn refresh_with_retries(app: &AppHandle) -> Result<WebToken, String> {
+    let mut result = refresh(app).await;
+    for delay in TRANSIENT_RETRIES {
+        match &result {
+            Err(e) if !is_signed_out(e) => {
+                tokio::time::sleep(delay).await;
+                result = refresh(app).await;
+            }
+            _ => break,
+        }
+    }
+    result
+}
+
 pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
     let st = app.state::<SessionState>();
     let mut last = st.last_refresh.lock().await;
@@ -454,6 +507,24 @@ mod tests {
     fn okay_without_token_is_rejected() {
         let raw = r#"{"ok":true,"body":{"type":"okay","data":{"user_id":42}}}"#;
         assert!(matches!(parse_poll_result(raw), Some(Err(SessionMsgError::Rejected(_)))));
+    }
+
+    #[test]
+    fn vk_asking_to_try_again_is_busy_not_signed_out() {
+        // VK's own web client retries this one (it is its «too many requests» / failed check)
+        let raw = r#"{"ok":true,"body":{"type":"error","error_info":"check result failure"}}"#;
+        let r = parse_poll_result(raw);
+        assert_eq!(r, Some(Err(SessionMsgError::Busy("check result failure".into()))));
+        assert!(!is_signed_out(&format!("{:?}", SessionMsgError::Busy("check result failure".into()))));
+        assert!(is_busy(&format!("{:?}", SessionMsgError::Busy("check result failure".into()))));
+        assert!(!is_busy("timeout"));
+    }
+
+    #[test]
+    fn a_token_the_page_already_holds_is_taken_as_it_is() {
+        // vk.ru now hands its own pages a web token (window.vk.webToken); the script parks it like an answer
+        let raw = r#"{"ok":true,"body":{"type":"okay","data":{"access_token":"tok","expires":1791268053,"user_id":42}},"from":"page"}"#;
+        assert_eq!(parse_poll_result(raw), Some(Ok(WebToken { access_token: "tok".into(), expires: 1791268053, user_id: 42 })));
     }
 
     #[test]

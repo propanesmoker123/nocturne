@@ -96,6 +96,14 @@
 .splash {
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 14px;
   height: 100%;
   color: var(--label-2);
+}
+.splashNote {
+  max-width: 320px;
+  margin: 0;
+  text-align: center;
+  font: var(--t-callout);
 }

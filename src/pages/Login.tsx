@@ -50,6 +50,7 @@ function UpdateNotice() {
 
 export function Login() {
   const loggingIn = useSession((x) => x.loggingIn)
+  const busy = useSession((x) => x.busy)
   const login = useSession((x) => x.login)
   const resetLogin = useSession((x) => x.resetLogin)
   return (
@@ -73,7 +74,7 @@ export function Login() {
             <>
               <div className={s.waiting}>
                 <Spinner size={18} />
-                Войдите в открывшемся окне VK
+                {busy ? 'Вход есть, но VK пока не выдаёт доступ — пробуем ещё раз…' : 'Войдите в открывшемся окне VK'}
               </div>
               <button type="button" className={s.link} onClick={() => void login()}>
                 Открыть окно входа ещё раз

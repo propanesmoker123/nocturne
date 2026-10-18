@@ -11,6 +11,8 @@ interface SessionState {
   phase: Phase
   user: User | null
   loggingIn: boolean
+  /** VK has not handed a token for a while (it asked to wait, or no network); still retrying. */
+  busy: boolean
   login(): Promise<void>
   /** Forgets VK cookies left by a half-finished login and opens the login page again. */
   resetLogin(): Promise<void>
@@ -21,6 +23,7 @@ export const useSession = create<SessionState>((set) => ({
   phase: 'pending',
   user: null,
   loggingIn: false,
+  busy: false,
   async login() {
     set({ loggingIn: true })
     try {
@@ -64,6 +67,7 @@ export async function initSession() {
     return
   }
   void listen<{ userId: number }>(EV.sessionReady, (e) => void becomeReady(e.payload.userId))
+  void listen<boolean>(EV.sessionBusy, (e) => useSession.setState({ busy: !!e.payload }))
   void listen(EV.sessionLoggedOut, () => {
     if (useSession.getState().phase === 'ready' && !useSession.getState().loggingIn) queryClient.clear()
     useSession.setState({ phase: 'none', user: null })
