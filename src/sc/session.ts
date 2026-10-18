@@ -2,11 +2,18 @@ import { create } from 'zustand'
 import { queryClient } from '../app/queryClient'
 import { EV } from '../lib/events'
 import { invoke, isTauri, listen } from '../lib/tauri'
+import { serviceOf, type Track } from '../vk/models'
 import { setScMeId } from './api'
 import type { ScUser } from './normalize'
 
 /** `checking`: a key from the last run is being tried. The key itself never reaches the UI. */
 export type ScPhase = 'checking' | 'signed-in' | 'signed-out'
+
+/** What an unplayable SoundCloud row says: its account is wanted, or the track plays only on its site. */
+export function unplayableHint(t: Track, phase: ScPhase): string | undefined {
+  if (t.playable || serviceOf(t) !== 'sc') return undefined
+  return phase === 'signed-out' ? 'Войдите в SoundCloud, чтобы слушать' : 'Доступно только в SoundCloud'
+}
 
 interface ScSessionState {
   phase: ScPhase

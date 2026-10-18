@@ -7,6 +7,7 @@ import { useScroller } from '../app/scroller'
 import { openTrackMenu } from '../app/trackActions'
 import { formatTime } from '../lib/format'
 import { usePlayer } from '../player/store'
+import { unplayableHint, useScSession } from '../sc/session'
 import { serviceOf, type Playlist, type Track } from '../vk/models'
 import { Artwork } from './Artwork'
 import { EqualizerBars, IconButton } from './controls'
@@ -60,6 +61,7 @@ interface RowProps {
 
 const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, markService, onPlay, onMenu, onDrop }: RowProps) {
   const push = useRouter((r) => r.push)
+  const scPhase = useScSession((x) => x.phase)
   return (
     <div
       className={s.row}
@@ -68,7 +70,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
       tabIndex={0}
       data-current={isCurrent || undefined}
       data-disabled={!track.playable || undefined}
-      title={!track.playable && serviceOf(track) === 'sc' ? 'Доступно только в SoundCloud' : undefined}
+      title={unplayableHint(track, scPhase)}
       onClick={(e) => playClick(e) && track.playable && onPlay(index)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && track.playable) onPlay(index)

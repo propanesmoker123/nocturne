@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, test } from 'vitest'
 import { queryClient } from '../app/queryClient'
 import { getScMeId } from './api'
-import { applyLoginFailed, applyStatus, useScSession } from './session'
+import { applyLoginFailed, applyStatus, unplayableHint, useScSession } from './session'
+import type { Track } from '../vk/models'
 
 beforeEach(() => {
   queryClient.clear()
@@ -42,4 +43,12 @@ describe('SoundCloud session in the UI', () => {
     applyLoginFailed({ message: '', cancelled: false })
     expect(useScSession.getState().error).toBe('Не получилось войти в SoundCloud')
   })
+})
+
+test('an unplayable SoundCloud row says how to play it', () => {
+  const t = { service: 'sc', id: 1, ownerId: 2, key: 'sc_1', artist: 'A', title: 'T', duration: 1, urlFetchedAt: 0, explicit: false, artists: [], playable: false, hasLyrics: false, liked: false } as Track
+  expect(unplayableHint(t, 'signed-out')).toBe('Войдите в SoundCloud, чтобы слушать')
+  expect(unplayableHint(t, 'signed-in')).toBe('Доступно только в SoundCloud')
+  expect(unplayableHint({ ...t, playable: true }, 'signed-out')).toBeUndefined()
+  expect(unplayableHint({ ...t, service: undefined }, 'signed-out')).toBeUndefined()
 })
