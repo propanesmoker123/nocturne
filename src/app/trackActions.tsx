@@ -1,6 +1,7 @@
-import { Copy, Disc3, ExternalLink, ListEnd, ListPlus, ListX, Mic2, Plus, Send, Trash2 } from 'lucide-react'
+import { Copy, Disc3, ExternalLink, Heart, ListEnd, ListPlus, ListX, Mic2, Plus, Send, SquarePlus, Trash2 } from 'lucide-react'
 import type { MouseEvent } from 'react'
-import { IconCheck, IconPlay, IconPlus } from '../components/Icons'
+import { albumMenuItems } from '../albums/addMenu'
+import { IconPlay } from '../components/Icons'
 import { fullTrackName } from '../lib/format'
 import { usePlayer } from '../player/store'
 import { openInSoundCloud } from '../sc/open'
@@ -110,11 +111,8 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
   }
   if (serviceOf(track) === 'sc') return withExtra(items.concat(scTrackItems(track, liked)), ctx.extra)
   items.push(
-    {
-      label: likeLabel(track, liked),
-      icon: liked ? <IconCheck size={16} /> : <IconPlus size={16} />,
-      onSelect: () => void toggleLibrary(track),
-    },
+    likeItem(track, liked),
+    albumItem(track),
     {
       label: 'Добавить в плейлист',
       icon: <Plus {...ic} />,
@@ -165,12 +163,23 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
   return withExtra(items, ctx.extra)
 }
 
+/** The heart: the service's own like. */
+const likeItem = (track: Track, liked: boolean): MenuItem => ({
+  label: likeLabel(track, liked),
+  icon: <Heart {...ic} fill={liked ? 'currentColor' : 'none'} />,
+  onSelect: () => void toggleLibrary(track),
+})
+
+/** The plus: one of Nocturne's albums, for a track of any service. */
+const albumItem = (track: Track): MenuItem => ({ label: 'Добавить в альбом Nocturne', icon: <SquarePlus {...ic} />, submenu: async () => albumMenuItems([track]) })
+
 const withExtra = (items: MenuItem[], extra?: MenuItem[]) => (extra?.length ? [...items, { separator: true } as MenuItem, ...extra] : items)
 
 /** The rest of a SoundCloud track's menu: its like, its artist, its page. Nothing of VK's. */
 function scTrackItems(track: Track, liked: boolean): MenuItem[] {
   return [
-    { label: likeLabel(track, liked), icon: liked ? <IconCheck size={16} /> : <IconPlus size={16} />, onSelect: () => void toggleLibrary(track) },
+    likeItem(track, liked),
+    albumItem(track),
     { separator: true },
     {
       label: 'Перейти к исполнителю',

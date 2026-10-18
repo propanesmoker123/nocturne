@@ -16,3 +16,12 @@ test("a SoundCloud track's menu has no VK-only items", () => {
   expect(got).toContain('Скопировать ссылку')
   expect(labels({ ...t, liked: true })).toContain('Убрать из лайков')
 })
+
+test("every service's track menu offers a Nocturne album", async () => {
+  const vkTrack = { id: 1, ownerId: 5, key: '5_1', artist: 'A', title: 'T', duration: 1, urlFetchedAt: 0, explicit: false, artists: [], playable: true, hasLyrics: false, liked: false } as Track
+  for (const t of [vkTrack, { ...vkTrack, service: 'sc', key: 'sc_1', permalink: 'https://soundcloud.com/a/t' } as Track]) {
+    const item = trackMenuItems(t).find((i) => i.label === 'Добавить в альбом Nocturne')
+    expect(item?.submenu).toBeDefined()
+    expect((await item!.submenu!())[0].label).toBe('Новый альбом…')
+  }
+})

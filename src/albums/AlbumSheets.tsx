@@ -3,6 +3,7 @@ import { renderSVG } from 'uqr'
 import { useRouter } from '../app/router'
 import { useSheet, type SheetRequest } from '../app/sheetStore'
 import { toast } from '../app/toast'
+import { useUi } from '../app/ui'
 import s from '../app/overlays.module.css'
 import { Button, Spinner } from '../components/controls'
 import d from '../connect/devices.module.css'
@@ -34,6 +35,8 @@ export function AlbumNameForm({ req }: { req: Extract<SheetRequest, { kind: 'alb
       toast(`Добавлено в «${n}»`, 'added')
     }
     close()
+    // made from «Сейчас играет»: the new album is shown, not hidden under it
+    useUi.getState().closeNowPlaying()
     useRouter.getState().push({ name: 'album', id })
   }
   return (

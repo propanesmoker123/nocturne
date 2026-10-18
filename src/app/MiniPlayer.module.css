@@ -52,6 +52,12 @@
 .artButton:hover::after {
   opacity: 1;
 }
+/* the heart and the plus side by side, so the title keeps its room */
+.marks {
+  display: flex;
+  flex: none;
+  margin-left: -4px;
+}
 .titles {
   display: flex;
   flex-direction: column;

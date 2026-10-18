@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useIsPresent } from 'motion/react'
 import { useCallback, useEffect, useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton, Segmented, Spinner } from '../components/controls'
-import { IconBackward, IconCheck, IconForward, IconLyrics, IconMore, IconPause, IconPlay, IconPlus, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
+import { IconBackward, IconForward, IconLyrics, IconMore, IconPause, IconPlay, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
@@ -11,7 +11,7 @@ import { usePlayer } from '../player/store'
 import { useControlledBy } from '../together/TogetherControls'
 import type { Track } from '../vk/models'
 import { CoverViewer } from './CoverViewer'
-import { isInLibrary, likeLabel, toggleLibrary } from './library'
+import { AlbumAddButton, HeartButton } from '../components/TrackButtons'
 import s from './NowPlaying.module.css'
 import { artistRoute, useRouter } from './router'
 import { WindowControls } from './Titlebar'
@@ -126,7 +126,6 @@ export function NowPlaying() {
       setSideOpen(true)
     }
   }
-  const liked = current ? isInLibrary(current) : false
 
   return (
     <AnimatePresence>
@@ -173,9 +172,8 @@ export function NowPlaying() {
                       {current.artist}
                     </button>
                   </div>
-                  <IconButton className={s.roundBtn} size={34} label={likeLabel(current, liked)} onClick={() => void toggleLibrary(current)}>
-                    {liked ? <IconCheck size={18} /> : <IconPlus size={18} />}
-                  </IconButton>
+                  <HeartButton className={s.roundBtn} track={current} size={34} iconSize={17} />
+                  <AlbumAddButton className={s.roundBtn} track={current} size={34} iconSize={18} />
                   <IconButton className={s.roundBtn} size={34} label="Ещё" onClick={(e) => openTrackMenu(e, current, { inNowPlaying: true })}>
                     <IconMore size={18} />
                   </IconButton>

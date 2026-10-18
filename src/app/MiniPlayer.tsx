@@ -3,13 +3,13 @@ import { useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { DevicesButton } from '../connect/DevicesPanel'
 import { IconButton, Spinner } from '../components/controls'
-import { IconBackward, IconCheck, IconForward, IconNote, IconPause, IconPlay, IconPlus, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
+import { IconBackward, IconForward, IconNote, IconPause, IconPlay, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime, fullTrackName } from '../lib/format'
 import { usePlayer } from '../player/store'
 import { TogetherBanner, TogetherButton, useControlledBy } from '../together/TogetherControls'
-import { isInLibrary, likeLabel, toggleLibrary } from './library'
+import { AlbumAddButton, HeartButton } from '../components/TrackButtons'
 import s from './MiniPlayer.module.css'
 import { artistRoute, useRouter } from './router'
 import { copyTrackName, shareTrack } from './trackActions'
@@ -65,7 +65,6 @@ export function MiniPlayer() {
   const nowPlayingTab = useUi((u) => (u.nowPlaying ? u.tab : null))
   const remoteName = usePlayer((p) => p.remoteName)
   const push = useRouter((r) => r.push)
-  const liked = current ? isInLibrary(current) : false
   // Listening together, the host seeks and skips; the listener keeps pause and volume
   const controlledBy = useControlledBy()
   const locked = !current || !!controlledBy
@@ -94,9 +93,10 @@ export function MiniPlayer() {
                 </div>
                 {remoteName && <div className={`${s.remote} truncate`}>Играет на «{remoteName}»</div>}
               </div>
-              <IconButton size={30} label={likeLabel(current, liked)} active={liked} onClick={() => void toggleLibrary(current)}>
-                {liked ? <IconCheck size={18} /> : <IconPlus size={18} />}
-              </IconButton>
+              <div className={s.marks}>
+                <HeartButton track={current} size={30} iconSize={17} />
+                <AlbumAddButton track={current} size={30} iconSize={18} />
+              </div>
             </>
           ) : (
             <>

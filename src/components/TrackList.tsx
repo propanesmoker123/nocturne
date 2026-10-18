@@ -1,6 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
-import { isInLibrary, likeLabel, toggleLibrary } from '../app/library'
 import type { MenuItem } from '../app/menu'
 import { artistRoute, useRouter } from '../app/router'
 import { ServiceLogo } from './ServiceLogo'
@@ -13,7 +12,8 @@ import { Artwork } from './Artwork'
 import { EqualizerBars, IconButton } from './controls'
 import c from './cards.module.css'
 import { EdgeArrows, useHorizontalScroll } from './HScroll'
-import { IconCheck, IconMore, IconPlay, IconPlus } from './Icons'
+import { IconMore, IconPlay } from './Icons'
+import { AlbumAddButton, HeartButton } from './TrackButtons'
 import s from './TrackList.module.css'
 
 const ROW = 56
@@ -60,7 +60,6 @@ interface RowProps {
 
 const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, markService, onPlay, onMenu, onDrop }: RowProps) {
   const push = useRouter((r) => r.push)
-  const liked = isInLibrary(track)
   return (
     <div
       className={s.row}
@@ -125,16 +124,8 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
         </div>
       )}
       <div className={s.trail}>
-        <IconButton
-          className={s.hoverOnly}
-          data-active={liked || undefined}
-          size={30}
-          active={liked}
-          label={likeLabel(track, liked)}
-          onClick={() => void toggleLibrary(track)}
-        >
-          {liked ? <IconCheck size={17} /> : <IconPlus size={17} />}
-        </IconButton>
+        <AlbumAddButton className={s.hoverOnly} track={track} size={30} iconSize={17} />
+        <HeartButton className={s.hoverOnly} track={track} size={30} iconSize={16} />
       </div>
       <div className={s.duration}>{formatTime(track.duration)}</div>
       <IconButton className={s.hoverOnly} size={30} label="Ещё" onClick={(e) => onMenu(e, track, index)}>
@@ -195,7 +186,7 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
     usePlayer.getState().playList(source, Math.max(0, at))
   }
   const onMenu = (e: MouseEvent, track: Track, index: number) => openTrackMenu(e, track, { list: source, index, playlist, extra: menuExtra?.(track, index) })
-  const cols = showAlbum ? '28px minmax(0, 1.6fr) minmax(0, 1fr) 34px 52px 30px' : '28px minmax(0, 1fr) 34px 52px 30px'
+  const cols = showAlbum ? '28px minmax(0, 1.6fr) minmax(0, 1fr) 62px 52px 30px' : '28px minmax(0, 1fr) 62px 52px 30px'
 
   return (
     <div style={{ ['--cols' as string]: cols }}>
