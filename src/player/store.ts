@@ -2,8 +2,10 @@ import { create } from 'zustand'
 import { toast } from '../app/toast'
 import { journal } from '../lib/journal'
 import { debouncedSaver, loadJSON } from '../lib/persist'
+import * as sc from '../sc/api'
+import { describeScError, SC_UNREACHABLE, ScApiError } from '../sc/errors'
 import * as vk from '../vk/api'
-import type { Track } from '../vk/models'
+import { serviceOf, type Track } from '../vk/models'
 import { engine } from './engine'
 import { dedupeAppend, heardBetween, heardEnough, needsFreshUrl, prevAction } from './logic'
 import * as Q from './queue'
@@ -150,6 +152,7 @@ export function setPlayerRemote(r: PlayerRemote | null) {
     const s = usePlayer.getState()
     beforeRemote = { queue: s.queue, current: s.current, source: s.source, position: s.position, duration: s.duration, volume: s.volume, muted: s.muted, shuffle: s.shuffle, repeat: s.repeat }
     remote = r
+    stopScWatch()
     // a load still on its way never starts, and this device's own audio stops for good
     loadToken++
     loadedKey = null
@@ -174,6 +177,10 @@ function preloadCovers(t: Track | undefined) {
 }
 let loadToken = 0
 let loadedKey: string | null = null
+/** Without a VPN, SoundCloud's stream hosts in Russia take the connection and send nothing. */
+export const SC_START_TIMEOUT_MS = 15_000
+let scWatch: ReturnType<typeof setTimeout> | undefined
+const stopScWatch = () => clearTimeout(scWatch)
 let consecutiveFailures = 0
 /** How much of the current load was really heard: it reaches «Недавние» only past half. */
 let heard = { key: '', seconds: 0, last: 0, recorded: false }
@@ -202,10 +209,32 @@ export const usePlayer = create<PlayerState>((set, get) => {
     }
   }
 
+  /** A SoundCloud stream that has not started this long after loading is not going to. */
+  const watchScStart = (token: number, t: Track) => {
+    stopScWatch()
+    scWatch = setTimeout(() => {
+      if (token !== loadToken || remote || get().current?.key !== t.key) return
+      journal('player', 'soundcloud stream did not start')
+      engine.stop()
+      loadedKey = null
+      onFailure(t, SC_UNREACHABLE)
+    }, SC_START_TIMEOUT_MS)
+  }
+
+  /** Why a SoundCloud track got no stream link, in the person's words. */
+  const scLinkFailure = (e: unknown): string => {
+    const err = ScApiError.from(e)
+    if (err.kind === 'signedOut') return 'Войдите в SoundCloud, чтобы слушать этот трек'
+    if (err.kind === 'invalid') return 'Доступно только в SoundCloud'
+    if (err.kind === 'http') return describeScError(err)
+    return SC_UNREACHABLE
+  }
+
   const loadCurrent = async (autoplay: boolean, startAt = 0) => {
     const q = get().queue
     const t = q && Q.current(q)
     const token = ++loadToken
+    stopScWatch()
     if (!t) {
       engine.stop()
       loadedKey = null
@@ -216,7 +245,18 @@ export const usePlayer = create<PlayerState>((set, get) => {
     heard = { key: t.key, seconds: 0, last: startAt, recorded: false }
     preloadCovers(Q.upcoming(q)[0])
     let track = t
-    if (needsFreshUrl(t, Date.now())) {
+    if (needsFreshUrl(t, Date.now()) && serviceOf(t) === 'sc') {
+      try {
+        const url = await sc.streamUrl(t)
+        if (token !== loadToken) return
+        track = { ...t, url, urlFetchedAt: Date.now() }
+        replaceTrack(track)
+      } catch (e) {
+        if (token !== loadToken) return
+        onFailure(t, scLinkFailure(e))
+        return
+      }
+    } else if (needsFreshUrl(t, Date.now())) {
       try {
         const [fresh] = await vk.getByIds([t])
         if (token !== loadToken) return
@@ -236,6 +276,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     loadedKey = track.key
     beginWaveform(track.key, track.duration)
     engine.load(track.url, startAt, autoplay)
+    if (autoplay && serviceOf(track) === 'sc') watchScStart(token, track)
     void extendMixIfNeeded()
   }
 
@@ -247,7 +288,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       engine.stop()
       loadedKey = null
       set({ isPlaying: false, isLoading: false })
-      toast('VK не отдаёт треки. Проверьте интернет и подписку', 'error')
+      toast(serviceOf(t) === 'sc' ? 'SoundCloud не отдаёт звук — без VPN он в России не играет' : 'VK не отдаёт треки. Проверьте интернет и подписку', 'error')
       return
     }
     toast(reason ?? `Не получилось включить «${t.title}»`, 'error')
@@ -283,7 +324,10 @@ export const usePlayer = create<PlayerState>((set, get) => {
     const waiting = engine.waiting
     set({ isLoading: waiting })
     const cur = get().current
-    if (!waiting && engine.playing && cur) consecutiveFailures = 0
+    if (!waiting && engine.playing && cur) {
+      consecutiveFailures = 0
+      stopScWatch()
+    }
   })
   engine.on('ended', () => !remote && get().next(false))
   engine.on('error', () => {
@@ -357,8 +401,10 @@ export const usePlayer = create<PlayerState>((set, get) => {
         void loadCurrent(true, get().position)
         return
       }
-      if (engine.playing) engine.pause()
-      else engine.play()
+      if (engine.playing) {
+        stopScWatch()
+        engine.pause()
+      } else engine.play()
     },
 
     play() {
@@ -372,6 +418,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     pause() {
       if (remote) return remote.pause()
       if (!allow('pause')) return
+      stopScWatch()
       engine.pause()
     },
 

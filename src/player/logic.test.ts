@@ -29,6 +29,12 @@ describe('needsFreshUrl', () => {
     expect(needsFreshUrl(t(1), 1_000_000 + 2 * 3600_000 + 1)).toBe(true)
   })
 
+  test('a SoundCloud link is fresh for one minute only', () => {
+    const sc = t(1, { service: 'sc', url: 'https://playback.media-streaming.soundcloud.cloud/x/playlist.m3u8' })
+    expect(needsFreshUrl(sc, 1_000_000 + 59_000)).toBe(false)
+    expect(needsFreshUrl(sc, 1_000_000 + 61_000)).toBe(true)
+  })
+
   test('tracks without a url are refreshed', () => {
     expect(needsFreshUrl(t(1, { url: undefined, urlFetchedAt: 0 }), 1_000_000)).toBe(true)
   })

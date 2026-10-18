@@ -1,13 +1,16 @@
-import type { Track } from '../vk/models'
+import { serviceOf, type Track } from '../vk/models'
 import { current, upcoming, type QueueState } from './queue'
 
 /** VK signs stream URLs for a limited time; refresh well before they expire. */
 export const URL_MAX_AGE_MS = 2 * 3600_000
 
+/** SoundCloud's stream links live minutes and may be single-use: one is taken right before playing. */
+export const SC_URL_MAX_AGE_MS = 60_000
+
 export function needsFreshUrl(t: Track, now: number, maxAge = URL_MAX_AGE_MS): boolean {
   if (!t.url) return true
   if (t.url.startsWith('blob:') || t.url.startsWith('data:')) return false
-  return now - t.urlFetchedAt > maxAge
+  return now - t.urlFetchedAt > (serviceOf(t) === 'sc' ? SC_URL_MAX_AGE_MS : maxAge)
 }
 
 /** iOS behaviour: "previous" restarts the track unless it just began. */
