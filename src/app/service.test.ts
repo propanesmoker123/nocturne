@@ -51,3 +51,15 @@ describe('routes and services', () => {
     expect(service.useService.getState().current).toBe('vk')
   })
 })
+
+describe('the account in the sidebar', () => {
+  test('follows the selected service', () => {
+    const vkUser = { name: 'Дима', photo: 'https://vk/p.jpg' }
+    const scUser = { id: 7, name: 'listener', avatar: 'https://sc/a.jpg' }
+    expect(service.accountFor('vk', vkUser, scUser)).toEqual({ name: 'Дима', photo: 'https://vk/p.jpg' })
+    expect(service.accountFor('sc', vkUser, scUser)).toEqual({ name: 'listener', photo: 'https://sc/a.jpg' })
+    expect(service.accountFor('sc', vkUser, null)).toEqual({ name: 'SoundCloud', photo: undefined })
+    const noPicture = { id: 7, name: 'listener', avatar: null }
+    expect(service.accountFor('sc', vkUser, noPicture)).toEqual({ name: 'listener', photo: undefined })
+  })
+})

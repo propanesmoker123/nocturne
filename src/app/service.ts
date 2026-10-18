@@ -19,6 +19,16 @@ export const SERVICES: ServiceInfo[] = [
 
 export const serviceInfo = (id: ServiceId): ServiceInfo => SERVICES.find((s) => s.id === id) ?? SERVICES[0]
 
+/** Whose name and picture the sidebar shows: the account of the service picked on the rail. */
+export function accountFor(
+  service: ServiceId,
+  vk: { name: string; photo?: string } | null,
+  sc: { name: string; avatar?: string | null } | null,
+): { name: string; photo?: string } | null {
+  if (service === 'sc') return { name: sc?.name || 'SoundCloud', photo: sc?.avatar ?? undefined }
+  return vk ? { name: vk.name, photo: vk.photo } : null
+}
+
 /** The page each service was last on: picking it again goes back there. */
 const lastRoute = new Map<ServiceId, Route>()
 

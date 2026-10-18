@@ -9,7 +9,7 @@ import { useScSession } from '../sc/session'
 import * as vk from '../vk/api'
 import s from './Sidebar.module.css'
 import { useRouter, type Route } from './router'
-import { serviceInfo, useService } from './service'
+import { accountFor, serviceInfo, useService } from './service'
 import { useSession } from './session'
 import { useSheet } from './sheetStore'
 import { myPlaylistsKey, playlistMenuItems } from './trackActions'
@@ -219,9 +219,12 @@ function UpdateCard() {
 }
 
 export function Sidebar() {
-  const user = useSession((x) => x.user)
+  const vkUser = useSession((x) => x.user)
+  const scUser = useScSession((x) => x.user)
   const push = useRouter((r) => r.push)
   const service = useService((x) => x.current)
+  // the account of the service picked on the rail
+  const user = accountFor(service, vkUser, scUser)
   return (
     <nav className={s.sidebar} aria-label="Разделы">
       <div className={s.brand} data-tauri-drag-region>
