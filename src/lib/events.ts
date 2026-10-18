@@ -22,6 +22,10 @@ export const EV = {
   sessionLoggedOut: 'session:logged-out',
   /** VK keeps asking to try again (or the network is down): the app retries for a few minutes. */
   sessionBusy: 'session:busy',
+  /** Rust → main: the SoundCloud status changed (`{ state, user }`). */
+  scStatus: 'sc:status',
+  /** Rust → main: a SoundCloud sign-in ended without a key (`{ message, cancelled }`). */
+  scLoginFailed: 'sc:login-failed',
 } as const
 
 export interface IslandTrack {

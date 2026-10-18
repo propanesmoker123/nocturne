@@ -22,6 +22,7 @@ import { invoke, isTauri } from './lib/tauri'
 import { startBridges } from './player/bridges'
 import { openQuickSearch, startQuickSearch } from './quicksearch/bridge'
 import { initPlayer, usePlayer } from './player/store'
+import { initScSession } from './sc/session'
 import { setCaptchaHandler } from './vk/api'
 
 async function showMainWindow(toggle = false) {
@@ -69,6 +70,7 @@ async function boot() {
   )
 
   await initSession()
+  void initScSession()
   void showWhatsNew().catch(() => {})
   await initPlayer()
   startServerTimeSync()
