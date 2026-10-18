@@ -5,6 +5,7 @@ pub mod auth;
 pub mod client_id;
 pub mod login;
 pub mod store;
+pub mod stream;
 
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};

@@ -67,6 +67,7 @@ pub fn run() {
             sc::login::sc_login,
             sc::login::sc_logout,
             sc::api::sc_api,
+            sc::stream::sc_stream,
             http::set_user_agent,
             island::island_set_hit_rect,
             island::island_configure,
