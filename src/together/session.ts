@@ -131,8 +131,8 @@ export const clearTogetherError = () => useTogether.setState({ error: null })
 const myName = () => useSession.getState().user?.name?.trim().split(/\s+/)[0] || 'Слушатель'
 
 export function toWire(t: Track): WireTrack {
-  // a SoundCloud track is announced by name only: older versions find nothing under 0_0
-  if (serviceOf(t) === 'sc') return { owner: 0, id: 0, title: t.title.slice(0, 200), artist: t.artist.slice(0, 200), duration: Math.min(Math.max(0, t.duration), 36_000) }
+  // a SoundCloud track is announced by name only (owner 0: no VK owner), its own id keeping two apart
+  if (serviceOf(t) === 'sc') return { owner: 0, id: t.id, title: t.title.slice(0, 200), artist: t.artist.slice(0, 200), duration: Math.min(Math.max(0, t.duration), 36_000) }
   return {
     owner: t.ownerId,
     id: t.id,

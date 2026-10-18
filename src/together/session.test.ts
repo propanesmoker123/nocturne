@@ -353,15 +353,16 @@ describe('listening', () => {
 })
 
 describe('SoundCloud tracks', () => {
-  test('a SoundCloud track goes out as display-only', () => {
+  test('a SoundCloud track goes out as display-only, each by its own id', () => {
     const t = { service: 'sc', id: 402, ownerId: 501, key: 'sc_402', artist: 'Night Owl', title: 'midnight demo', duration: 201 } as Track
-    expect(toWire(t)).toEqual({ owner: 0, id: 0, title: 'midnight demo', artist: 'Night Owl', duration: 201 })
+    expect(toWire(t)).toEqual({ owner: 0, id: 402, title: 'midnight demo', artist: 'Night Owl', duration: 201 })
+    expect(toWire({ ...t, id: 403, key: 'sc_403' }).id).toBe(403)
   })
 
   test('a display-only track is never looked up in VK', async () => {
     h.offline = true
     h.searched = 0
-    await expect(resolveTrack({ owner: 0, id: 0, title: 'midnight demo', artist: 'Night Owl', duration: 201 })).resolves.toBeNull()
+    await expect(resolveTrack({ owner: 0, id: 402, title: 'midnight demo', artist: 'Night Owl', duration: 201 })).resolves.toBeNull()
     expect(h.searched).toBe(0)
     h.offline = false
   })

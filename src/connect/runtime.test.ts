@@ -155,6 +155,15 @@ describe('linked devices and the player', () => {
     expect(order.tracks.map((t) => t.id)).toEqual([1, 3])
   })
 
+  test('a remote shows each SoundCloud track by its own name, never as a VK track', async () => {
+    hear({ type: 'presence', presence: presence({ track: { owner: 0, id: 5, title: 'first', artist: 'Night Owl', duration: 201 } }) }, PHONE)
+    await settle()
+    expect(usePlayer.getState().current).toMatchObject({ title: 'first', service: 'sc' })
+    hear({ type: 'presence', presence: presence({ track: { owner: 0, id: 6, title: 'second', artist: 'Night Owl', duration: 180 } }) }, PHONE)
+    await settle()
+    expect(usePlayer.getState().current).toMatchObject({ title: 'second', service: 'sc', duration: 180 })
+  })
+
   test('a remote does not ask for a SoundCloud track', () => {
     hear({ type: 'presence', presence: presence({ track: { owner: 0, id: 0, title: 'midnight demo', artist: 'Night Owl', duration: 201 } }) }, PHONE)
     expect(useDevices.getState().remoteId).toBe(PHONE)

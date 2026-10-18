@@ -45,6 +45,8 @@ const together = () => !!useTogether.getState().role
 
 function displayTrack(w: WireTrack): Track {
   const k = keyOf(w)
+  // a SoundCloud track: shown by name as it came, never looked up in VK
+  if (!isResolvable(w)) return { service: 'sc', id: w.id, ownerId: 0, key: `sc_${w.id}`, artist: w.artist, title: w.title, duration: w.duration, urlFetchedAt: 0, explicit: false, artists: [{ name: w.artist }], playable: true, hasLyrics: false, liked: false }
   const known = full.get(k)
   if (known) return known
   const bare: Track = { id: w.id, ownerId: w.owner, key: k, accessKey: w.accessKey, artist: w.artist, title: w.title, duration: w.duration, urlFetchedAt: 0, explicit: false, artists: [{ name: w.artist }], playable: true, hasLyrics: false, liked: false }
