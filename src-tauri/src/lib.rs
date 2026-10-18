@@ -64,6 +64,8 @@ pub fn run() {
             session::session_login,
             session::session_logout,
             sc::sc_status,
+            sc::login::sc_login,
+            sc::login::sc_logout,
             http::set_user_agent,
             island::island_set_hit_rect,
             island::island_configure,
@@ -96,6 +98,7 @@ pub fn run() {
                 }
                 _ => {}
             },
+            WindowEvent::Destroyed if window.label().starts_with(sc::login::LABEL_PREFIX) => sc::login::closed(window.app_handle(), window.label()),
             // The quick search panel goes away as soon as the user clicks anywhere else
             WindowEvent::Focused(false) if window.label() == quicksearch::LABEL => {
                 let _ = window.hide();

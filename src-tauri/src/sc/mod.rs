@@ -1,7 +1,9 @@
 //! SoundCloud: sign-in, the key, api-v2 requests and stream links. The key never leaves Rust.
 
+pub mod api;
 pub mod auth;
 pub mod client_id;
+pub mod login;
 pub mod store;
 
 use std::path::PathBuf;
@@ -57,6 +59,8 @@ pub struct ScState {
     ids: RwLock<Ids>,
     device_id: RwLock<String>,
     saved_path: Mutex<Option<PathBuf>>,
+    /// The sign-in attempt under way, if any.
+    pub(crate) pending: Mutex<Option<login::Pending>>,
 }
 
 impl ScState {
@@ -68,6 +72,7 @@ impl ScState {
             ids: RwLock::new(fallback()),
             device_id: RwLock::new(String::new()),
             saved_path: Mutex::new(None),
+            pending: Mutex::new(None),
         }
     }
 
