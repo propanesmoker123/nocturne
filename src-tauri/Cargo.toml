@@ -29,6 +29,9 @@ tokio = { version = "1", features = ["sync", "time", "macros"] }
 url = "2"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
 log = "0.4"
 
 [target.'cfg(windows)'.dependencies]

@@ -8,6 +8,7 @@ mod tray;
 mod wallpaper;
 mod proxy;
 mod quicksearch;
+mod sc;
 mod session;
 mod vk;
 
