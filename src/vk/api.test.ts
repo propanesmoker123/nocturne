@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest'
-import { audioAttachment, call, sendTrack, setCaptchaHandler, setTransport } from './api'
+import { audioAttachment, call, sendTrack, setBroadcast, setCaptchaHandler, setTransport } from './api'
 import { VkError } from './errors'
+import type { Track } from './models'
 
 afterEach(() => {
   setTransport(null)
@@ -65,5 +66,21 @@ describe('sending a track to a friend', () => {
     expect(seen[0][0]).toBe('messages.send')
     expect(seen[0][1]).toMatchObject({ peer_id: 42, attachment: 'audio7_9' })
     expect(Number.isInteger(seen[0][1].random_id)).toBe(true)
+  })
+})
+
+describe('the VK status', () => {
+  test('a SoundCloud track never goes to VK as an audio: the status is cleared instead', async () => {
+    const seen: unknown[] = []
+    setTransport(async (method, params) => {
+      seen.push([method, params])
+      return 1
+    })
+    await setBroadcast({ service: 'sc', id: 402, ownerId: 501 } as Track)
+    await setBroadcast({ id: 5, ownerId: 2 } as Track)
+    expect(seen).toEqual([
+      ['audio.setBroadcast', {}],
+      ['audio.setBroadcast', { audio: '2_5' }],
+    ])
   })
 })

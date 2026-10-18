@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '../lib/tauri'
 import { parseCatalog, parseSection } from './catalog'
 import { VkError } from './errors'
-import type { CatalogSection, Friend, Lyrics, Playlist, Track, User } from './models'
+import { serviceOf, type CatalogSection, type Friend, type Lyrics, type Playlist, type Track, type User } from './models'
 import { normalizeFriend, normalizeLyrics, normalizePlaylist, normalizeTrack, normalizeUser, ownerNamesFrom, trackKeyWithAccess } from './normalize'
 import type { RawAudio, RawCatalogResponse, RawList, RawLyrics, RawPlaylist, RawUser } from './types'
 
@@ -132,8 +132,10 @@ export async function getLyrics(t: Track): Promise<Lyrics | null> {
   return normalizeLyrics(await call<RawLyrics>('audio.getLyrics', { audio_id: `${t.ownerId}_${t.id}` }))
 }
 
+/** Puts the track into the VK status; a SoundCloud track clears it (its ids mean nothing to VK). */
 export async function setBroadcast(t: Track | null): Promise<void> {
-  await call('audio.setBroadcast', t ? { audio: `${t.ownerId}_${t.id}` } : {})
+  const audio = t && serviceOf(t) !== 'sc' ? `${t.ownerId}_${t.id}` : null
+  await call('audio.setBroadcast', audio ? { audio } : {})
 }
 
 // ── Playlists ────────────────────────────────────────────────────────────
