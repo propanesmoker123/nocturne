@@ -63,3 +63,22 @@ describe('the account in the sidebar', () => {
     expect(service.accountFor('sc', vkUser, noPicture)).toEqual({ name: 'listener', photo: undefined })
   })
 })
+
+describe('«Моё»', () => {
+  test('routeSection puts albums and recent under «Моё»', () => {
+    expect(router.routeSection({ name: 'albums' })).toBe('mine')
+    expect(router.routeSection({ name: 'album', id: '0123456789abcdef' })).toBe('mine')
+    expect(router.routeSection({ name: 'recent' })).toBe('mine')
+    expect(router.routeSection({ name: 'settings' })).toBeNull()
+    expect(router.routeSection({ name: 'sc-likes' })).toBe('sc')
+    expect(router.routeSection({ name: 'home' })).toBe('vk')
+  })
+
+  test('going to «Моё» keeps the service the search works in', () => {
+    router.useRouter.getState().push({ name: 'sc-stream' })
+    router.useRouter.getState().push({ name: 'albums' })
+    expect(service.useService.getState().current).toBe('sc')
+    router.useRouter.getState().push({ name: 'album', id: '0123456789abcdef' })
+    expect(service.useService.getState().current).toBe('sc')
+  })
+})

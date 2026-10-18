@@ -23,12 +23,21 @@ export type Route =
   | { name: 'sc-playlist'; id: number; urn?: string; title?: string }
   | { name: 'sc-user'; id: number; title?: string }
   | { name: 'sc-search'; q?: string }
+  /** «Моё»: Nocturne's own albums, across services */
+  | { name: 'albums' }
+  | { name: 'album'; id: string }
 
-/** Which service a page belongs to; null for the shared ones («Недавние», settings). */
+/** Which service a page belongs to; null for the shared ones («Моё», settings). */
 export function routeService(r: Route): ServiceId | null {
   if (r.name.startsWith('sc-')) return 'sc'
-  if (r.name === 'recent' || r.name === 'settings') return null
+  if (r.name === 'recent' || r.name === 'settings' || r.name === 'albums' || r.name === 'album') return null
   return 'vk'
+}
+
+/** Where a page sits on the rail: «Моё» (albums, recent), a service, or nowhere (settings). */
+export function routeSection(r: Route): 'mine' | ServiceId | null {
+  if (r.name === 'albums' || r.name === 'album' || r.name === 'recent') return 'mine'
+  return routeService(r)
 }
 
 /** Where a tap on a track's artist goes: their SoundCloud profile, or the VK artist page. */

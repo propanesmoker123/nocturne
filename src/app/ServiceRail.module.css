@@ -73,6 +73,20 @@
   opacity: 0.8;
 }
 
+/* «Моё»: the app's own icon, the same size as the services' */
+.mine {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+}
+
+.divider {
+  width: 24px;
+  height: 1px;
+  margin: -2px 0;
+  background: var(--separator-soft);
+}
+
 .service:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Clock3, Compass, Heart, Home, LibraryBig, ListMusic, Plus, Rss, Search, Settings, Users } from 'lucide-react'
+import { Clock3, Compass, Disc3, Heart, Home, LibraryBig, ListMusic, Plus, Rss, Search, Settings, Users } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton } from '../components/controls'
@@ -8,7 +8,9 @@ import * as sc from '../sc/api'
 import { useScSession } from '../sc/session'
 import * as vk from '../vk/api'
 import s from './Sidebar.module.css'
-import { useRouter, type Route } from './router'
+import appIcon from '../assets/app-icon.png'
+import { useAlbums } from '../albums/store'
+import { routeSection, useRouter, type Route } from './router'
 import { accountFor, serviceInfo, useService } from './service'
 import { useSession } from './session'
 import { useSheet } from './sheetStore'
@@ -153,7 +155,6 @@ function VkNav() {
         <div className={s.groupHead}>Медиатека</div>
         <NavItem route={{ name: 'library' }} icon={<LibraryBig {...ic} />} label="Моя музыка" />
         <NavItem route={{ name: 'playlists' }} icon={<ListMusic {...ic} />} label="Плейлисты" />
-        <NavItem route={{ name: 'recent' }} icon={<Clock3 {...ic} />} label="Недавние" />
         <NavItem route={{ name: 'friends' }} icon={<Users {...ic} />} label="Друзья" />
       </div>
       <div className={s.group}>
@@ -180,11 +181,43 @@ function ScNav() {
         <div className={s.groupHead}>Медиатека</div>
         <NavItem route={{ name: 'sc-likes' }} icon={<Heart {...ic} />} label="Лайки" />
         <NavItem route={{ name: 'sc-playlists' }} icon={<ListMusic {...ic} />} label="Плейлисты" />
-        <NavItem route={{ name: 'recent' }} icon={<Clock3 {...ic} />} label="Недавние" />
       </div>
       <div className={s.group}>
         <div className={s.groupHead}>Мои плейлисты</div>
         <ScPlaylistLinks />
+      </div>
+    </>
+  )
+}
+
+/** «Моё»: Nocturne's own albums and what was heard, whichever service it came from. */
+function MineNav() {
+  const route = useRouter((r) => r.route)
+  const push = useRouter((r) => r.push)
+  const list = useAlbums((x) => x.list)
+  const docs = useAlbums((x) => x.docs)
+  const albums = list.filter((e) => !e.removedAt && docs[e.id] && !docs[e.id].meta.deletedAt)
+  return (
+    <>
+      <div className={s.group}>
+        <NavItem route={{ name: 'albums' }} icon={<Disc3 {...ic} />} label="Альбомы" />
+        <NavItem route={{ name: 'recent' }} icon={<Clock3 {...ic} />} label="Недавние" />
+      </div>
+      <div className={s.group}>
+        <div className={s.groupHead}>Мои альбомы</div>
+        {albums.length === 0 && <div className={s.hint}>Альбомов пока нет</div>}
+        {albums.map((e) => (
+          <button
+            key={e.id}
+            type="button"
+            className={`${s.item} ${s.playlistItem}`}
+            aria-current={route.name === 'album' && route.id === e.id ? 'page' : undefined}
+            onClick={() => push({ name: 'album', id: e.id })}
+          >
+            <Artwork src={Object.values(docs[e.id].entries).find((x) => x.track?.cover)?.track?.cover} size={24} radius={5} seed={docs[e.id].meta.name || e.name} />
+            <span className={`${s.itemLabel} truncate`}>{docs[e.id].meta.name || e.name}</span>
+          </button>
+        ))}
       </div>
     </>
   )
@@ -223,16 +256,17 @@ export function Sidebar() {
   const scUser = useScSession((x) => x.user)
   const push = useRouter((r) => r.push)
   const service = useService((x) => x.current)
+  const mine = useRouter((r) => routeSection(r.route) === 'mine')
   // the account of the service picked on the rail
   const user = accountFor(service, vkUser, scUser)
   return (
     <nav className={s.sidebar} aria-label="Разделы">
       <div className={s.brand} data-tauri-drag-region>
-        <ServiceLogo id={service} size={22} tone="dark" />
-        {serviceInfo(service).name}
+        {mine ? <img src={appIcon} alt="" /> : <ServiceLogo id={service} size={22} tone="dark" />}
+        {mine ? 'Моё' : serviceInfo(service).name}
       </div>
       <SearchField />
-      <div className={s.scroll}>{service === 'sc' ? <ScNav /> : <VkNav />}</div>
+      <div className={s.scroll}>{mine ? <MineNav /> : service === 'sc' ? <ScNav /> : <VkNav />}</div>
       <UpdateCard />
       <div className={s.footer}>
         <button type="button" className={s.user} onClick={() => push({ name: 'settings' })}>
