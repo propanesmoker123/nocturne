@@ -8,6 +8,7 @@ pub mod store;
 
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
+use std::time::Instant;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -61,6 +62,8 @@ pub struct ScState {
     saved_path: Mutex<Option<PathBuf>>,
     /// The sign-in attempt under way, if any.
     pub(crate) pending: Mutex<Option<login::Pending>>,
+    /// When the site's ids were last looked up after a 401.
+    pub(crate) rediscovered: Mutex<Option<Instant>>,
 }
 
 impl ScState {
@@ -73,6 +76,7 @@ impl ScState {
             device_id: RwLock::new(String::new()),
             saved_path: Mutex::new(None),
             pending: Mutex::new(None),
+            rediscovered: Mutex::new(None),
         }
     }
 
@@ -173,9 +177,31 @@ pub fn init(app: &AppHandle) {
         st.save();
     }
     match store::load_token() {
-        Some(t) => st.set_token(Some(t)),
+        Some(t) => {
+            st.set_token(Some(t));
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { check_key(&app).await });
+        }
         None => st.set_signed_out(),
     }
+}
+
+/// The key from the last run still works? Without a network it stays (pages say SoundCloud does
+/// not answer); a 401 goes the way of every request: the site's id, a silent sign-in, else out.
+async fn check_key(app: &AppHandle) {
+    let st = app.state::<ScState>();
+    let Some(token) = st.token() else { return };
+    let first = api::me_with(&app.state::<crate::http::Http>(), &st.ids(), &token).await;
+    match first {
+        Ok(user) => st.set_signed_in(Some(user)),
+        Err(api::ScError::Http { status: 401 }) => match api::request(app, "GET", "/me").await {
+            Ok(v) => st.set_signed_in(api::user_from_me(&v)),
+            Err(api::ScError::SignedOut) => {}
+            Err(_) => st.set_signed_in(None),
+        },
+        Err(_) => st.set_signed_in(None),
+    }
+    emit_status(app);
 }
 
 #[cfg(test)]
