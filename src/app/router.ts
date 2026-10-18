@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { serviceOf, type ServiceId, type Track } from '../vk/models'
 
 export type Route =
   | { name: 'home' }
@@ -14,6 +15,27 @@ export type Route =
   /** Everything behind a strip: a VK catalog section (`id`) or a block's own list (`block`); `cards` — playlists rather than tracks. */
   | { name: 'section'; title: string; id?: string; block?: string; cards?: boolean }
   | { name: 'settings' }
+  | { name: 'sc-home' }
+  | { name: 'sc-stream' }
+  | { name: 'sc-likes' }
+  | { name: 'sc-playlists' }
+  /** `urn` for SoundCloud's system playlists (they have no id) */
+  | { name: 'sc-playlist'; id: number; urn?: string; title?: string }
+  | { name: 'sc-user'; id: number; title?: string }
+  | { name: 'sc-search'; q?: string }
+
+/** Which service a page belongs to; null for the shared ones («Недавние», settings). */
+export function routeService(r: Route): ServiceId | null {
+  if (r.name.startsWith('sc-')) return 'sc'
+  if (r.name === 'recent' || r.name === 'settings') return null
+  return 'vk'
+}
+
+/** Where a tap on a track's artist goes: their SoundCloud profile, or the VK artist page. */
+export function artistRoute(t: Track, a: { id?: string; name: string } | undefined = t.artists[0]): Route {
+  if (serviceOf(t) === 'sc' && a?.id && /^\d+$/.test(a.id)) return { name: 'sc-user', id: Number(a.id), title: a.name }
+  return { name: 'artist', id: a?.id, artist: a?.name ?? t.artist }
+}
 
 interface RouterState {
   stack: Route[]

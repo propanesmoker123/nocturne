@@ -6,6 +6,7 @@ import { App } from './app/App'
 import { applyDemoHash } from './app/demo'
 import { toggleLibrary } from './app/library'
 import { queryClient } from './app/queryClient'
+import { initService } from './app/service'
 import { initSession, useSession } from './app/session'
 import { askCaptcha, useSheet } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
@@ -59,6 +60,7 @@ async function boot() {
   setCaptchaHandler((e) => (e.captchaImg ? askCaptcha(e.captchaImg) : Promise.resolve(null)))
   installShortcuts()
   await initSettings()
+  await initService()
   if (isTauri()) void invoke('set_user_agent', { ua: navigator.userAgent }).catch(() => {})
 
   createRoot(document.getElementById('root')!).render(
