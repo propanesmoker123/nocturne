@@ -3,6 +3,12 @@ import { DEFAULT_HOTKEYS } from './hotkeys'
 import { DEFAULT_SETTINGS, mergeSettings } from './settings'
 
 describe('mergeSettings', () => {
+  test('wave comments are on unless turned off', () => {
+    expect(mergeSettings(null).waveComments).toBe(true)
+    expect(mergeSettings({ waveComments: false }).waveComments).toBe(false)
+    expect(mergeSettings({ waveComments: 'no' }).waveComments).toBe(true)
+  })
+
   test('returns defaults for missing or broken input', () => {
     expect(mergeSettings(null)).toEqual(DEFAULT_SETTINGS)
     expect(mergeSettings('garbage')).toEqual(DEFAULT_SETTINGS)

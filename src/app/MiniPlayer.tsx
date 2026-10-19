@@ -5,6 +5,7 @@ import { DevicesButton } from '../connect/DevicesPanel'
 import { IconButton, Spinner } from '../components/controls'
 import { IconBackward, IconForward, IconNote, IconPause, IconPlay, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
+import { WaveComments } from '../components/WaveComments'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime, fullTrackName } from '../lib/format'
 import { usePlayer } from '../player/store'
@@ -32,21 +33,24 @@ export function Scrubber({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
   return (
     <div className={s.timeline}>
       <span>{formatTime(shown)}</span>
-      <WaveformScrubber
-        trackKey={trackKey}
-        height={size === 'sm' ? 26 : 40}
-        label="Позиция трека"
-        value={duration ? position / duration : 0}
-        buffered={duration ? buffered / duration : 0}
-        disabled={!trackKey || !duration || !!controlledBy}
-        step={5 / Math.max(duration, 1)}
-        valueText={(v) => formatTime(v * duration)}
-        onChange={(v) => setDrag(v * duration)}
-        onCommit={(v) => {
-          setDrag(null)
-          seek(v * duration)
-        }}
-      />
+      <div className={s.waveBox}>
+        <WaveComments size={size === 'sm' ? 12 : 16} />
+        <WaveformScrubber
+          trackKey={trackKey}
+          height={size === 'sm' ? 26 : 40}
+          label="Позиция трека"
+          value={duration ? position / duration : 0}
+          buffered={duration ? buffered / duration : 0}
+          disabled={!trackKey || !duration || !!controlledBy}
+          step={5 / Math.max(duration, 1)}
+          valueText={(v) => formatTime(v * duration)}
+          onChange={(v) => setDrag(v * duration)}
+          onCommit={(v) => {
+            setDrag(null)
+            seek(v * duration)
+          }}
+        />
+      </div>
       <span>-{formatTime(Math.max(0, duration - shown))}</span>
     </div>
   )

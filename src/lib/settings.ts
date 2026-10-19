@@ -49,6 +49,8 @@ export interface Settings {
   hotkeysEnabled: boolean
   closeToTray: boolean
   broadcastStatus: boolean
+  /** SoundCloud comments as avatars over the waveform */
+  waveComments: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -62,6 +64,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hotkeysEnabled: true,
   closeToTray: true,
   broadcastStatus: false,
+  waveComments: true,
 }
 
 const HEX = /^#[0-9a-f]{6}$/i
@@ -124,6 +127,7 @@ export function mergeSettings(saved: unknown): Settings {
     hotkeysEnabled: bool(saved.hotkeysEnabled, d.hotkeysEnabled),
     closeToTray: bool(saved.closeToTray, d.closeToTray),
     broadcastStatus: bool(saved.broadcastStatus, d.broadcastStatus),
+    waveComments: bool(saved.waveComments, d.waveComments),
   }
 }
 
@@ -146,6 +150,7 @@ const pick = (s: SettingsState): Settings => ({
   hotkeysEnabled: s.hotkeysEnabled,
   closeToTray: s.closeToTray,
   broadcastStatus: s.broadcastStatus,
+  waveComments: s.waveComments,
 })
 
 export const useSettings = create<SettingsState>((set, get) => ({

@@ -5,6 +5,7 @@ import { Artwork } from '../components/Artwork'
 import { IconButton, Segmented, Spinner } from '../components/controls'
 import { IconBackward, IconForward, IconLyrics, IconMore, IconPause, IconPlay, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
+import { WaveComments } from '../components/WaveComments'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
 import { usePlayer } from '../player/store'
@@ -40,7 +41,8 @@ function BigScrubber() {
   const [drag, setDrag] = useState<number | null>(null)
   const shown = drag ?? position
   return (
-    <div>
+    <div style={{ position: 'relative' }}>
+      <WaveComments size={20} />
       <WaveformScrubber
         trackKey={trackKey}
         height={56}

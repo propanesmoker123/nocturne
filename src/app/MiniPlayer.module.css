@@ -131,6 +131,11 @@
   color: var(--label-2);
   font-variant-numeric: tabular-nums;
 }
+/* the waveform with SoundCloud comments resting on it */
+.waveBox {
+  position: relative;
+  min-width: 0;
+}
 .timeline span:first-child {
   text-align: right;
 }

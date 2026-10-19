@@ -373,6 +373,9 @@ export function SettingsPage() {
         <Row title="Закрывать в трей" sub="Крестик прячет окно, музыка продолжает играть">
           <Switch label="Закрывать в трей" checked={st.closeToTray} onChange={(v) => st.update({ closeToTray: v })} />
         </Row>
+        <Row title="Комментарии на волне" sub="Аватарки комментариев SoundCloud над волной трека">
+          <Switch label="Комментарии на волне" checked={st.waveComments} onChange={(v) => st.update({ waveComments: v })} />
+        </Row>
         <Row title="Транслировать в статус VK" sub="Друзья увидят, что вы слушаете">
           <Switch label="Транслировать в статус VK" checked={st.broadcastStatus} onChange={(v) => st.update({ broadcastStatus: v })} />
         </Row>
