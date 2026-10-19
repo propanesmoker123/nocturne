@@ -18,7 +18,7 @@ const PLATE_HALF = 140
  * a hover shows who said what, an avatar lights up while the track plays through it. Nothing
  * at all for a VK track, while signed out, offline, or with the setting off.
  */
-export function WaveComments({ size }: { size: number }) {
+export function WaveComments({ size, inset }: { size: number; inset?: boolean }) {
   const current = usePlayer((p) => p.current)
   const durationS = usePlayer((p) => p.duration || p.current?.duration || 0)
   const positionMs = usePlayer((p) => p.position * 1000)
@@ -35,10 +35,14 @@ export function WaveComments({ size }: { size: number }) {
   const box = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   const [open, setOpen] = useState<number | null>(null)
+  // another track: no plate left open from the last one
+  useEffect(() => setOpen(null), [trackId])
 
   useEffect(() => {
     const el = box.current
     if (!el) return
+    // measured at once too: the observer only reports with the next drawn frame
+    setWidth(Math.floor(el.getBoundingClientRect().width))
     const ro = new ResizeObserver(([e]) => setWidth(Math.floor(e.contentRect.width)))
     ro.observe(el)
     return () => ro.disconnect()
@@ -47,7 +51,7 @@ export function WaveComments({ size }: { size: number }) {
   if (!on || trackId === undefined) return null
   const slots = placeComments(commentsOf(q.data, trackId), durationS * 1000, width, size)
   return (
-    <div ref={box} className={s.layer} style={{ ['--size' as string]: `${size}px` }}>
+    <div ref={box} className={s.layer} data-inset={inset || undefined} style={{ ['--size' as string]: `${size}px` }}>
       {slots.map((slot) => (
         <Avatar
           key={`${trackId}:${slot.x}`}

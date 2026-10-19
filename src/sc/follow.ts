@@ -31,18 +31,22 @@ export async function toggleFollow(u: Person, deps = { follow, unfollow, open: o
   const was = ids().includes(u.id)
   // only this person changes, now and on the way back: other changes meanwhile stay
   const set = (on: boolean) => queryClient.setQueryData(key, [...ids().filter((x) => x !== u.id), ...(on ? [u.id] : [])])
+  // the site, where following can be done (Nocturne cannot follow yet); only with an address to open
+  const site = u.permalink ? { label: 'Открыть в SoundCloud', run: () => void deps.open(u.permalink) } : undefined
   set(!was)
   try {
-    if (was) await deps.unfollow(u.id)
-    else await deps.follow(u)
-    toast(was ? 'Вы отписались' : 'Вы подписались', was ? 'removed' : 'added')
+    if (was) {
+      await deps.unfollow(u.id)
+      return toast('Вы отписались', 'removed', site)
+    }
+    await deps.follow(u)
+    toast('Вы подписались', 'added')
   } catch (e) {
     set(was)
     const err = ScApiError.from(e)
-    if (err.kind === 'invalid' && err.message === FOLLOW_NOT_DONE) {
-      return toast('Подписка из Nocturne пока не сделана', 'info', { label: 'Открыть в SoundCloud', run: () => void deps.open(u.permalink) })
-    }
-    if (err.kind === 'challenge') return toast('Пройдите проверку SoundCloud в открывшемся окне и нажмите «Подписаться» ещё раз', 'error')
+    if (err.kind === 'invalid' && err.message === FOLLOW_NOT_DONE) return toast('Подписка из Nocturne пока не сделана', 'info', site)
+    // the button on screen is the one the person pressed, as it was before
+    if (err.kind === 'challenge') return toast(`Пройдите проверку SoundCloud в открывшемся окне и нажмите «${was ? 'Вы подписаны' : 'Подписаться'}» ещё раз`, 'error')
     toast(describeScError(err), 'error')
   }
 }

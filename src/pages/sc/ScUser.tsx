@@ -173,7 +173,11 @@ function UserBody({ id, title }: { id: number; title?: string }) {
 
       {!tab && !settled && <TrackListSkeleton rows={6} />}
       {!tab && settled && <EmptyState title="Здесь пока пусто" text="У этого профиля нет ни треков, ни репостов, ни лайков." />}
-      {tab === 'popular' && <TrackList tracks={top.data ?? []} showAlbum={false} />}
+      {tab === 'popular' && (
+        <TabBody state={states.popular} error={top.error} retry={() => void top.refetch()}>
+          <TrackList tracks={top.data ?? []} showAlbum={false} />
+        </TabBody>
+      )}
       {tab === 'tracks' && (
         <TabBody state={states.tracks} error={all.error} retry={() => void all.refetch()}>
           <TrackList tracks={tracks} showAlbum={false} />

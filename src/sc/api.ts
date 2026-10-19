@@ -226,6 +226,16 @@ export const FOLLOW_NOT_DONE = 'follow not implemented'
  * site's own code computes `signature` from (my id, their id, client_id) with a secret of its
  * own. Nocturne does not copy that secret. Until it is made, the app says so and offers the
  * profile on the site (src/sc/follow.ts). Leaving someone needs no signature: `unfollow`.
+ *
+ * What making it touches (everything else — the button, the instant state, turning back on a
+ * failure, the check shown to the person — is in place):
+ * - this function's Tauri branch (now the `throw`);
+ * - if it goes through `sc_api`: `Method` above has no 'POST'; `allowed` in
+ *   src-tauri/src/sc/api.rs refuses POST /me/followings/{n} and any write with a `?` (so a
+ *   `?signature=` too); `owned_write_path` in src-tauri/src/sc/web.rs takes only PUT/DELETE
+ *   without a query; `like.js` sends whatever method it is given;
+ * - its tests: src/sc/follow.test.ts (the UI side) and the Rust ones next to `allowed` and
+ *   `owned_write_path`.
  */
 export async function follow(u: Pick<ScUser, 'id' | 'permalink'>): Promise<void> {
   if (!isTauri()) {

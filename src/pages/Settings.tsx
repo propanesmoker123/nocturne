@@ -276,6 +276,9 @@ export function SettingsPage() {
             auto={{ value: 'accent', label: 'Как акцент', background: 'var(--accent)' }}
           />
         </Row>
+        <Row title="Комментарии на волне" sub="Аватарки комментариев SoundCloud над волной трека">
+          <Switch label="Комментарии на волне" checked={st.waveComments} onChange={(v) => st.update({ waveComments: v })} />
+        </Row>
       </Group>
 
       <Group title="Остров" note="Остров — мини-плеер в стиле Dynamic Island сверху экрана. Клики мимо него проходят к окнам под ним.">
@@ -372,9 +375,6 @@ export function SettingsPage() {
       <Group title="Приложение">
         <Row title="Закрывать в трей" sub="Крестик прячет окно, музыка продолжает играть">
           <Switch label="Закрывать в трей" checked={st.closeToTray} onChange={(v) => st.update({ closeToTray: v })} />
-        </Row>
-        <Row title="Комментарии на волне" sub="Аватарки комментариев SoundCloud над волной трека">
-          <Switch label="Комментарии на волне" checked={st.waveComments} onChange={(v) => st.update({ waveComments: v })} />
         </Row>
         <Row title="Транслировать в статус VK" sub="Друзья увидят, что вы слушаете">
           <Switch label="Транслировать в статус VK" checked={st.broadcastStatus} onChange={(v) => st.update({ broadcastStatus: v })} />

@@ -64,3 +64,31 @@ describe('following on SoundCloud', () => {
     expect(followings()).toEqual([3])
   })
 })
+
+describe('leaving someone', () => {
+  test('an unfollow stopped by a check names the button that is on screen', async () => {
+    const d = deps()
+    d.unfollow.mockRejectedValue(new ScApiError('challenge', ''))
+    await toggleFollow({ id: 3, permalink: 'https://soundcloud.com/three' }, d)
+    expect(followings()).toEqual([3])
+    expect(h.toasts.at(-1)!.m).toContain('«Вы подписаны»')
+    expect(h.toasts.at(-1)!.m).not.toContain('«Подписаться»')
+  })
+
+  test('an unfollow offers the site to follow again (Nocturne cannot follow yet)', async () => {
+    const d = deps()
+    await toggleFollow({ id: 3, permalink: 'https://soundcloud.com/three' }, d)
+    const t = h.toasts.at(-1)!
+    expect(t.m).toBe('Вы отписались')
+    expect(t.action?.label).toBe('Открыть в SoundCloud')
+    t.action!.run()
+    expect(d.open).toHaveBeenCalledWith('https://soundcloud.com/three')
+  })
+
+  test('without a profile address no dead «Открыть в SoundCloud» is offered', async () => {
+    const d = deps()
+    d.follow.mockRejectedValue(new ScApiError('invalid', sc.FOLLOW_NOT_DONE))
+    await toggleFollow({ id: 12, permalink: null }, d)
+    expect(h.toasts.at(-1)!.action).toBeUndefined()
+  })
+})

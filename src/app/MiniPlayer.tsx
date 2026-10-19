@@ -34,7 +34,7 @@ export function Scrubber({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
     <div className={s.timeline}>
       <span>{formatTime(shown)}</span>
       <div className={s.waveBox}>
-        <WaveComments size={size === 'sm' ? 12 : 16} />
+        <WaveComments size={size === 'sm' ? 12 : 16} inset />
         <WaveformScrubber
           trackKey={trackKey}
           height={size === 'sm' ? 26 : 40}
