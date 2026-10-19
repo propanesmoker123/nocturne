@@ -22,7 +22,10 @@
     "global-shortcut:allow-is-registered",
     "store:default",
     "dialog:allow-open",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://soundcloud.com/*" }, { "url": "https://*.soundcloud.com/*" }]
+    },
     "updater:default",
     "process:allow-restart",
     "allow-vk-api",
