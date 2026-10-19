@@ -1,4 +1,4 @@
-import type { RawScPlaylist, RawScSelection, RawScStreamItem, RawScTrack, RawScTranscoding, RawScUser } from './types'
+import type { RawScComment, RawScPlaylist, RawScSelection, RawScStreamItem, RawScTrack, RawScTranscoding, RawScUser } from './types'
 
 /** Made-up SoundCloud data in api-v2's shape: for tests and for the browser mock. */
 
@@ -7,6 +7,22 @@ export const userRaw: RawScUser = {
   username: 'night owl',
   avatar_url: 'https://i1.sndcdn.com/avatars-000501-aaaaaa-large.jpg',
   permalink_url: 'https://soundcloud.com/night-owl',
+  city: 'Berlin',
+  followers_count: 12_480,
+  followings_count: 87,
+  track_count: 6,
+}
+
+/** Someone who only listens: no tracks of their own, reposts and likes. */
+export const listenerRaw: RawScUser = {
+  id: 502,
+  username: 'quiet listener',
+  avatar_url: null,
+  permalink_url: 'https://soundcloud.com/quiet-listener',
+  city: '',
+  followers_count: 6276,
+  followings_count: 11,
+  track_count: 0,
 }
 
 export const meRaw: RawScUser = { id: 7, username: 'listener', avatar_url: null, permalink_url: 'https://soundcloud.com/listener' }
@@ -83,3 +99,13 @@ export const streamRaw: RawScStreamItem[] = [
   { type: 'track', track: tracks[4] },
   { type: 'playlist-repost', playlist: playlistRaw },
 ]
+
+const people = ['Аня', 'mira', 'Костя', 'lowend', 'Саша', 'nightbus']
+/** A dozen comments over a track, some without an avatar. */
+export const commentsRaw = (trackId: number): RawScComment[] =>
+  Array.from({ length: 12 }, (_, i) => ({
+    id: trackId * 100 + i,
+    body: ['огонь', 'вот этот момент', 'на репите', 'bass!!', 'мурашки', 'кто здесь в 2026?'][i % 6],
+    timestamp: 8_000 + i * 15_000,
+    user: { id: 600 + (i % 6), username: people[i % 6], avatar_url: i % 3 === 0 ? null : `https://i1.sndcdn.com/avatars-00060${i % 6}-bbbbbb-large.jpg` },
+  }))

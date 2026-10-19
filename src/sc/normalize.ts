@@ -1,11 +1,23 @@
 import type { Cover, Playlist, Track } from '../vk/models'
-import type { RawScPlaylist, RawScStreamItem, RawScTrack, RawScUser } from './types'
+import type { RawScComment, RawScPlaylist, RawScStreamItem, RawScTrack, RawScUser } from './types'
 
 export interface ScUser {
   id: number
   name: string
   avatar?: string | null
   permalink?: string | null
+  city?: string
+  followers?: number
+  followings?: number
+  trackCount?: number
+}
+
+/** A comment on a track, at its moment (ms from the start). */
+export interface ScComment {
+  id: number
+  atMs: number
+  body: string
+  user: { name: string; avatar?: string }
 }
 
 /** SoundCloud's `-large` artwork (100 px) in the three sizes Nocturne shows. */
@@ -68,8 +80,27 @@ export function normalizeScPlaylist(r: RawScPlaylist): Playlist {
   }
 }
 
+const count = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined)
+
 export function normalizeScUser(r: RawScUser): ScUser {
-  return { id: r.id, name: r.username || r.full_name || '', avatar: artwork(r.avatar_url)?.m, permalink: r.permalink_url }
+  return {
+    id: r.id,
+    name: r.username || r.full_name || '',
+    avatar: artwork(r.avatar_url)?.m,
+    permalink: r.permalink_url,
+    city: r.city?.trim() || undefined,
+    followers: count(r.followers_count),
+    followings: count(r.followings_count),
+    trackCount: count(r.track_count),
+  }
+}
+
+/** A comment as shown on the waveform; none without a moment, a text or an author. */
+export function normalizeScComment(r: RawScComment): ScComment | null {
+  const body = r.body?.trim().slice(0, 300)
+  if (typeof r.timestamp !== 'number' || !Number.isFinite(r.timestamp) || r.timestamp < 0 || !body || !r.user) return null
+  const avatar = artwork(r.user.avatar_url)?.s
+  return { id: r.id, atMs: r.timestamp, body, user: { name: r.user.username || r.user.full_name || '', ...(avatar ? { avatar } : {}) } }
 }
 
 /** The feed: uploads and reposts of tracks, then of playlists, each once. */

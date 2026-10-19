@@ -1,10 +1,10 @@
 import { invoke, isTauri } from '../lib/tauri'
 import type { Playlist, Track } from '../vk/models'
 import { ScApiError } from './errors'
-import { normalizeScPlaylist, normalizeScTrack, normalizeScUser, streamItems, type ScUser } from './normalize'
-import type { RawScCollection, RawScLibraryItem, RawScLike, RawScPlaylist, RawScSelection, RawScStreamItem, RawScTrack, RawScUser } from './types'
+import { normalizeScComment, normalizeScPlaylist, normalizeScTrack, normalizeScUser, streamItems, type ScComment, type ScUser } from './normalize'
+import type { RawScCollection, RawScComment, RawScLibraryItem, RawScLike, RawScPlaylist, RawScSelection, RawScStreamItem, RawScTrack, RawScUser } from './types'
 
-export type { ScUser } from './normalize'
+export type { ScComment, ScUser } from './normalize'
 
 type Method = 'GET' | 'PUT' | 'DELETE'
 type Transport = (method: Method, path: string) => Promise<unknown>
@@ -183,6 +183,67 @@ export async function getUserTracks(id: number, cursor?: string): Promise<ScPage
 export async function getUserPlaylists(id: number): Promise<Playlist[]> {
   const [lists, albums] = await Promise.all([get<RawScCollection<RawScPlaylist>>(`/users/${id}/playlists_without_albums?limit=50`), get<RawScCollection<RawScPlaylist>>(`/users/${id}/albums?limit=50`)])
   return [...(albums.collection ?? []), ...(lists.collection ?? [])].map(normalizeScPlaylist)
+}
+
+/** Tracks and playlists of one page of a profile's reposts or likes. */
+export interface ScMixedPage {
+  tracks: Track[]
+  playlists: Playlist[]
+  next?: string
+}
+
+async function mixedPage(path: string): Promise<ScMixedPage> {
+  const raw = await get<RawScCollection<RawScStreamItem>>(path)
+  const { tracks, playlists } = streamItems(raw.collection ?? [])
+  return { tracks: tracks.map((t) => ({ ...t, liked: likedIds.has(t.id) })), playlists, next: nextPath(raw.next_href) }
+}
+
+/** «Репосты» of a profile, a page at a time. */
+export const getUserReposts = (id: number, cursor?: string) => mixedPage(cursor ?? `/stream/users/${id}/reposts?limit=50`)
+
+/** «Лайки» of a profile (tracks and playlists), a page at a time. */
+export const getUserLikes = (id: number, cursor?: string) => mixedPage(cursor ?? `/users/${id}/likes?limit=50`)
+
+/** Whom the signed-in person follows (ids); nothing is asked while signed out. */
+export async function getMyFollowings(): Promise<number[]> {
+  if (!meId) return []
+  const out: number[] = []
+  let path: string | undefined = `/users/${meId}/followings/ids?limit=5000`
+  for (let page = 0; path && page < 4; page++) {
+    const raw: RawScCollection<number> = await get<RawScCollection<number>>(path)
+    for (const id of raw.collection ?? []) if (Number.isSafeInteger(id)) out.push(id)
+    path = nextPath(raw.next_href)
+  }
+  return out
+}
+
+/** What a follow from Nocturne answers until it is made (see `follow`). */
+export const FOLLOW_NOT_DONE = 'follow not implemented'
+
+/**
+ * Follows someone. NOT DONE YET in the app — the owner makes it (19.10).
+ * SoundCloud signs a new following itself: `POST /me/followings/{id}?signature=…`, where the
+ * site's own code computes `signature` from (my id, their id, client_id) with a secret of its
+ * own. Nocturne does not copy that secret. Until it is made, the app says so and offers the
+ * profile on the site (src/sc/follow.ts). Leaving someone needs no signature: `unfollow`.
+ */
+export async function follow(u: Pick<ScUser, 'id' | 'permalink'>): Promise<void> {
+  if (!isTauri()) {
+    const { mockFollow } = await import('./mock')
+    return mockFollow(u.id, true)
+  }
+  throw new ScApiError('invalid', FOLLOW_NOT_DONE)
+}
+
+/** Stops following someone (the site's session, like a like). */
+export async function unfollow(id: number): Promise<void> {
+  await call('DELETE', `/me/followings/${id}`)
+}
+
+/** Up to 200 newest comments of a track, each at its moment, with the track they belong to. */
+export async function getComments(trackId: number): Promise<{ trackId: number; comments: ScComment[] }> {
+  const raw = await get<RawScCollection<RawScComment>>(`/tracks/${trackId}/comments?threaded=0&filter_replies=1&limit=200`)
+  return { trackId, comments: (raw.collection ?? []).map(normalizeScComment).filter((c): c is ScComment => !!c) }
 }
 
 export async function search(q: string): Promise<{ tracks: Track[]; users: ScUser[]; playlists: Playlist[] }> {

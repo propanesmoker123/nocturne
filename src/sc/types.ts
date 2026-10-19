@@ -7,6 +7,18 @@ export interface RawScUser {
   full_name?: string
   avatar_url?: string | null
   permalink_url?: string
+  city?: string | null
+  followers_count?: number
+  followings_count?: number
+  track_count?: number
+}
+
+/** A comment at a moment of a track (`timestamp`, ms from the start). */
+export interface RawScComment {
+  id: number
+  body?: string
+  timestamp?: number | null
+  user?: RawScUser
 }
 
 export interface RawScTranscoding {

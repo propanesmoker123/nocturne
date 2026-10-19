@@ -139,3 +139,39 @@ describe('SoundCloud API', () => {
     expect(describeScError(ScApiError.from({ kind: 'challenge' }))).toBe('Пройдите проверку SoundCloud в открывшемся окне и нажмите сердечко ещё раз')
   })
 })
+
+describe('SoundCloud profiles', () => {
+  test('reposts and likes come a page at a time with the next cursor', async () => {
+    const calls = record((path) => ({
+      collection: [{ type: 'track-repost', track: trackRaw(402, 'a') }, { type: 'playlist-repost', playlist: playlistRaw }],
+      next_href: `https://api-v2.soundcloud.com${path.split('?')[0]}?offset=x`,
+    }))
+    const reposts = await sc.getUserReposts(5)
+    expect([reposts.tracks.length, reposts.playlists.length, reposts.next]).toEqual([1, 1, '/stream/users/5/reposts?offset=x'])
+    const likes = await sc.getUserLikes(5)
+    expect([likes.tracks.length, likes.playlists.length, likes.next]).toEqual([1, 1, '/users/5/likes?offset=x'])
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /stream/users/5/reposts?limit=50', 'GET /users/5/likes?limit=50'])
+  })
+
+  test('followings: every page is read; signed out reads nothing', async () => {
+    const calls = record((path) => (path.includes('cursor') ? { collection: [3] } : { collection: [1, 2], next_href: 'https://api-v2.soundcloud.com/users/7/followings/ids?cursor=2' }))
+    expect(await sc.getMyFollowings()).toEqual([])
+    expect(calls).toEqual([])
+    sc.setScMeId(7)
+    expect(await sc.getMyFollowings()).toEqual([1, 2, 3])
+    expect(calls.map((c) => c.path)).toEqual(['/users/7/followings/ids?limit=5000', '/users/7/followings/ids?cursor=2'])
+  })
+
+  test('unfollow is a DELETE of my following', async () => {
+    sc.setScMeId(7)
+    const calls = record(() => null)
+    await sc.unfollow(12)
+    expect(calls).toEqual([{ method: 'DELETE', path: '/me/followings/12' }])
+  })
+
+  test('comments of a track come with the track they belong to', async () => {
+    const calls = record(() => ({ collection: [{ id: 1, body: 'x', timestamp: 10, user: { id: 2, username: 'b' } }, { id: 2, body: 'y', timestamp: null, user: { id: 2, username: 'b' } }] }))
+    expect(await sc.getComments(402)).toEqual({ trackId: 402, comments: [{ id: 1, atMs: 10, body: 'x', user: { name: 'b' } }] })
+    expect(calls[0].path).toBe('/tracks/402/comments?threaded=0&filter_replies=1&limit=200')
+  })
+})

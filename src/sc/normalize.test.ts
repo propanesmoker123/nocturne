@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { serviceOf } from '../vk/models'
 import { albumRaw, blocked, encryptedOnly, playlistRaw, snippedOnly, snipPolicy, streamRaw, systemPlaylistRaw, trackRaw, userRaw } from './fixtures'
-import { artwork, normalizeScPlaylist, normalizeScTrack, normalizeScUser, streamItems } from './normalize'
+import { artwork, normalizeScComment, normalizeScPlaylist, normalizeScTrack, normalizeScUser, streamItems } from './normalize'
 
 describe('SoundCloud tracks', () => {
   test('a full SoundCloud track becomes a playable Nocturne track', () => {
@@ -57,10 +57,26 @@ describe('the feed', () => {
 })
 
 test('a SoundCloud profile', () => {
-  expect(normalizeScUser(userRaw)).toEqual({ id: 501, name: 'night owl', avatar: 'https://i1.sndcdn.com/avatars-000501-aaaaaa-t300x300.jpg', permalink: 'https://soundcloud.com/night-owl' })
+  expect(normalizeScUser(userRaw)).toEqual({ id: 501, name: 'night owl', avatar: 'https://i1.sndcdn.com/avatars-000501-aaaaaa-t300x300.jpg', permalink: 'https://soundcloud.com/night-owl', city: 'Berlin', followers: 12480, followings: 87, trackCount: 6 })
 })
 
 test('serviceOf treats a track without service as VK', () => {
   expect(serviceOf({})).toBe('vk')
   expect(serviceOf({ service: 'sc' })).toBe('sc')
+})
+
+describe('SoundCloud profiles and comments', () => {
+  test('a profile carries its counts, and an empty city is none', () => {
+    expect(normalizeScUser({ id: 1, username: 'u', city: '', followers_count: 6276, followings_count: 11, track_count: 0 })).toMatchObject({ followers: 6276, followings: 11, trackCount: 0, city: undefined })
+    expect(normalizeScUser({ id: 2, username: 'v', city: 'Москва' }).city).toBe('Москва')
+  })
+
+  test('comments without a place on the track are left out', () => {
+    const user = { id: 3, username: 'Аня', avatar_url: 'https://i1.sndcdn.com/avatars-x-large.jpg' }
+    expect(normalizeScComment({ id: 1, body: ' огонь ', timestamp: 43638, user })).toEqual({ id: 1, atMs: 43638, body: 'огонь', user: { name: 'Аня', avatar: 'https://i1.sndcdn.com/avatars-x-t67x67.jpg' } })
+    for (const bad of [{ timestamp: null }, { timestamp: -1 }, { timestamp: undefined }, { body: '  ' }, { user: undefined }]) {
+      expect(normalizeScComment({ id: 2, body: 'x', timestamp: 5, user, ...bad })).toBeNull()
+    }
+    expect(normalizeScComment({ id: 3, body: 'я'.repeat(400), timestamp: 5, user })!.body).toHaveLength(300)
+  })
 })

@@ -13,6 +13,10 @@ export const scKeys = {
   userTop: (id: number) => ['sc-user-top', id],
   userTracks: (id: number) => ['sc-user-tracks', id],
   userPlaylists: (id: number) => ['sc-user-playlists', id],
+  userReposts: (id: number) => ['sc-user-reposts', id],
+  userLikes: (id: number) => ['sc-user-likes', id],
+  followings: (me: number) => ['sc-followings', me],
+  comments: (trackId: number) => ['sc-comments', trackId],
   search: (q: string) => ['sc-search', q],
 } as const
 
