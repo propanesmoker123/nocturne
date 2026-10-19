@@ -1,5 +1,6 @@
 import Hls, { type BufferAppendingData } from 'hls.js'
 import { journal } from '../lib/journal'
+import { invoke, isTauri } from '../lib/tauri'
 import { accumulate, isComplete, newAcc, toPeaks, type PeakAcc } from './peaks'
 import { useWaveform } from './waveformStore'
 
@@ -9,6 +10,15 @@ import { useWaveform } from './waveformStore'
  * a low sample rate and fold its loudness into time bins. Nothing is downloaded twice.
  */
 export { useWaveform }
+
+/**
+ * A whole file's bytes. In the app it comes through the app (as HLS fragments do): the page may
+ * not fetch VK's servers itself, and they do not answer pages from other origins.
+ */
+export async function readWhole(url: string): Promise<ArrayBuffer> {
+  if (isTauri()) return invoke<ArrayBuffer>('proxy_fetch', { url })
+  return (await fetch(url)).arrayBuffer()
+}
 
 const CACHE_SIZE = 40
 const cache = new Map<string, Float32Array>()
@@ -50,10 +60,10 @@ class Capture {
     this.enqueue(() => this.decode(bytes, start))
   }
 
-  /** Demo mode / non-HLS sources: decode the whole file at once. */
+  /** Demo mode / non-HLS sources (VK's mp3 links): decode the whole file at once. */
   fromFile(url: string) {
     this.container = 'file'
-    this.enqueue(async () => this.decode(new Uint8Array(await (await fetch(url)).arrayBuffer()), 0))
+    this.enqueue(async () => this.decode(new Uint8Array(await readWhole(url)), 0))
   }
 
   /** Decodes one chunk at a time; a failed chunk never blocks the ones after it. */
