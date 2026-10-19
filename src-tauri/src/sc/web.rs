@@ -25,11 +25,17 @@ fn is_site(url: &Url) -> bool {
     url.scheme() == "https" && url.host_str() == Some("soundcloud.com") && url.port_or_known_default() == Some(443)
 }
 
-fn owned_like_path(method: &str, path: &str, me: i64) -> bool {
+/// The writes the signed-in person may make here: their own likes, and leaving someone they follow.
+fn owned_write_path(method: &str, path: &str, me: i64) -> bool {
     if me <= 0 || !api::allowed(method, path) || !matches!(method, "PUT" | "DELETE") || path.contains('?') {
         return false;
     }
     let parts: Vec<_> = path.split('/').collect();
+    if parts.get(1) == Some(&"me") {
+        return method == "DELETE"
+            && parts.get(2) == Some(&"followings")
+            && parts.get(3).and_then(|s| s.parse::<i64>().ok()).is_some_and(|id| id > 0 && id != me);
+    }
     parts.get(2).and_then(|s| s.parse::<i64>().ok()) == Some(me)
         && parts.get(4).and_then(|s| s.parse::<u64>().ok()).is_some_and(|id| id > 0)
 }
@@ -147,7 +153,7 @@ pub async fn request(app: &AppHandle, method: &str, path: &str) -> Result<Value,
     let _one = WRITING.lock().await;
     let st = app.state::<ScState>();
     let me = st.status().user.ok_or(ScError::SignedOut)?.id;
-    if !owned_like_path(method, path, me) {
+    if !owned_write_path(method, path, me) {
         return Err(ScError::Invalid { message: "request not allowed".to_string() });
     }
     let token = st.token().ok_or(ScError::SignedOut)?;
@@ -171,14 +177,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_signed_in_users_likes_can_change() {
-        assert!(owned_like_path("PUT", "/users/7/track_likes/402", 7));
-        assert!(owned_like_path("DELETE", "/users/7/track_likes/402", 7));
+    fn only_the_signed_in_users_likes_and_followings_can_change() {
+        assert!(owned_write_path("PUT", "/users/7/track_likes/402", 7));
+        assert!(owned_write_path("DELETE", "/users/7/track_likes/402", 7));
+        assert!(owned_write_path("DELETE", "/me/followings/12", 7));
+        for (method, path, me) in [("DELETE", "/me/followings/7", 7), ("DELETE", "/me/followings/0", 7), ("DELETE", "/me/followings/12", 0), ("POST", "/me/followings/12", 7)] {
+            assert!(!owned_write_path(method, path, me), "{method} {path}");
+        }
         for (method, path, me) in [
             ("PUT", "/users/8/track_likes/402", 7), ("PUT", "/users/0/track_likes/402", 0),
             ("GET", "/users/7/track_likes/402", 7), ("PUT", "/users/7/track_likes/0", 7),
             ("PUT", "/users/7/track_likes/402?x=1", 7), ("PUT", "/users/7/track_likes/402/extra", 7),
-        ] { assert!(!owned_like_path(method, path, me), "{method} {path}"); }
+        ] { assert!(!owned_write_path(method, path, me), "{method} {path}"); }
     }
 
     #[test]

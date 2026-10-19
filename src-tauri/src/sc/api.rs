@@ -95,8 +95,11 @@ pub fn allowed(method: &str, path: &str) -> bool {
         ("GET", ["me"] | ["me", "library", "all"] | ["mixed-selections"] | ["stream"] | ["tracks"] | ["search"] | ["search", "tracks" | "users" | "playlists"]) => true,
         ("GET", ["tracks", n, "related"] | ["playlists", n] | ["users", n]) => numeric(n),
         ("GET", ["system-playlists", urn]) => system_urn(urn),
-        ("GET", ["users", n, "track_likes" | "playlists_without_albums" | "albums" | "toptracks" | "tracks"]) => numeric(n),
+        ("GET", ["users", n, "track_likes" | "playlists_without_albums" | "albums" | "toptracks" | "tracks" | "likes"]) => numeric(n),
+        ("GET", ["users", n, "followings", "ids"] | ["stream", "users", n, "reposts"] | ["tracks", n, "comments"]) => numeric(n),
         ("PUT" | "DELETE", ["users", user, "track_likes", track]) => numeric(user) && numeric(track),
+        // following someone is signed by the site's own code: not here (see the profile plan)
+        ("DELETE", ["me", "followings", n]) => numeric(n),
         _ => false,
     }
 }
@@ -284,6 +287,17 @@ mod tests {
             ("GET", "/users/1/track_likes/2/x"),
             ("DELETE", "/stream"),
         ] {
+            assert!(!allowed(m, p), "{m} {p}");
+        }
+    }
+
+    #[test]
+    fn profile_and_comment_reads_are_allowed() {
+        for p in ["/stream/users/12/reposts?limit=50", "/users/12/likes?limit=50&offset=x", "/users/12/followings/ids?limit=5000", "/tracks/9/comments?threaded=0&filter_replies=1&limit=200"] {
+            assert!(allowed("GET", p), "{p}");
+        }
+        assert!(allowed("DELETE", "/me/followings/12"));
+        for (m, p) in [("POST", "/me/followings/12"), ("PUT", "/me/followings/12"), ("DELETE", "/me/followings/x"), ("DELETE", "/me/followings/12?signature=a"), ("GET", "/users/x/likes"), ("GET", "/stream/users/x/reposts")] {
             assert!(!allowed(m, p), "{m} {p}");
         }
     }
