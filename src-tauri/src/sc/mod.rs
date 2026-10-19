@@ -32,6 +32,30 @@ macro_rules! trace {
 }
 pub(crate) use trace;
 
+/// A request path as the journal may show it: no query, and no ids — whom the person follows or
+/// likes, or what they play, is theirs (the journal is sent to helpers).
+pub(crate) fn shown_path(path: &str) -> String {
+    let path = path.split('?').next().unwrap_or_default();
+    let mut out = String::with_capacity(path.len());
+    let mut digits = String::new();
+    let flush = |out: &mut String, digits: &mut String, whole: bool| {
+        if !digits.is_empty() {
+            out.push_str(if whole || digits.len() >= 3 { "{n}" } else { digits.as_str() });
+            digits.clear();
+        }
+    };
+    for seg in path.split('/').enumerate() {
+        let (i, seg) = seg;
+        if i > 0 { out.push('/'); }
+        let whole = !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit());
+        for ch in seg.chars() {
+            if ch.is_ascii_digit() { digits.push(ch); } else { flush(&mut out, &mut digits, false); out.push(ch); }
+        }
+        flush(&mut out, &mut digits, whole);
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScPhase {
@@ -279,6 +303,15 @@ async fn check_key(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_journal_names_no_one_and_no_track() {
+        assert_eq!(shown_path("/me/followings/1498436755"), "/me/followings/{n}");
+        assert_eq!(shown_path("/users/1690419329/track_likes/339318387"), "/users/{n}/track_likes/{n}");
+        assert_eq!(shown_path("/tracks/9/comments?threaded=0&filter_replies=1&limit=200"), "/tracks/{n}/comments");
+        assert_eq!(shown_path("/media/soundcloud:tracks:1875595929/ab12cd/stream/hls"), "/media/soundcloud:tracks:{n}/ab12cd/stream/hls");
+        assert_eq!(shown_path("/stream"), "/stream");
+    }
 
     fn user() -> ScUser {
         ScUser { id: 1, name: "a".to_string(), avatar: None, permalink: None }

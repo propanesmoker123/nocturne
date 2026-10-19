@@ -163,11 +163,12 @@ pub async fn request(app: &AppHandle, method: &str, path: &str) -> Result<Value,
         if st.status().user.map(|u| u.id) != Some(me) { return Err(ScError::SignedOut); }
         answer = send(app, method, path, &token).await;
     }
+    let shown = super::shown_path(path);
     match &answer {
-        Err(ScError::Http { status }) => trace!("browser {method} {path}: HTTP {status}"),
-        Err(ScError::Challenge) => trace!("browser {method} {path}: challenge"),
-        Err(_) => trace!("browser {method} {path}: failed"),
-        Ok(_) => trace!("browser {method} {path}: succeeded"),
+        Err(ScError::Http { status }) => trace!("browser {method} {shown}: HTTP {status}"),
+        Err(ScError::Challenge) => trace!("browser {method} {shown}: challenge"),
+        Err(_) => trace!("browser {method} {shown}: failed"),
+        Ok(_) => trace!("browser {method} {shown}: succeeded"),
     }
     answer
 }

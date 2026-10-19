@@ -171,12 +171,12 @@ pub async fn request_url(app: &AppHandle, method: Method, mut url: Url) -> Resul
     loop {
         let Some(token) = st.token() else { return Err(ScError::SignedOut) };
         match send(&http, method.clone(), url.clone(), &token).await {
-            Err(ScError::Http { status: 401 }) => trace!("{method} {}: HTTP 401", url.path()),
+            Err(ScError::Http { status: 401 }) => trace!("{method} {}: HTTP 401", super::shown_path(url.path())),
             Err(e) => {
                 match &e {
-                    ScError::Http { status } => trace!("{method} {}: HTTP {status}", url.path()),
-                    ScError::Network { .. } => trace!("{method} {}: network", url.path()),
-                    _ => trace!("{method} {}: {e:?}", url.path()),
+                    ScError::Http { status } => trace!("{method} {}: HTTP {status}", super::shown_path(url.path())),
+                    ScError::Network { .. } => trace!("{method} {}: network", super::shown_path(url.path())),
+                    _ => trace!("{method} {}: {e:?}", super::shown_path(url.path())),
                 }
                 return Err(e);
             }
