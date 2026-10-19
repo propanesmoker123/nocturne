@@ -58,6 +58,12 @@
   flex: none;
   margin-left: -4px;
 }
+/* a narrow window has no room for both: the plus stays in the track menu and «Сейчас играет» */
+@media (max-width: 1100px) {
+  .markAdd {
+    display: none;
+  }
+}
 .titles {
   display: flex;
   flex-direction: column;

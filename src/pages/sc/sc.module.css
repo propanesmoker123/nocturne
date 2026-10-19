@@ -66,3 +66,21 @@
   border-radius: 50%;
   box-shadow: var(--shadow-art);
 }
+
+/* A profile's tabs, and the «Ещё» under a list */
+.tabs {
+  display: flex;
+  margin: 4px 0 18px;
+}
+
+.more {
+  display: flex;
+  justify-content: center;
+  padding: 18px 0 8px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 22px 18px;
+}

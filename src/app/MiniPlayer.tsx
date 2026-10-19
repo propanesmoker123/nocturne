@@ -95,7 +95,7 @@ export function MiniPlayer() {
               </div>
               <div className={s.marks}>
                 <HeartButton track={current} size={30} iconSize={17} />
-                <AlbumAddButton track={current} size={30} iconSize={18} />
+                <AlbumAddButton className={s.markAdd} track={current} size={30} iconSize={18} />
               </div>
             </>
           ) : (

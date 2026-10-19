@@ -23,16 +23,17 @@ export async function mockScCall(method: string, path: string): Promise<unknown>
   if (p.startsWith('/playlists/')) return Number(p.split('/')[2]) === albumRaw.id ? albumRaw : playlistRaw
   if (p === '/tracks') return (q.get('ids') ?? '').split(',').map((id) => tracks.find((t) => t.id === Number(id))).filter(Boolean)
   if (p === '/stream') return { collection: streamRaw }
+  const listener = p.startsWith(`/users/${listenerRaw.id}`) || p.startsWith(`/stream/users/${listenerRaw.id}`)
+  // the listener has nothing of their own
+  if (listener && /^\/users\/\d+\/(toptracks|tracks|playlists_without_albums|albums)$/.test(p)) return { collection: [] }
   if (/^\/users\/\d+\/track_likes$/.test(p)) return { collection: tracks.slice(1, 4).map((track) => ({ track })) }
   if (/^\/users\/\d+\/(playlists_without_albums)$/.test(p)) return { collection: [playlistRaw] }
   if (/^\/users\/\d+\/albums$/.test(p)) return { collection: [albumRaw] }
   if (p === '/me/library/all') return { collection: [{ type: 'system-playlist-like', system_playlist: systemPlaylistRaw }] }
-  const listener = p.startsWith(`/users/${listenerRaw.id}`) || p.startsWith(`/stream/users/${listenerRaw.id}`)
   if (/^\/users\/\d+\/followings\/ids$/.test(p)) return { collection: [...following] }
   if (/^\/stream\/users\/\d+\/reposts$/.test(p)) return { collection: listener ? streamRaw : streamRaw.slice(0, 2) }
   if (/^\/users\/\d+\/likes$/.test(p)) return { collection: [...tracks.slice(2, 5).map((track) => ({ kind: 'like', track })), { kind: 'like', playlist: playlistRaw }] }
   if (/^\/tracks\/\d+\/comments$/.test(p)) return { collection: commentsRaw(Number(p.split('/')[2])) }
-  if (listener && /^\/users\/\d+\/(toptracks|tracks|playlists_without_albums|albums)$/.test(p)) return { collection: [] }
   if (/^\/users\/\d+$/.test(p)) return listener ? listenerRaw : userRaw
   if (/^\/users\/\d+\/(toptracks|tracks)$/.test(p)) return { collection: tracks }
   if (p === '/search/tracks') return { collection: tracks.slice(0, 4) }

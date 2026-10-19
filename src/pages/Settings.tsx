@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { ImagePlus, Plus, RotateCcw, X } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
+import { useRouter } from '../app/router'
 import { useSession } from '../app/session'
 import { useSheet } from '../app/sheetStore'
 import { renameDevice, unlinkAll, unlinkHere, useDevices } from '../connect/devices'
@@ -52,6 +53,8 @@ function Row({ title, sub, stacked, children }: { title: string; sub?: ReactNode
 function SoundCloudAccount() {
   const sc = useScSession()
   const signedIn = sc.phase !== 'signed-out'
+  const push = useRouter((r) => r.push)
+  const me = sc.user
   return (
     <div className={s.row}>
       {sc.user?.avatar ? <img className={s.avatar} src={sc.user.avatar} alt="" referrerPolicy="no-referrer" /> : <ServiceLogo id="sc" size={36} />}
@@ -60,9 +63,12 @@ function SoundCloudAccount() {
         <div className={s.rowSub}>{signedIn ? 'Вход выполнен. В России SoundCloud играет только через VPN.' : 'Вход не выполнен'}</div>
       </div>
       {signedIn ? (
-        <Button variant="danger" onClick={() => void sc.logout()}>
-          Выйти
-        </Button>
+        <>
+          {me && me.id > 0 && <Button onClick={() => push({ name: 'sc-user', id: me.id, title: me.name })}>Мой профиль</Button>}
+          <Button variant="danger" onClick={() => void sc.logout()}>
+            Выйти
+          </Button>
+        </>
       ) : (
         <Button variant="primary" disabled={sc.signingIn} onClick={() => void sc.login()}>
           {sc.signingIn && <Spinner size={14} />} Войти в SoundCloud
