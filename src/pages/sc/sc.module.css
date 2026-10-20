@@ -97,3 +97,115 @@
   color: var(--label-2);
   font: var(--t-caption);
 }
+
+/* «Лента»: who did what, then the track or the playlist */
+.feed {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 920px;
+}
+
+.feedItem {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.feedWho {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 4px;
+  font: var(--t-caption);
+  color: var(--label-2);
+}
+
+.feedPerson {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--label);
+  font-weight: 600;
+}
+.feedPerson:hover span {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.feedWhat {
+  flex: none;
+}
+
+.feedThing {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--fill-quaternary, rgba(255, 255, 255, 0.04));
+  text-align: left;
+  cursor: pointer;
+}
+.feedThing:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.feedThing[data-current] .feedTitle {
+  color: var(--accent-text, var(--accent));
+}
+.feedThing[data-disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.feedArt {
+  position: relative;
+  display: block;
+}
+.feedEq {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.feedText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.feedTitle {
+  font: var(--t-headline);
+  color: var(--label);
+}
+.feedSub {
+  max-width: 100%;
+  font: var(--t-caption);
+  color: var(--label-2);
+  text-align: left;
+}
+button.feedSub:hover {
+  color: var(--label);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.feedActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.feedTime {
+  min-width: 44px;
+  text-align: right;
+  font: var(--t-caption);
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
+}

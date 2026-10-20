@@ -212,3 +212,31 @@ describe('whom someone follows', () => {
     expect(calls.map((c) => c.path)).toEqual(['/users/7/followings?limit=50', '/users/7/followings?offset=1&limit=50'])
   })
 })
+
+describe('the feed', () => {
+  test("a followed profile's part of the feed asks for its tracks, reposts and likes", async () => {
+    const calls = record((path) => {
+      if (path.startsWith('/users/7/tracks')) return { collection: [{ ...trackRaw(410, 'new one'), created_at: '2026-10-20T01:00:00Z' }] }
+      if (path.startsWith('/stream/users/7/reposts')) return { collection: [{ type: 'track-repost', created_at: '2026-10-19T00:00:00Z', track: trackRaw(411, 'theirs') }] }
+      return { collection: [{ created_at: '2026-10-18T00:00:00Z', track: trackRaw(412, 'liked') }] }
+    })
+    const items = await sc.getUserActivity({ id: 7, name: 'LIL PEEP' })
+    expect(items.map((i) => i.kind)).toEqual(['post', 'repost', 'like'])
+    expect(calls.map((c) => c.path).sort()).toEqual(['/stream/users/7/reposts?limit=10', '/users/7/likes?limit=10', '/users/7/tracks?limit=10'])
+  })
+
+  test('one failed part leaves the rest of that profile', async () => {
+    record((path) => {
+      if (path.startsWith('/users/7/likes')) throw { kind: 'http', status: 500 }
+      if (path.startsWith('/users/7/tracks')) return { collection: [{ ...trackRaw(410, 'new one'), created_at: '2026-10-20T01:00:00Z' }] }
+      return { collection: [] }
+    })
+    expect((await sc.getUserActivity({ id: 7, name: 'LIL PEEP' })).map((i) => i.kind)).toEqual(['post'])
+  })
+
+  test("SoundCloud's own stream comes with its next cursor", async () => {
+    record(() => ({ collection: [{ type: 'track', created_at: '2026-10-19T10:00:00Z', user: { id: 501, username: 'night owl' }, track: trackRaw(402, 'a') }], next_href: 'https://api-v2.soundcloud.com/stream?offset=x' }))
+    const page = await sc.getStreamFeed()
+    expect([page.items.length, page.next]).toEqual([1, '/stream?offset=x'])
+  })
+})

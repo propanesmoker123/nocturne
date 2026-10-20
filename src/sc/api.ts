@@ -2,7 +2,8 @@ import { invoke, isTauri } from '../lib/tauri'
 import type { Playlist, Track } from '../vk/models'
 import { ScApiError } from './errors'
 import { normalizeScComment, normalizeScPlaylist, normalizeScTrack, normalizeScUser, streamItems, type ScComment, type ScUser } from './normalize'
-import type { RawScCollection, RawScComment, RawScLibraryItem, RawScLike, RawScPlaylist, RawScSelection, RawScStreamItem, RawScTrack, RawScUser } from './types'
+import { streamFeed, userActivity, type FeedItem, type FeedPerson } from './feed'
+import type { RawScActivity, RawScCollection, RawScComment, RawScLibraryItem, RawScLike, RawScPlaylist, RawScSelection, RawScStreamItem, RawScTrack, RawScUser } from './types'
 
 export type { ScComment, ScUser } from './normalize'
 
@@ -213,6 +214,42 @@ export async function getMyFollowings(): Promise<number[]> {
     const raw: RawScCollection<number> = await get<RawScCollection<number>>(path)
     for (const id of raw.collection ?? []) if (Number.isSafeInteger(id)) out.push(id)
     path = nextPath(raw.next_href)
+  }
+  return out
+}
+
+// ── «Лента» ──────────────────────────────────────────────────────────────────────────────────
+
+/** A feed item's track knows whether it is liked here. */
+const withLikes = (items: FeedItem[]): FeedItem[] => items.map((i) => (i.track ? { ...i, track: { ...i.track, liked: likedIds.has(i.track.id) } } : i))
+
+/** SoundCloud's own stream (new tracks and reposts of the people followed), a page at a time. */
+export async function getStreamFeed(cursor?: string): Promise<{ items: FeedItem[]; next?: string }> {
+  const raw = await get<RawScCollection<RawScActivity>>(cursor ?? '/stream?limit=40')
+  return { items: withLikes(streamFeed(raw.collection ?? [])), next: nextPath(raw.next_href) }
+}
+
+/** One followed profile's latest tracks, reposts and likes; a part that fails is left out. */
+export async function getUserActivity(who: FeedPerson): Promise<FeedItem[]> {
+  const [tracks, reposts, likes] = await Promise.allSettled([
+    get<RawScCollection<RawScTrack>>(`/users/${who.id}/tracks?limit=10`),
+    get<RawScCollection<RawScActivity>>(`/stream/users/${who.id}/reposts?limit=10`),
+    get<RawScCollection<RawScActivity>>(`/users/${who.id}/likes?limit=10`),
+  ])
+  const list = <T>(r: PromiseSettledResult<RawScCollection<T>>) => (r.status === 'fulfilled' ? (r.value.collection ?? []) : [])
+  return withLikes(userActivity(who, { tracks: list(tracks), reposts: list(reposts), likes: list(likes) }))
+}
+
+/** The people the signed-in person follows, for the feed (up to 200). */
+export async function getFeedPeople(): Promise<FeedPerson[]> {
+  if (!meId) return []
+  const out: FeedPerson[] = []
+  let cursor: string | undefined
+  for (let page = 0; page < 4; page++) {
+    const p = await getFollowingUsers(meId, cursor)
+    for (const u of p.items) out.push({ id: u.id, name: u.name, ...(u.avatar ? { avatar: u.avatar } : {}) })
+    if (!p.next) break
+    cursor = p.next
   }
   return out
 }

@@ -40,6 +40,8 @@ export interface RawScTrack {
   policy?: string
   streamable?: boolean
   user?: RawScUser
+  /** when it was put up */
+  created_at?: string
   publisher_metadata?: { artist?: string; explicit?: boolean } | null
   media?: { transcodings: RawScTranscoding[] }
 }
@@ -74,6 +76,13 @@ export interface RawScStreamItem {
   type?: string
   track?: RawScTrack
   playlist?: RawScPlaylist
+}
+
+/** A thing someone did: a stream post or repost, a like (`created_at` is when it was done). */
+export interface RawScActivity extends RawScStreamItem {
+  created_at?: string
+  /** who did it (the stream says it; a profile's own lists do not) */
+  user?: RawScUser
 }
 
 export interface RawScLike {
