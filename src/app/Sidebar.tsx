@@ -9,6 +9,7 @@ import { useScSession } from '../sc/session'
 import * as vk from '../vk/api'
 import s from './Sidebar.module.css'
 import appIcon from '../assets/app-icon.png'
+import { albumArt } from '../albums/model'
 import { useAlbums } from '../albums/store'
 import { routeSection, useRouter, type Route } from './router'
 import { accountFor, serviceInfo, useService } from './service'
@@ -215,7 +216,7 @@ function MineNav() {
             aria-current={route.name === 'album' && route.id === e.id ? 'page' : undefined}
             onClick={() => push({ name: 'album', id: e.id })}
           >
-            <Artwork src={Object.values(docs[e.id].entries).find((x) => x.track?.cover)?.track?.cover} size={24} radius={5} seed={docs[e.id].meta.name || e.name} />
+            <Artwork {...albumArt(docs[e.id])} size={24} radius={5} seed={docs[e.id].meta.name || e.name} />
             <span className={`${s.itemLabel} truncate`}>{docs[e.id].meta.name || e.name}</span>
           </button>
         ))}

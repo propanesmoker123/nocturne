@@ -1,8 +1,9 @@
 import { normalizeCode } from '../together/code'
-import { bucketOf, BUCKETS, MAX_DURATION, MAX_TEXT, mergeAlbum, okAccessKey, okCover, okPermalink, type AlbumDoc, type AlbumEntry, type AlbumMeta, type AlbumTrack } from './model'
+import { bucketOf, BUCKETS, MAX_DURATION, MAX_TEXT, mergeAlbum, okAccessKey, okCover, okImage, okPermalink, type AlbumCover, type AlbumDoc, type AlbumEntry, type AlbumMeta, type AlbumTrack } from './model'
 
 /**
- * What goes to the relays: per album and per author one `meta` record and 16 bucket records,
+ * What goes to the relays: per album and per author one `meta` record, 16 bucket records and,
+ * once someone picked one, a cover record,
  * under tags derived from the album's code (never the code itself), sealed with a key derived
  * from it. Everything that comes back is checked field by field before it is merged.
  */
@@ -26,8 +27,8 @@ export async function listTag(groupCode: string): Promise<string> {
 
 export const listKey = (groupCode: string) => aesKey(`nocturne-albums-key:${canonical(groupCode)}`)
 
-/** The 17 tags of one album: `meta`, then the buckets. */
-export const albumTags = (base: string) => [`${base}:m`, ...Array.from({ length: BUCKETS }, (_, i) => `${base}:b${i}`)]
+/** The 18 tags of one album: `meta`, the buckets, then the cover (a tag of its own: a picture is big, and changes seldom). */
+export const albumTags = (base: string) => [`${base}:m`, ...Array.from({ length: BUCKETS }, (_, i) => `${base}:b${i}`), `${base}:c`]
 
 export const albumLink = (code: string) => `nocturne://album?code=${code}`
 
@@ -53,16 +54,25 @@ export interface BucketRecord {
   entries: AlbumEntry[]
 }
 
-export function splitDoc(d: AlbumDoc): { meta: MetaRecord; buckets: BucketRecord[] } {
-  const buckets: BucketRecord[] = Array.from({ length: BUCKETS }, (_, bucket) => ({ v: 1, id: d.id, bucket, entries: [] }))
-  for (const e of Object.values(d.entries)) buckets[bucketOf(e.eid)].entries.push(e)
-  return { meta: { v: 1, id: d.id, meta: d.meta }, buckets }
+export interface CoverRecord {
+  v: 1
+  id: string
+  cover: AlbumCover
 }
 
-/** Merges one record into the album (a bucket may come before its `meta`). */
-export function applyRecord(d: AlbumDoc | null, r: MetaRecord | BucketRecord): AlbumDoc {
+export type AlbumRecord = MetaRecord | BucketRecord | CoverRecord
+
+export function splitDoc(d: AlbumDoc): { meta: MetaRecord; buckets: BucketRecord[]; cover: CoverRecord | null } {
+  const buckets: BucketRecord[] = Array.from({ length: BUCKETS }, (_, bucket) => ({ v: 1, id: d.id, bucket, entries: [] }))
+  for (const e of Object.values(d.entries)) buckets[bucketOf(e.eid)].entries.push(e)
+  return { meta: { v: 1, id: d.id, meta: d.meta }, buckets, cover: d.cover ? { v: 1, id: d.id, cover: d.cover } : null }
+}
+
+/** Merges one record into the album (a bucket or the cover may come before its `meta`). */
+export function applyRecord(d: AlbumDoc | null, r: AlbumRecord): AlbumDoc {
   const base: AlbumDoc = d ?? { id: r.id, meta: { name: '', updatedAt: 0, by: '' }, entries: {} }
   if ('meta' in r) return mergeAlbum(base, { id: r.id, meta: r.meta, entries: {} })
+  if ('cover' in r) return mergeAlbum(base, { id: r.id, meta: base.meta, entries: {}, cover: r.cover })
   return mergeAlbum(base, { id: r.id, meta: base.meta, entries: Object.fromEntries(r.entries.map((e) => [e.eid, e])) })
 }
 
@@ -167,9 +177,18 @@ function meta(v: unknown): AlbumMeta | null {
   return { name: v.name, updatedAt: v.updatedAt, by: v.by, ...(v.deletedAt !== undefined ? { deletedAt: v.deletedAt as number } : {}) }
 }
 
+function cover(v: unknown): AlbumCover | null {
+  if (!isObj(v) || !int(v.updatedAt) || !hex16(v.by) || (v.image !== undefined && !okImage(v.image))) return null
+  return { ...(v.image !== undefined ? { image: v.image as string } : {}), updatedAt: v.updatedAt, by: v.by }
+}
+
 /** A record as it came from a relay, cleaned; null when anything in it is off. */
-export function parseRecord(raw: unknown): MetaRecord | BucketRecord | null {
+export function parseRecord(raw: unknown): AlbumRecord | null {
   if (!isObj(raw) || raw.v !== 1 || !hex16(raw.id)) return null
+  if (raw.cover !== undefined) {
+    const c = cover(raw.cover)
+    return c ? { v: 1, id: raw.id, cover: c } : null
+  }
   if (raw.meta !== undefined) {
     const m = meta(raw.meta)
     return m ? { v: 1, id: raw.id, meta: m } : null

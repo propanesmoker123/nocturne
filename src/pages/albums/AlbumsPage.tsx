@@ -1,7 +1,7 @@
 import { Disc3, Plus } from 'lucide-react'
 import { useRouter } from '../../app/router'
 import { useSheet } from '../../app/sheetStore'
-import { liveEntries } from '../../albums/model'
+import { albumArt, liveEntries } from '../../albums/model'
 import { useAlbums } from '../../albums/store'
 import { Artwork } from '../../components/Artwork'
 import { Button } from '../../components/controls'
@@ -41,12 +41,11 @@ export function AlbumsPage() {
           {albums.map((e) => {
             const doc = docs[e.id]
             const live = liveEntries(doc)
-            const covers = live.map((x) => x.track!.cover).filter((u): u is string => !!u).slice(0, 4)
             const name = doc.meta.name || e.name
             return (
               <div key={e.id} className={c.card}>
                 <button type="button" className={c.cover} onClick={() => push({ name: 'album', id: e.id })} aria-label={name}>
-                  <Artwork mosaic={covers.length >= 4 ? covers : undefined} src={covers.length < 4 ? covers[0] : undefined} size="100%" radius={12} seed={name} style={{ aspectRatio: '1', height: 'auto' }} />
+                  <Artwork {...albumArt(doc)} size="100%" radius={12} seed={name} style={{ aspectRatio: '1', height: 'auto' }} />
                 </button>
                 <button type="button" className={c.cardTitle} onClick={() => push({ name: 'album', id: e.id })}>
                   {name}

@@ -3,7 +3,7 @@ import { onUnlink, useDevices } from '../connect/devices'
 import { debouncedSaver, loadJSON } from '../lib/persist'
 import { generateCode } from '../together/code'
 import type { Track } from '../vk/models'
-import { addTracks, deleteAlbum, liveEntries, MAX_TRACKS, mergeAlbum, moveEntry, newAlbum, removeEntry, renameAlbum, sameDoc, type AlbumDoc } from './model'
+import { addTracks, deleteAlbum, liveEntries, MAX_TRACKS, mergeAlbum, moveEntry, newAlbum, removeEntry, renameAlbum, sameDoc, setAlbumCover, type AlbumDoc } from './model'
 import { mergeList, type ListEntry } from './records'
 
 /**
@@ -21,6 +21,8 @@ interface AlbumsState extends Saved {
   ready: boolean
   create(name: string): string
   rename(id: string, name: string): void
+  /** The album's own picture (a `data:` address); null takes it off. */
+  setCover(id: string, image: string | null): void
   add(id: string, tracks: Track[], at?: number): { added: number; skipped: 'full' | null }
   removeEntry(id: string, eid: string): void
   move(id: string, eid: string, toIndex: number): void
@@ -112,6 +114,7 @@ export const useAlbums = create<AlbumsState>((set, get) => {
       }
       return { added: r.added, skipped: r.skipped }
     },
+    setCover: (id, image) => edit(id, (d, now, by) => setAlbumCover(d, image ?? undefined, now, by)),
     removeEntry: (id, eid) => edit(id, (d, now, by) => removeEntry(d, eid, now, by)),
     move: (id, eid, toIndex) => edit(id, (d, now, by) => moveEntry(d, eid, toIndex, now, by)),
     deleteForAll(id) {

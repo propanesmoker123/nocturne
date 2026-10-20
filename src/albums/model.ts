@@ -38,10 +38,19 @@ export interface AlbumMeta {
   deletedAt?: number
 }
 
+/** A picture of the album's own, chosen by someone who has it; merges by itself (a rename does not touch it). */
+export interface AlbumCover {
+  /** a small picture as a `data:` address; gone once the cover was taken off */
+  image?: string
+  updatedAt: number
+  by: string
+}
+
 export interface AlbumDoc {
   id: string
   meta: AlbumMeta
   entries: Record<string, AlbumEntry>
+  cover?: AlbumCover
 }
 
 export const BUCKETS = 16
@@ -115,6 +124,10 @@ export const okAccessKey = (v: unknown): v is string => typeof v === 'string' &&
 export const okCover = (v: unknown): v is string =>
   typeof v === 'string' && v.length <= 1000 && /^https:\/\/([a-z0-9-]+\.)+(userapi\.com|vkuserphoto\.ru|vkuser\.net|vk-cdn\.net|sndcdn\.com)\//.test(v)
 export const okPermalink = (v: unknown): v is string => typeof v === 'string' && v.length <= 500 && /^https:\/\/([a-z0-9-]+\.)*soundcloud\.com\//.test(v)
+/** The longest cover, whole `data:` address: its record still fits under the relays' 60 KB. */
+export const MAX_IMAGE = 48_000
+/** An album's own picture: a small webp, jpeg or png carried inside the album (never an address to fetch). */
+export const okImage = (v: unknown): v is string => typeof v === 'string' && v.length < MAX_IMAGE + 1 && /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/.test(v)
 
 export function snapshot(t: Track): AlbumTrack {
   const sc = t.service === 'sc'
@@ -166,6 +179,17 @@ export function liveEntries(d: AlbumDoc): AlbumEntry[] {
     .sort((x, y) => (x.pos < y.pos ? -1 : x.pos > y.pos ? 1 : x.eid < y.eid ? -1 : x.eid > y.eid ? 1 : 0))
 }
 
+/** What an album shows as its picture: its own cover, else four track covers, else the first one. */
+export function albumArt(d: AlbumDoc): { src?: string; mosaic?: string[] } {
+  if (d.cover?.image) return { src: d.cover.image }
+  const covers = liveEntries(d)
+    .map((e) => e.track!.cover)
+    .filter((u): u is string => !!u)
+    .slice(0, 4)
+  if (covers.length >= 4) return { mosaic: covers }
+  return covers[0] ? { src: covers[0] } : {}
+}
+
 /** Adds tracks at the end (or before position `at`), skipping ones already there. */
 export function addTracks(d: AlbumDoc, tracks: Track[], now: number, by: string, at?: number): { doc: AlbumDoc; added: number; skipped: 'full' | null } {
   const live = liveEntries(d)
@@ -212,6 +236,11 @@ export function renameAlbum(d: AlbumDoc, name: string, now: number, by: string):
   return { ...d, meta: { ...d.meta, name, updatedAt: now, by } }
 }
 
+/** Sets the album's own picture (`undefined` takes it off: the track covers show again). */
+export function setAlbumCover(d: AlbumDoc, image: string | undefined, now: number, by: string): AlbumDoc {
+  return { ...d, cover: { ...(image ? { image } : {}), updatedAt: now, by } }
+}
+
 export function deleteAlbum(d: AlbumDoc, now: number, by: string): AlbumDoc {
   return { ...d, meta: { ...d.meta, deletedAt: now, updatedAt: now, by } }
 }
@@ -224,7 +253,8 @@ export const mergeEntry = (a: AlbumEntry, b: AlbumEntry): AlbumEntry => (a.remov
 export function mergeAlbum(a: AlbumDoc, b: AlbumDoc): AlbumDoc {
   const entries: Record<string, AlbumEntry> = { ...a.entries }
   for (const [eid, e] of Object.entries(b.entries)) entries[eid] = entries[eid] ? mergeEntry(entries[eid], e) : e
-  return { id: a.id, meta: newer(a.meta, b.meta), entries }
+  const cover = a.cover && b.cover ? newer(a.cover, b.cover) : (a.cover ?? b.cover)
+  return { id: a.id, meta: newer(a.meta, b.meta), entries, ...(cover ? { cover } : {}) }
 }
 
 /** JSON with keys in a fixed order: two equal documents give the same text. */

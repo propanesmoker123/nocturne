@@ -19,6 +19,21 @@ beforeEach(() => {
 })
 
 describe('albums on the device', () => {
+  test('a cover goes into the doc, is saved and announced; null takes it off', () => {
+    const id = s().create('Обложка')
+    const heard: string[][] = []
+    const off = onAlbumsChanged((ids) => void heard.push(ids))
+    const img = `data:image/webp;base64,${'A'.repeat(100)}`
+    s().setCover(id, img)
+    expect(s().docs[id].cover?.image).toBe(img)
+    expect(heard).toEqual([[id]])
+    expect(h.saved.length).toBeGreaterThan(0)
+    s().setCover(id, null)
+    expect(s().docs[id].cover?.image).toBeUndefined()
+    expect(s().docs[id].cover?.updatedAt).toBeGreaterThan(0)
+    off()
+  })
+
   test('create, add, rename, move, remove go into the doc and are saved', () => {
     const id = s().create('Микс')
     expect(entry(id)).toMatchObject({ name: 'Микс', shared: false })

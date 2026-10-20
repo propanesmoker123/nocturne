@@ -2,18 +2,22 @@ import { describe, expect, test } from 'vitest'
 import type { Track } from '../vk/models'
 import {
   addTracks,
+  albumArt,
   between,
   bucketOf,
   BUCKETS,
   deleteAlbum,
   liveEntries,
+  MAX_IMAGE,
   MAX_TRACKS,
   mergeAlbum,
   moveEntry,
   newAlbum,
+  okImage,
   removeEntry,
   renameAlbum,
   sameDoc,
+  setAlbumCover,
   snapshot,
   toTrack,
   type AlbumDoc,
@@ -204,5 +208,56 @@ describe('positions over a long life', () => {
     const moved = moveEntry(base, first.eid, 1, 20, B)
     expect(liveEntries(mergeAlbum(removed, moved)).map((e) => e.track!.id)).toEqual([2])
     expect(liveEntries(mergeAlbum(moved, removed)).map((e) => e.track!.id)).toEqual([2])
+  })
+})
+
+const IMG = `data:image/webp;base64,${'A'.repeat(400)}`
+const IMG2 = `data:image/jpeg;base64,${'B'.repeat(400)}`
+
+describe("an album's own cover", () => {
+  test('the later picture wins, and taking it off is a change too', () => {
+    const base = newAlbum('Mix', 1, A)
+    const a = setAlbumCover(base, IMG, 5, A)
+    const b = setAlbumCover(base, IMG2, 6, B)
+    expect(mergeAlbum(a, b).cover?.image).toBe(IMG2)
+    expect(mergeAlbum(b, a).cover?.image).toBe(IMG2)
+    const off = setAlbumCover(b, undefined, 7, A)
+    expect(off.cover).toEqual({ updatedAt: 7, by: A })
+    expect(mergeAlbum(b, off).cover?.image).toBeUndefined()
+    expect(mergeAlbum(off, a).cover?.image).toBeUndefined()
+  })
+
+  test("a copy without a cover keeps the other's, and a rename does not touch it", () => {
+    const base = newAlbum('Mix', 1, A)
+    const withCover = setAlbumCover(base, IMG, 5, A)
+    const renamed = renameAlbum(base, 'New', 9, B)
+    const m = mergeAlbum(renamed, withCover)
+    expect(m.cover?.image).toBe(IMG)
+    expect(m.meta.name).toBe('New')
+    expect(mergeAlbum(withCover, renamed).cover?.image).toBe(IMG)
+    expect(newAlbum('x', 1, A).cover).toBeUndefined()
+  })
+
+  test('only a small webp, jpeg or png picture is a cover', () => {
+    expect(okImage(IMG)).toBe(true)
+    expect(okImage('data:image/png;base64,iVBORw0KGgo=')).toBe(true)
+    expect(okImage('data:image/svg+xml;base64,PHN2Zz4=')).toBe(false)
+    expect(okImage('https://sun9-1.userapi.com/x.jpg')).toBe(false)
+    expect(okImage(`data:image/webp;base64,${'A'.repeat(MAX_IMAGE)}`)).toBe(false)
+    expect(okImage('data:image/webp;base64,AB"C')).toBe(false)
+    expect(okImage(5)).toBe(false)
+  })
+})
+
+describe('what an album shows as its picture', () => {
+  test('its own cover first, else four track covers, else the first one, else nothing', () => {
+    const base = newAlbum('Mix', 1, A)
+    expect(albumArt(base)).toEqual({})
+    const one = addTracks(base, [vk(1)], 2, A).doc
+    expect(albumArt(one)).toEqual({ src: 'https://sun9-1.userapi.com/m.jpg' })
+    const four = addTracks(base, [1, 2, 3, 4].map((i) => vk(i, { cover: { s: 'x', m: `https://sun9-1.userapi.com/${i}.jpg`, l: 'x' } })), 2, A).doc
+    expect(albumArt(four).mosaic).toEqual([1, 2, 3, 4].map((i) => `https://sun9-1.userapi.com/${i}.jpg`))
+    expect(albumArt(setAlbumCover(four, IMG, 3, A))).toEqual({ src: IMG })
+    expect(albumArt(setAlbumCover(setAlbumCover(four, IMG, 3, A), undefined, 4, A)).mosaic).toHaveLength(4)
   })
 })

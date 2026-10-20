@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'vitest'
 import { generateCode } from '../together/code'
 import type { Track } from '../vk/models'
-import { addTracks, bucketOf, liveEntries, newAlbum, removeEntry, sameDoc, type AlbumDoc } from './model'
+import { addTracks, bucketOf, liveEntries, MAX_IMAGE, newAlbum, removeEntry, sameDoc, setAlbumCover, type AlbumDoc } from './model'
 import { albumBase, albumCodeFromLink, albumKey, albumLink, albumTags, applyRecord, mergeList, openRecord, parseList, parseRecord, sealRecord, splitDoc, type BucketRecord, type ListEntry } from './records'
 
 const DEV = 'aaaaaaaaaaaaaaaa'
+const IMG = `data:image/webp;base64,${'A'.repeat(400)}`
 
 const vk = (id: number): Track => ({
   id,
@@ -34,9 +35,10 @@ describe('tags, keys and links', () => {
     expect(base).toBe(await albumBase(code.toLowerCase().replace(/-/g, ' ')))
     expect(base).toMatch(/^nocturne-a-[0-9a-f]{16}$/)
     expect(base).not.toContain(code.replace(/-/g, ''))
-    expect(albumTags(base)).toHaveLength(17)
+    expect(albumTags(base)).toHaveLength(18)
     expect(albumTags(base)[0]).toBe(`${base}:m`)
     expect(albumTags(base)[16]).toBe(`${base}:b15`)
+    expect(albumTags(base)[17]).toBe(`${base}:c`)
     await expect(albumKey(code)).resolves.toBeDefined()
   })
 
@@ -65,6 +67,41 @@ describe('records', () => {
     let back: AlbumDoc | null = null
     for (const r of [...buckets, meta]) back = applyRecord(back, r)
     expect(sameDoc(back!, d)).toBe(true)
+  })
+
+  test('a cover travels in its own record and comes back the same; no cover, no record', () => {
+    const d = setAlbumCover(sample(), IMG, 4, DEV)
+    const { meta, buckets, cover } = splitDoc(d)
+    expect(cover).toEqual({ v: 1, id: d.id, cover: d.cover })
+    let back: AlbumDoc | null = null
+    for (const r of [cover!, ...buckets, meta]) back = applyRecord(back, r)
+    expect(sameDoc(back!, d)).toBe(true)
+    expect(splitDoc(sample()).cover).toBeNull()
+  })
+
+  test('a cover record that is off is refused; one taken off is kept', () => {
+    const d = setAlbumCover(sample(), IMG, 4, DEV)
+    const cover = splitDoc(d).cover!
+    expect(parseRecord(JSON.parse(JSON.stringify(cover)))).toEqual(cover)
+    expect(parseRecord({ ...cover, cover: { ...cover.cover, image: 'data:image/svg+xml;base64,PHN2Zz4=' } })).toBeNull()
+    expect(parseRecord({ ...cover, cover: { ...cover.cover, updatedAt: -1 } })).toBeNull()
+    expect(parseRecord({ ...cover, cover: { ...cover.cover, by: 'x' } })).toBeNull()
+    expect(parseRecord({ ...cover, cover: { updatedAt: 9, by: DEV } })).toEqual({ v: 1, id: d.id, cover: { updatedAt: 9, by: DEV } })
+  })
+
+  test('the biggest cover allowed still fits a record', async () => {
+    const bytes = crypto.getRandomValues(new Uint8Array(MAX_IMAGE))
+    let noise = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) noise += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    const prefix = 'data:image/webp;base64,'
+    const image = prefix + btoa(noise).slice(0, MAX_IMAGE - prefix.length)
+    expect(image.length).toBe(MAX_IMAGE)
+    const d = setAlbumCover(sample(), image, 4, DEV)
+    const cover = splitDoc(d).cover!
+    const key = await albumKey(generateCode())
+    const sealed = await sealRecord(key, cover)
+    expect(sealed.length).toBeLessThanOrEqual(61_440)
+    expect(parseRecord(await openRecord(key, sealed))).toEqual(cover)
   })
 
   test('parseRecord keeps a good record and refuses a bad one', () => {

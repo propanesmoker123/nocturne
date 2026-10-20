@@ -3,3 +3,37 @@
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: 22px 18px;
 }
+
+/* the album page's picture: a click picks one of the album's own */
+.heroCover {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  cursor: pointer;
+}
+.heroCoverHint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 14px;
+  background: rgb(0 0 0 / 0.55);
+  color: #fff;
+  font: 600 14px/18px var(--font);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.heroCover:hover .heroCoverHint,
+.heroCover:focus-visible .heroCoverHint {
+  opacity: 1;
+}
+.heroCover:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}

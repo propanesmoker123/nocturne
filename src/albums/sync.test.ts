@@ -69,6 +69,16 @@ describe('albums between devices', () => {
     expect(b.albums.useAlbums.getState().docs[id].meta.name).toBe('Ночной')
   })
 
+  test("an album's cover set on one device appears on the other", async () => {
+    const a = await device('aaaaaaaaaaaaaaaa', G)
+    const b = await device('bbbbbbbbbbbbbbbb', G)
+    const id = a.albums.useAlbums.getState().create('С обложкой')
+    await until(() => !!b.albums.useAlbums.getState().docs[id])
+    const img = `data:image/webp;base64,${'A'.repeat(300)}`
+    a.albums.useAlbums.getState().setCover(id, img)
+    expect(await until(() => b.albums.useAlbums.getState().docs[id]?.cover?.image === img)).toBe(true)
+  })
+
   test('both devices add a track offline, then meet: both have both tracks', async () => {
     const a = await device('aaaaaaaaaaaaaaaa', G)
     const b = await device('bbbbbbbbbbbbbbbb', G)

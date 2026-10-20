@@ -1,11 +1,12 @@
-import { ArrowDown, ArrowUp, Disc3, ListX, Shuffle } from 'lucide-react'
+import { ArrowDown, ArrowUp, Disc3, ImageMinus, ImagePlus, ListX, Shuffle } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
 import { useChrome } from '../../app/chrome'
 import { showMenu, type MenuItem } from '../../app/menu'
 import { useRouter } from '../../app/router'
 import { useSheet } from '../../app/sheetStore'
 import { toast } from '../../app/toast'
-import { liveEntries, toTrack } from '../../albums/model'
+import { makeCover, pickImage } from '../../albums/coverImage'
+import { albumArt, liveEntries, toTrack } from '../../albums/model'
 import { useAlbums } from '../../albums/store'
 import { Artwork } from '../../components/Artwork'
 import { Button, IconButton } from '../../components/controls'
@@ -16,6 +17,7 @@ import { formatLongDuration, pluralRu } from '../../lib/format'
 import { usePlayer } from '../../player/store'
 import { useScSession } from '../../sc/session'
 import s from '../pages.module.css'
+import a from './albums.module.css'
 
 const ic = { size: 16, strokeWidth: 1.9 } as const
 
@@ -40,13 +42,24 @@ export function AlbumPage({ id }: { id: string }) {
 
   const shared = entry.shared
   const total = tracks.reduce((n, t) => n + t.duration, 0)
-  const covers = tracks.map((t) => t.cover?.m).filter((u): u is string => !!u).slice(0, 4)
+  const hasCover = !!doc.cover?.image
   const source = { kind: 'list' as const, label: name }
   const playable = tracks.some((t) => t.playable)
   const albums = useAlbums.getState()
 
+  const chooseCover = async () => {
+    const file = await pickImage()
+    if (!file) return
+    const image = await makeCover(file).catch(() => null)
+    if (!image) return toast('Эту картинку не получилось открыть — попробуйте JPG или PNG', 'error')
+    albums.setCover(id, image)
+    toast(shared ? 'Обложка обновлена — её увидят все, у кого есть альбом' : 'Обложка обновлена', 'added')
+  }
+
   const menu: MenuItem[] = [
     { label: 'Переименовать', onSelect: () => useSheet.getState().open({ kind: 'album-rename', id }) },
+    { label: hasCover ? 'Сменить обложку' : 'Загрузить обложку', icon: <ImagePlus {...ic} />, onSelect: () => void chooseCover() },
+    ...(hasCover ? [{ label: 'Убрать обложку', icon: <ImageMinus {...ic} />, onSelect: () => albums.setCover(id, null) }] : []),
     { label: 'Поделиться', onSelect: () => useSheet.getState().open({ kind: 'album-share', id }) },
     {
       label: 'Сменить код доступа',
@@ -113,7 +126,13 @@ export function AlbumPage({ id }: { id: string }) {
   return (
     <>
       <div className={s.hero}>
-        <Artwork className={s.heroArt} mosaic={covers.length >= 4 ? covers : undefined} src={covers.length < 4 ? covers[0] : undefined} size={232} radius={14} seed={name || id} />
+        <button type="button" className={a.heroCover} title={hasCover ? 'Сменить обложку' : 'Загрузить обложку'} onClick={() => void chooseCover()}>
+          <Artwork className={s.heroArt} {...albumArt(doc)} size={232} radius={14} seed={name || id} />
+          <span className={a.heroCoverHint} aria-hidden="true">
+            <ImagePlus size={22} strokeWidth={1.9} />
+            {hasCover ? 'Сменить обложку' : 'Своя обложка'}
+          </span>
+        </button>
         <div style={{ minWidth: 0 }}>
           <div className={s.heroKind}>{shared ? 'Общий альбом' : 'Альбом Nocturne'}</div>
           <h1 className={s.heroTitle}>{name}</h1>

@@ -2,7 +2,7 @@ import { schnorr } from '@noble/secp256k1'
 import { useDevices } from '../connect/devices'
 import { journal } from '../lib/journal'
 import { loadDeviceKeys, openRelayStore, type RelayStore, type StoredRecord } from '../lib/relayStore'
-import { type AlbumDoc } from './model'
+import { BUCKETS, type AlbumDoc } from './model'
 import { albumBase, albumKey, albumTags, applyRecord, listKey, listTag, openRecord, parseList, parseRecord, sealRecord, splitDoc } from './records'
 import { loadAlbums, onAlbumsChanged, useAlbums } from './store'
 
@@ -79,9 +79,11 @@ async function publishAlbum(id: string) {
   const doc = useAlbums.getState().docs[id]
   if (!s || !entry || !doc) return
   const key = await albumKey(entry.code)
-  const [metaTag, ...bucketTags] = albumTags(await albumBase(entry.code))
-  const { meta, buckets } = splitDoc(doc)
+  const tags = albumTags(await albumBase(entry.code))
+  const [metaTag, ...bucketTags] = tags.slice(0, 1 + BUCKETS)
+  const { meta, buckets, cover } = splitDoc(doc)
   const out: [string, unknown][] = [[metaTag, meta], ...buckets.map((b, i): [string, unknown] => [bucketTags[i], b])]
+  if (cover) out.push([tags[1 + BUCKETS], cover])
   let sent = 0
   for (const [tag, record] of out) {
     const text = JSON.stringify(record)
