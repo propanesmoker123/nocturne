@@ -100,3 +100,25 @@ describe('leaving someone', () => {
     expect(h.toasts.at(-1)!.action).toBeUndefined()
   })
 })
+
+describe('saying it at once', () => {
+  test('«Вы подписались» shows with the button, before SoundCloud answers', async () => {
+    const d = deps()
+    let answer!: () => void
+    d.follow.mockReturnValue(new Promise<void>((r) => (answer = r)))
+    const done = toggleFollow(person, d)
+    await Promise.resolve()
+    expect(h.toasts.map((t) => t.m)).toEqual(['Вы подписались'])
+    answer()
+    await done
+    expect(h.toasts.map((t) => t.m)).toEqual(['Вы подписались'])
+  })
+
+  test('«Вы отписались» shows with the button too', async () => {
+    const d = deps()
+    d.unfollow.mockReturnValue(new Promise<void>(() => {}))
+    void toggleFollow({ id: 3, permalink: 'https://soundcloud.com/three' }, d)
+    await Promise.resolve()
+    expect(h.toasts.map((t) => t.m)).toEqual(['Вы отписались'])
+  })
+})

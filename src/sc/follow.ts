@@ -30,15 +30,12 @@ export async function toggleFollow(u: Person, deps = { follow, unfollow, open: o
   // An optional link to the profile after leaving someone.
   const site = u.permalink ? { label: 'Открыть в SoundCloud', run: () => void deps.open(u.permalink) } : undefined
   set(!was)
+  // said at once with the button: the site's session takes a moment; a failure turns both back below
+  if (was) toast('Вы отписались', 'removed', site)
+  else toast('Вы подписались', 'added')
   try {
-    if (was) {
-      await deps.unfollow(u.id)
-      void queryClient.invalidateQueries({ queryKey: scKeys.followingUsers(me) })
-      return toast('Вы отписались', 'removed', site)
-    }
-    await deps.follow(u)
+    await (was ? deps.unfollow(u.id) : deps.follow(u))
     void queryClient.invalidateQueries({ queryKey: scKeys.followingUsers(me) })
-    toast('Вы подписались', 'added')
   } catch (e) {
     set(was)
     const err = ScApiError.from(e)
