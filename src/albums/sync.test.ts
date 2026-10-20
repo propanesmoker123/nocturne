@@ -1,6 +1,7 @@
 import { schnorr } from '@noble/secp256k1'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { FakeSocket } from '../test/fakeRelay'
+import { png } from '../test/images'
 import type { Track } from '../vk/models'
 
 vi.mock('../lib/persist', () => ({ loadJSON: async () => null, saveJSON: async () => {}, debouncedSaver: () => ({ save() {}, flush() {} }) }))
@@ -74,7 +75,7 @@ describe('albums between devices', () => {
     const b = await device('bbbbbbbbbbbbbbbb', G)
     const id = a.albums.useAlbums.getState().create('С обложкой')
     await until(() => !!b.albums.useAlbums.getState().docs[id])
-    const img = `data:image/webp;base64,${'A'.repeat(300)}`
+    const img = png(4, 4, 300)
     a.albums.useAlbums.getState().setCover(id, img)
     expect(await until(() => b.albums.useAlbums.getState().docs[id]?.cover?.image === img)).toBe(true)
   })

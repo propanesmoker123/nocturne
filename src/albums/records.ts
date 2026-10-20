@@ -172,25 +172,28 @@ function entry(v: unknown): AlbumEntry | null {
   return { eid: v.eid, ...(t ? { track: t } : {}), pos: v.pos, addedAt: v.addedAt, updatedAt: v.updatedAt, by: v.by, ...(v.removedAt !== undefined ? { removedAt: v.removedAt as number } : {}) }
 }
 
-function meta(v: unknown): AlbumMeta | null {
-  if (!isObj(v) || !text(v.name, 100) || !int(v.updatedAt) || !hex16(v.by) || !optInt(v.deletedAt)) return null
+/** A name or a cover dated further ahead than this could never be changed again: refused. */
+const AHEAD_MS = 86_400_000
+
+function meta(v: unknown, now: number): AlbumMeta | null {
+  if (!isObj(v) || !text(v.name, 100) || !int(v.updatedAt, 0, now + AHEAD_MS) || !hex16(v.by) || !optInt(v.deletedAt)) return null
   return { name: v.name, updatedAt: v.updatedAt, by: v.by, ...(v.deletedAt !== undefined ? { deletedAt: v.deletedAt as number } : {}) }
 }
 
-function cover(v: unknown): AlbumCover | null {
-  if (!isObj(v) || !int(v.updatedAt) || !hex16(v.by) || (v.image !== undefined && !okImage(v.image))) return null
+function cover(v: unknown, now: number): AlbumCover | null {
+  if (!isObj(v) || !int(v.updatedAt, 0, now + AHEAD_MS) || !hex16(v.by) || (v.image !== undefined && !okImage(v.image))) return null
   return { ...(v.image !== undefined ? { image: v.image as string } : {}), updatedAt: v.updatedAt, by: v.by }
 }
 
-/** A record as it came from a relay, cleaned; null when anything in it is off. */
-export function parseRecord(raw: unknown): AlbumRecord | null {
+/** A record as it came from a relay, cleaned; null when anything in it is off. `now`: the time by VK's clock. */
+export function parseRecord(raw: unknown, now = Date.now()): AlbumRecord | null {
   if (!isObj(raw) || raw.v !== 1 || !hex16(raw.id)) return null
   if (raw.cover !== undefined) {
-    const c = cover(raw.cover)
+    const c = cover(raw.cover, now)
     return c ? { v: 1, id: raw.id, cover: c } : null
   }
   if (raw.meta !== undefined) {
-    const m = meta(raw.meta)
+    const m = meta(raw.meta, now)
     return m ? { v: 1, id: raw.id, meta: m } : null
   }
   if (!int(raw.bucket, 0, BUCKETS - 1) || !Array.isArray(raw.entries) || raw.entries.length > 2000) return null

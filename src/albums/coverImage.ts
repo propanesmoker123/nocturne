@@ -11,7 +11,7 @@ export const COVER_STEPS: [side: number, quality: number][] = [
 ]
 
 /** A picture bigger than this is not even opened. */
-const MAX_SOURCE = 30 * 1024 * 1024
+export const MAX_SOURCE = 30 * 1024 * 1024
 
 export async function fitCover(encode: (side: number, quality: number) => Promise<string>, max = MAX_IMAGE): Promise<string | null> {
   for (const [side, quality] of COVER_STEPS) {

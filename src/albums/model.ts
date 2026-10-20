@@ -126,8 +126,67 @@ export const okCover = (v: unknown): v is string =>
 export const okPermalink = (v: unknown): v is string => typeof v === 'string' && v.length <= 500 && /^https:\/\/([a-z0-9-]+\.)*soundcloud\.com\//.test(v)
 /** The longest cover, whole `data:` address: its record still fits under the relays' 60 KB. */
 export const MAX_IMAGE = 48_000
-/** An album's own picture: a small webp, jpeg or png carried inside the album (never an address to fetch). */
-export const okImage = (v: unknown): v is string => typeof v === 'string' && v.length < MAX_IMAGE + 1 && /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/.test(v)
+/** The widest a cover from elsewhere may say it is: ours are 320 px; a few bytes may claim gigabytes of pixels. */
+export const MAX_SIDE = 1024
+
+/** An album's own picture: a small webp, jpeg or png carried inside the album (never an address to fetch), of a sane size. */
+export function okImage(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length > MAX_IMAGE || !/^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/.test(v)) return false
+  const size = imageSize(v)
+  return !!size && size.w > 0 && size.h > 0 && size.w <= MAX_SIDE && size.h <= MAX_SIDE
+}
+
+/** The pixel size a picture's header claims (PNG, WebP, JPEG, as its `data:` type says); null when it cannot be read. */
+export function imageSize(dataUrl: string): { w: number; h: number } | null {
+  const m = /^data:image\/(webp|jpeg|png);base64,([A-Za-z0-9+/]*)/.exec(dataUrl)
+  if (!m) return null
+  let b: Uint8Array
+  try {
+    const text = m[2].slice(0, m[2].length - (m[2].length % 4))
+    b = Uint8Array.from(atob(text), (c) => c.charCodeAt(0))
+  } catch {
+    return null
+  }
+  const at = (i: number, s: string) => [...s].every((c, k) => b[i + k] === c.charCodeAt(0))
+  const be16 = (i: number) => (b[i] << 8) | b[i + 1]
+  const be32 = (i: number) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0
+  const le16 = (i: number) => b[i] | (b[i + 1] << 8)
+  const le24 = (i: number) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16)
+  const le32 = (i: number) => (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0
+  if (m[1] === 'png') {
+    if (b.length < 24 || be32(0) !== 0x89504e47 || be32(4) !== 0x0d0a1a0a || !at(12, 'IHDR')) return null
+    return { w: be32(16), h: be32(20) }
+  }
+  if (m[1] === 'webp') {
+    if (b.length < 30 || !at(0, 'RIFF') || !at(8, 'WEBP')) return null
+    if (at(12, 'VP8X')) return { w: le24(24) + 1, h: le24(27) + 1 }
+    if (at(12, 'VP8L') && b[20] === 0x2f) {
+      const bits = le32(21)
+      return { w: (bits & 0x3fff) + 1, h: ((bits >>> 14) & 0x3fff) + 1 }
+    }
+    if (at(12, 'VP8 ') && b[23] === 0x9d && b[24] === 0x01 && b[25] === 0x2a) return { w: le16(26) & 0x3fff, h: le16(28) & 0x3fff }
+    return null
+  }
+  // JPEG: walk the segments to the frame header (SOF0…SOF15 but DHT, JPG and DAC)
+  if (b[0] !== 0xff || b[1] !== 0xd8) return null
+  let i = 2
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) return null
+    const marker = b[i + 1]
+    if (marker === 0xff) {
+      i++
+      continue
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {
+      i += 2
+      continue
+    }
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return { w: be16(i + 7), h: be16(i + 5) }
+    if (marker === 0xda || marker === 0xd9) return null
+    i += 2 + be16(i + 2)
+  }
+  return null
+}
 
 export function snapshot(t: Track): AlbumTrack {
   const sc = t.service === 'sc'
@@ -233,19 +292,29 @@ export function moveEntry(d: AlbumDoc, eid: string, toIndex: number, now: number
 }
 
 export function renameAlbum(d: AlbumDoc, name: string, now: number, by: string): AlbumDoc {
-  return { ...d, meta: { ...d.meta, name, updatedAt: now, by } }
+  return { ...d, meta: { ...d.meta, name, updatedAt: after(d.meta.updatedAt, now), by } }
 }
 
 /** Sets the album's own picture (`undefined` takes it off: the track covers show again). */
 export function setAlbumCover(d: AlbumDoc, image: string | undefined, now: number, by: string): AlbumDoc {
-  return { ...d, cover: { ...(image ? { image } : {}), updatedAt: now, by } }
+  // later than what is there, even when that came from a clock ahead (or someone's future): a change here must win
+  return { ...d, cover: { ...(image ? { image } : {}), updatedAt: after(d.cover?.updatedAt, now), by } }
 }
 
+/** `now`, or just after `t` when `t` is not behind. */
+const after = (t: number | undefined, now: number) => Math.max(now, (t ?? 0) + 1)
+
 export function deleteAlbum(d: AlbumDoc, now: number, by: string): AlbumDoc {
-  return { ...d, meta: { ...d.meta, deletedAt: now, updatedAt: now, by } }
+  const at = after(d.meta.updatedAt, now)
+  // the picture goes too: a deleted album is published again for long, and should be small
+  const cover = d.cover?.image ? setAlbumCover(d, undefined, now, by).cover : d.cover
+  return { ...d, meta: { ...d.meta, deletedAt: at, updatedAt: at, by }, ...(cover ? { cover } : {}) }
 }
 
 const newer = <T extends { updatedAt: number; by: string }>(a: T, b: T): T => (b.updatedAt > a.updatedAt || (b.updatedAt === a.updatedAt && b.by > a.by) ? b : a)
+
+/** Same time and device (only a forged copy): the picture itself decides, the same on every device. */
+const newerCover = (a: AlbumCover, b: AlbumCover): AlbumCover => (a.updatedAt === b.updatedAt && a.by === b.by ? ((b.image ?? '') > (a.image ?? '') ? b : a) : newer(a, b))
 
 /** A removal wins over any change to the entry (ids are never used again, so nothing undoes it). */
 export const mergeEntry = (a: AlbumEntry, b: AlbumEntry): AlbumEntry => (a.removedAt && !b.removedAt ? a : b.removedAt && !a.removedAt ? b : newer(a, b))
@@ -253,7 +322,7 @@ export const mergeEntry = (a: AlbumEntry, b: AlbumEntry): AlbumEntry => (a.remov
 export function mergeAlbum(a: AlbumDoc, b: AlbumDoc): AlbumDoc {
   const entries: Record<string, AlbumEntry> = { ...a.entries }
   for (const [eid, e] of Object.entries(b.entries)) entries[eid] = entries[eid] ? mergeEntry(entries[eid], e) : e
-  const cover = a.cover && b.cover ? newer(a.cover, b.cover) : (a.cover ?? b.cover)
+  const cover = a.cover && b.cover ? newerCover(a.cover, b.cover) : (a.cover ?? b.cover)
   return { id: a.id, meta: newer(a.meta, b.meta), entries, ...(cover ? { cover } : {}) }
 }
 

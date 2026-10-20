@@ -5,7 +5,7 @@ import { showMenu, type MenuItem } from '../../app/menu'
 import { useRouter } from '../../app/router'
 import { useSheet } from '../../app/sheetStore'
 import { toast } from '../../app/toast'
-import { makeCover, pickImage } from '../../albums/coverImage'
+import { makeCover, MAX_SOURCE, pickImage } from '../../albums/coverImage'
 import { albumArt, liveEntries, toTrack } from '../../albums/model'
 import { useAlbums } from '../../albums/store'
 import { Artwork } from '../../components/Artwork'
@@ -50,6 +50,7 @@ export function AlbumPage({ id }: { id: string }) {
   const chooseCover = async () => {
     const file = await pickImage()
     if (!file) return
+    if (file.size > MAX_SOURCE) return toast('Картинка слишком большая — нужна до 30 МБ', 'error')
     const image = await makeCover(file).catch(() => null)
     if (!image) return toast('Эту картинку не получилось открыть — попробуйте JPG или PNG', 'error')
     albums.setCover(id, image)

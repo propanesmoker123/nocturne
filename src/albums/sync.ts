@@ -2,6 +2,7 @@ import { schnorr } from '@noble/secp256k1'
 import { useDevices } from '../connect/devices'
 import { journal } from '../lib/journal'
 import { loadDeviceKeys, openRelayStore, type RelayStore, type StoredRecord } from '../lib/relayStore'
+import { serverNow } from '../lib/serverTime'
 import { BUCKETS, type AlbumDoc } from './model'
 import { albumBase, albumKey, albumTags, applyRecord, listKey, listTag, openRecord, parseList, parseRecord, sealRecord, splitDoc } from './records'
 import { loadAlbums, onAlbumsChanged, useAlbums } from './store'
@@ -68,7 +69,7 @@ async function onRecord(r: StoredRecord) {
     useAlbums.getState().applyList(list.albums)
     return
   }
-  const rec = data === null ? null : parseRecord(data)
+  const rec = data === null ? null : parseRecord(data, serverNow())
   if (!rec || rec.id !== route.id) return journal('albums', 'ignored record')
   useAlbums.getState().applyRemote(rec.id, applyRecord(null, rec))
 }
@@ -184,7 +185,7 @@ export async function readAlbum(code: string, ms = 10_000): Promise<AlbumDoc | n
     keys: schnorr.keygen(),
     onRecord: (r) =>
       void openRecord(key, r.content).then((data) => {
-        const rec = data === null ? null : parseRecord(data)
+        const rec = data === null ? null : parseRecord(data, serverNow())
         if (!rec || (doc && rec.id !== doc.id)) return
         doc = applyRecord(doc, rec)
         last = Date.now()

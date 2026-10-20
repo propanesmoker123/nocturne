@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { png } from '../test/images'
 import type { Track } from '../vk/models'
 
 const h = vi.hoisted(() => ({ saved: [] as unknown[], loaded: null as unknown, unlink: null as null | ((kind: 'here' | 'all') => void) }))
@@ -23,7 +24,7 @@ describe('albums on the device', () => {
     const id = s().create('Обложка')
     const heard: string[][] = []
     const off = onAlbumsChanged((ids) => void heard.push(ids))
-    const img = `data:image/webp;base64,${'A'.repeat(100)}`
+    const img = png(4, 4, 100)
     s().setCover(id, img)
     expect(s().docs[id].cover?.image).toBe(img)
     expect(heard).toEqual([[id]])

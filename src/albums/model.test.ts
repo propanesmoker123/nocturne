@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest'
+import { jpeg, png, webpVp8, webpVp8l, webpVp8x } from '../test/images'
 import type { Track } from '../vk/models'
 import {
   addTracks,
@@ -211,8 +212,8 @@ describe('positions over a long life', () => {
   })
 })
 
-const IMG = `data:image/webp;base64,${'A'.repeat(400)}`
-const IMG2 = `data:image/jpeg;base64,${'B'.repeat(400)}`
+const IMG = png(4, 4, 300)
+const IMG2 = jpeg(4, 4)
 
 describe("an album's own cover", () => {
   test('the later picture wins, and taking it off is a change too', () => {
@@ -240,10 +241,10 @@ describe("an album's own cover", () => {
 
   test('only a small webp, jpeg or png picture is a cover', () => {
     expect(okImage(IMG)).toBe(true)
-    expect(okImage('data:image/png;base64,iVBORw0KGgo=')).toBe(true)
+    expect(okImage(IMG2)).toBe(true)
     expect(okImage('data:image/svg+xml;base64,PHN2Zz4=')).toBe(false)
     expect(okImage('https://sun9-1.userapi.com/x.jpg')).toBe(false)
-    expect(okImage(`data:image/webp;base64,${'A'.repeat(MAX_IMAGE)}`)).toBe(false)
+    expect(okImage(png(4, 4, MAX_IMAGE))).toBe(false)
     expect(okImage('data:image/webp;base64,AB"C')).toBe(false)
     expect(okImage(5)).toBe(false)
   })
@@ -259,5 +260,44 @@ describe('what an album shows as its picture', () => {
     expect(albumArt(four).mosaic).toEqual([1, 2, 3, 4].map((i) => `https://sun9-1.userapi.com/${i}.jpg`))
     expect(albumArt(setAlbumCover(four, IMG, 3, A))).toEqual({ src: IMG })
     expect(albumArt(setAlbumCover(setAlbumCover(four, IMG, 3, A), undefined, 4, A)).mosaic).toHaveLength(4)
+  })
+})
+
+describe('covers from others, carefully', () => {
+  test('a picture that claims to be huge is refused, whatever its kind; one that cannot be read too', () => {
+    for (const [small, huge] of [
+      [png(320, 320), png(16_383, 16_383)],
+      [webpVp8x(300, 300), webpVp8x(16_383, 16_383)],
+      [webpVp8l(300, 200), webpVp8l(4000, 4000)],
+      [webpVp8(320, 320), webpVp8(9000, 9000)],
+      [jpeg(320, 240), jpeg(9000, 9000)],
+    ]) {
+      expect(okImage(small)).toBe(true)
+      expect(okImage(huge)).toBe(false)
+    }
+    expect(okImage(`data:image/webp;base64,${'A'.repeat(400)}`)).toBe(false)
+    // a PNG that says it is a JPEG
+    expect(okImage(png(4, 4).replace('image/png', 'image/jpeg'))).toBe(false)
+  })
+
+  test('a change here wins over a cover or a name from the future', () => {
+    const far = 9e15
+    const hostile = setAlbumCover(renameAlbum(newAlbum('Mix', 1, A), 'Bad', far, B), IMG2, far, B)
+    expect(setAlbumCover(hostile, IMG, 5, A).cover).toEqual({ image: IMG, updatedAt: far + 1, by: A })
+    expect(renameAlbum(hostile, 'Good', 5, A).meta.updatedAt).toBe(far + 1)
+    expect(mergeAlbum(hostile, setAlbumCover(hostile, undefined, 5, A)).cover?.image).toBeUndefined()
+  })
+
+  test('two covers with the same time and device merge the same way on every device', () => {
+    const base = newAlbum('Mix', 1, A)
+    const x = setAlbumCover(base, IMG, 5, A)
+    const y = setAlbumCover(base, IMG2, 5, A)
+    expect(mergeAlbum(x, y).cover).toEqual(mergeAlbum(y, x).cover)
+  })
+
+  test('a deleted album drops its picture', () => {
+    const d = deleteAlbum(setAlbumCover(newAlbum('Mix', 1, A), IMG, 2, A), 3, A)
+    expect(d.cover?.image).toBeUndefined()
+    expect(d.meta.deletedAt).toBe(3)
   })
 })

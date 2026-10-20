@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'vitest'
+import { pngHeader, png, toBase64 } from '../test/images'
 import { generateCode } from '../together/code'
 import type { Track } from '../vk/models'
 import { addTracks, bucketOf, liveEntries, MAX_IMAGE, newAlbum, removeEntry, sameDoc, setAlbumCover, type AlbumDoc } from './model'
 import { albumBase, albumCodeFromLink, albumKey, albumLink, albumTags, applyRecord, mergeList, openRecord, parseList, parseRecord, sealRecord, splitDoc, type BucketRecord, type ListEntry } from './records'
 
 const DEV = 'aaaaaaaaaaaaaaaa'
-const IMG = `data:image/webp;base64,${'A'.repeat(400)}`
+const IMG = png(4, 4, 300)
 
 const vk = (id: number): Track => ({
   id,
@@ -90,18 +91,28 @@ describe('records', () => {
   })
 
   test('the biggest cover allowed still fits a record', async () => {
-    const bytes = crypto.getRandomValues(new Uint8Array(MAX_IMAGE))
-    let noise = ''
-    for (let i = 0; i < bytes.length; i += 0x8000) noise += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-    const prefix = 'data:image/webp;base64,'
-    const image = prefix + btoa(noise).slice(0, MAX_IMAGE - prefix.length)
-    expect(image.length).toBe(MAX_IMAGE)
+    // a real header, then noise that does not squeeze
+    const bytes = [...pngHeader(320, 320), ...crypto.getRandomValues(new Uint8Array(MAX_IMAGE))]
+    const prefix = 'data:image/png;base64,'
+    const body = toBase64(bytes)
+    const image = prefix + body.slice(0, MAX_IMAGE - prefix.length - ((MAX_IMAGE - prefix.length) % 4))
+    expect(image.length).toBeGreaterThan(MAX_IMAGE - 4)
     const d = setAlbumCover(sample(), image, 4, DEV)
     const cover = splitDoc(d).cover!
     const key = await albumKey(generateCode())
     const sealed = await sealRecord(key, cover)
     expect(sealed.length).toBeLessThanOrEqual(61_440)
     expect(parseRecord(await openRecord(key, sealed))).toEqual(cover)
+  })
+
+  test('a cover or a name from more than a day ahead is refused', () => {
+    const now = 1_000_000_000_000
+    const d = setAlbumCover(sample(), IMG, now + 3_600_000, DEV)
+    const { meta, cover } = splitDoc(d)
+    expect(parseRecord(cover, now)).toEqual(cover)
+    expect(parseRecord({ ...cover!, cover: { ...cover!.cover, updatedAt: now + 2 * 86_400_000 } }, now)).toBeNull()
+    expect(parseRecord({ ...meta, meta: { ...meta.meta, updatedAt: now + 2 * 86_400_000 } }, now)).toBeNull()
+    expect(parseRecord({ ...meta, meta: { ...meta.meta, updatedAt: now } }, now)).not.toBeNull()
   })
 
   test('parseRecord keeps a good record and refuses a bad one', () => {
