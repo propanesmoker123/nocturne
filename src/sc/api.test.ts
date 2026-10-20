@@ -141,6 +141,29 @@ describe('SoundCloud API', () => {
 })
 
 describe('SoundCloud profiles', () => {
+  test('follow sends a POST for the native browser session to sign', async () => {
+    sc.setScMeId(7)
+    const calls = record(() => null)
+    await sc.follow({ id: 12, permalink: null })
+    expect(calls).toEqual([{ method: 'POST', path: '/me/followings/12' }])
+  })
+
+  test('a rejected follow is reported and does not use a browser mock', async () => {
+    sc.setScMeId(7)
+    record(() => { throw { kind: 'http', status: 403 } })
+    await expect(sc.follow({ id: 12 })).rejects.toMatchObject({ kind: 'http', status: 403 })
+  })
+
+  test('follow refuses signed-out, self and invalid targets without sending', async () => {
+    const calls = record(() => null)
+    await expect(sc.follow({ id: 12 })).rejects.toMatchObject({ kind: 'signedOut' })
+    sc.setScMeId(7)
+    for (const id of [7, 0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(sc.follow({ id })).rejects.toMatchObject({ kind: 'invalid' })
+    }
+    expect(calls).toEqual([])
+  })
+
   test('reposts and likes come a page at a time with the next cursor', async () => {
     const calls = record((path) => ({
       collection: [{ type: 'track-repost', track: trackRaw(402, 'a') }, { type: 'playlist-repost', playlist: playlistRaw }],

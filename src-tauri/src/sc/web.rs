@@ -25,14 +25,14 @@ fn is_site(url: &Url) -> bool {
     url.scheme() == "https" && url.host_str() == Some("soundcloud.com") && url.port_or_known_default() == Some(443)
 }
 
-/// The writes the signed-in person may make here: their own likes, and leaving someone they follow.
+/// The writes the signed-in person may make here: their own likes and followings.
 fn owned_write_path(method: &str, path: &str, me: i64) -> bool {
-    if me <= 0 || !api::allowed(method, path) || !matches!(method, "PUT" | "DELETE") || path.contains('?') {
+    if me <= 0 || !api::allowed(method, path) || !matches!(method, "POST" | "PUT" | "DELETE") {
         return false;
     }
-    let parts: Vec<_> = path.split('/').collect();
+    let parts: Vec<_> = path.split('?').next().unwrap_or_default().split('/').collect();
     if parts.get(1) == Some(&"me") {
-        return method == "DELETE"
+        return matches!(method, "POST" | "DELETE")
             && parts.get(2) == Some(&"followings")
             && parts.get(3).and_then(|s| s.parse::<i64>().ok()).is_some_and(|id| id > 0 && id != me);
     }
@@ -127,9 +127,12 @@ async fn send(app: &AppHandle, method: &str, path: &str, token: &str) -> Result<
     }
     // Check both natively and inside the script before handing a service key to its own origin.
     if !w.url().map(|u| is_site(&u)).unwrap_or(false) { return Err(network()); }
+    let st = app.state::<ScState>();
+    if st.token().as_deref() != Some(token) { return Err(ScError::SignedOut); }
+    let me = st.status().user.ok_or(ScError::SignedOut)?.id;
     let key = uuid::Uuid::new_v4().simple().to_string();
     let url = api::api_url(path, &app.state::<ScState>().ids().client_id)?;
-    let args = json!({ "key": key, "url": url.as_str(), "method": method, "token": token });
+    let args = json!({ "key": key, "url": url.as_str(), "method": method, "token": token, "me": me });
     if eval(&w, script(args)).await? != "true" { return Err(network()); }
     let until = Instant::now() + DEADLINE;
     let answer = loop {
@@ -182,7 +185,7 @@ mod tests {
         assert!(owned_write_path("PUT", "/users/7/track_likes/402", 7));
         assert!(owned_write_path("DELETE", "/users/7/track_likes/402", 7));
         assert!(owned_write_path("DELETE", "/me/followings/12", 7));
-        for (method, path, me) in [("DELETE", "/me/followings/7", 7), ("DELETE", "/me/followings/0", 7), ("DELETE", "/me/followings/12", 0), ("POST", "/me/followings/12", 7)] {
+        for (method, path, me) in [("DELETE", "/me/followings/7", 7), ("DELETE", "/me/followings/0", 7), ("DELETE", "/me/followings/12", 0)] {
             assert!(!owned_write_path(method, path, me), "{method} {path}");
         }
         for (method, path, me) in [
@@ -198,6 +201,20 @@ mod tests {
             assert!(!is_site(&Url::parse(url).unwrap()));
         }
         assert!(is_site(&Url::parse(SITE).unwrap()));
+    }
+
+    #[test]
+    fn a_follow_is_signed_for_another_person_in_the_current_account() {
+        assert!(owned_write_path("POST", "/me/followings/12", 7));
+        assert!(owned_write_path("POST", "/me/followings/12?signature=1%3A73c1f3", 7));
+        for (path, me) in [
+            ("/me/followings/7?signature=1:abc", 7),
+            ("/me/followings/0?signature=1:abc", 7),
+            ("/me/followings/12?signature=1:abc", 0),
+            ("/me/followings/12?signature=1:abc&extra=1", 7),
+            ("/me/followings/12?signature=", 7),
+            ("/me/followings/9223372036854775808?signature=1:abc", 7),
+        ] { assert!(!owned_write_path("POST", path, me), "{path}"); }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { queryClient } from '../app/queryClient'
 
 const h = vi.hoisted(() => ({ toasts: [] as { m: string; kind: string; action?: { label: string; run(): void } }[] }))
@@ -12,6 +12,8 @@ const { toggleFollow } = await import('./follow')
 const person = { id: 12, permalink: 'https://soundcloud.com/twelve' }
 const followings = () => queryClient.getQueryData<number[]>(scKeys.followings(7))
 const deps = () => ({ follow: vi.fn().mockResolvedValue(undefined), unfollow: vi.fn().mockResolvedValue(undefined), open: vi.fn().mockResolvedValue(undefined) })
+
+afterEach(() => sc.setTransport(null))
 
 beforeEach(() => {
   queryClient.clear()
@@ -40,16 +42,22 @@ describe('following on SoundCloud', () => {
     expect(h.toasts.at(-1)!.m).toContain('«Подписаться»')
   })
 
-  test('a follow not done yet says so and offers the site', async () => {
-    const d = deps()
-    d.follow.mockRejectedValue(new ScApiError('invalid', sc.FOLLOW_NOT_DONE))
-    await toggleFollow(person, d)
+  test('the real follow action sends a POST and keeps the subscribed button on success', async () => {
+    const sent: string[] = []
+    sc.setTransport(async (method, path) => { sent.push(`${method} ${path}`); return null })
+    await toggleFollow(person)
+    expect(sent).toEqual(['POST /me/followings/12'])
+    expect(followings()).toEqual([3, 12])
+    expect(h.toasts.at(-1)).toMatchObject({ m: 'Вы подписались', kind: 'added' })
+  })
+
+  test('a failed real follow restores the button and reports the API error', async () => {
+    sc.setTransport(async () => { throw { kind: 'http', status: 500 } })
+    await toggleFollow(person)
     expect(followings()).toEqual([3])
     const t = h.toasts.at(-1)!
-    expect(t.m).toBe('Подписка из Nocturne пока не сделана')
-    expect(t.action?.label).toBe('Открыть в SoundCloud')
-    t.action!.run()
-    expect(d.open).toHaveBeenCalledWith(person.permalink)
+    expect(t).toMatchObject({ m: 'SoundCloud ответил ошибкой 500', kind: 'error' })
+    expect(t.action).toBeUndefined()
   })
 
   test('unfollow goes through unfollow and turns back on failure', async () => {
@@ -75,7 +83,7 @@ describe('leaving someone', () => {
     expect(h.toasts.at(-1)!.m).not.toContain('«Подписаться»')
   })
 
-  test('an unfollow offers the site to follow again (Nocturne cannot follow yet)', async () => {
+  test('an unfollow still offers the profile on the site', async () => {
     const d = deps()
     await toggleFollow({ id: 3, permalink: 'https://soundcloud.com/three' }, d)
     const t = h.toasts.at(-1)!
@@ -87,7 +95,7 @@ describe('leaving someone', () => {
 
   test('without a profile address no dead «Открыть в SoundCloud» is offered', async () => {
     const d = deps()
-    d.follow.mockRejectedValue(new ScApiError('invalid', sc.FOLLOW_NOT_DONE))
+    d.follow.mockRejectedValue(new ScApiError('http', '', 403))
     await toggleFollow({ id: 12, permalink: null }, d)
     expect(h.toasts.at(-1)!.action).toBeUndefined()
   })

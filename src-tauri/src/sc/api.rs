@@ -87,10 +87,22 @@ fn system_urn(s: &str) -> bool {
 
 /// The requests the UI may make. Writes run in SoundCloud's own browser session, not reqwest.
 pub fn allowed(method: &str, path: &str) -> bool {
-    if method != "GET" && path.contains('?') { return false; }
-    let path = path.split('?').next().unwrap_or_default();
+    let (path, query) = path.split_once('?').map_or((path, None), |(path, query)| (path, Some(query)));
     let Some(rest) = path.strip_prefix('/') else { return false };
     let segs: Vec<&str> = rest.split('/').collect();
+    if let ("POST", ["me", "followings", n]) = (method, segs.as_slice()) {
+        // An unsigned app command is signed inside the service browser. If a query is supplied,
+        // only one well-formed signature is accepted; arbitrary write parameters remain forbidden.
+        return numeric(n) && query.is_none_or(|query| {
+            let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+            let Some((key, value)) = pairs.next() else { return false };
+            let Some(hex) = value.strip_prefix("1:") else { return false };
+            key == "signature" && !hex.is_empty() && hex.len() <= 6
+                && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && pairs.next().is_none()
+        });
+    }
+    if method != "GET" && query.is_some() { return false; }
     match (method, segs.as_slice()) {
         ("GET", ["me"] | ["me", "library", "all"] | ["mixed-selections"] | ["stream"] | ["tracks"] | ["search"] | ["search", "tracks" | "users" | "playlists"]) => true,
         ("GET", ["tracks", n, "related"] | ["playlists", n] | ["users", n]) => numeric(n),
@@ -98,7 +110,6 @@ pub fn allowed(method: &str, path: &str) -> bool {
         ("GET", ["users", n, "track_likes" | "playlists_without_albums" | "albums" | "toptracks" | "tracks" | "likes"]) => numeric(n),
         ("GET", ["users", n, "followings"] | ["users", n, "followings", "ids"] | ["stream", "users", n, "reposts"] | ["tracks", n, "comments"]) => numeric(n),
         ("PUT" | "DELETE", ["users", user, "track_likes", track]) => numeric(user) && numeric(track),
-        // following someone is signed by the site's own code: not here (see the profile plan)
         ("DELETE", ["me", "followings", n]) => numeric(n),
         _ => false,
     }
@@ -305,9 +316,31 @@ mod tests {
             assert!(allowed("GET", p), "{p}");
         }
         assert!(allowed("DELETE", "/me/followings/12"));
-        for (m, p) in [("POST", "/me/followings/12"), ("PUT", "/me/followings/12"), ("DELETE", "/me/followings/x"), ("DELETE", "/me/followings/12?signature=a"), ("GET", "/users/x/likes"), ("GET", "/stream/users/x/reposts")] {
+        for (m, p) in [("PUT", "/me/followings/12"), ("DELETE", "/me/followings/x"), ("DELETE", "/me/followings/12?signature=a"), ("GET", "/users/x/likes"), ("GET", "/stream/users/x/reposts")] {
             assert!(!allowed(m, p), "{m} {p}");
         }
+    }
+
+    #[test]
+    fn only_follow_posts_may_have_a_signature_query() {
+        // The UI can omit the signature: the service browser signs it with its actual user agent.
+        assert!(allowed("POST", "/me/followings/12"));
+        assert!(allowed("POST", "/me/followings/12?signature=1%3A73c1f3"));
+        assert!(allowed("POST", "/me/followings/12?signature=1:73c1f3"));
+        for (method, path) in [
+            ("POST", "/me/followings/x?signature=1:abc"),
+            ("POST", "/me/followings/12?signature="),
+            ("POST", "/me/followings/12?signature=wrong"),
+            ("POST", "/me/followings/12?signature=1:1234567"),
+            ("POST", "/me/followings/12?signature=1:abc&signature=1:def"),
+            ("POST", "/me/followings/12?signature=1:abc&client_id=other"),
+            ("POST", "/me/followings/12?other=1"),
+            ("POST", "/me/followings/12?"),
+            ("POST", "/me/followings/12/extra?signature=1:abc"),
+            ("POST", "/users/7/track_likes/12?signature=1:abc"),
+            ("DELETE", "/me/followings/12?signature=1:abc"),
+            ("PUT", "/users/7/track_likes/12?signature=1:abc"),
+        ] { assert!(!allowed(method, path), "{method} {path}"); }
     }
 
     #[test]

@@ -6,7 +6,7 @@ import type { RawScCollection, RawScComment, RawScLibraryItem, RawScLike, RawScP
 
 export type { ScComment, ScUser } from './normalize'
 
-type Method = 'GET' | 'PUT' | 'DELETE'
+type Method = 'GET' | 'POST' | 'PUT' | 'DELETE'
 type Transport = (method: Method, path: string) => Promise<unknown>
 
 let transport: Transport | null = null
@@ -223,32 +223,12 @@ export async function getFollowingUsers(id: number, cursor?: string): Promise<Sc
   return { items: (raw.collection ?? []).map(normalizeScUser), next: nextPath(raw.next_href) }
 }
 
-/** What a follow from Nocturne answers until it is made (see `follow`). */
-export const FOLLOW_NOT_DONE = 'follow not implemented'
-
-/**
- * Follows someone. NOT DONE YET in the app — the owner makes it (19.10).
- * SoundCloud signs a new following itself: `POST /me/followings/{id}?signature=…`, where the
- * site's own code computes `signature` from (my id, their id, client_id) with a secret of its
- * own. Nocturne does not copy that secret. Until it is made, the app says so and offers the
- * profile on the site (src/sc/follow.ts). Leaving someone needs no signature: `unfollow`.
- *
- * What making it touches (everything else — the button, the instant state, turning back on a
- * failure, the check shown to the person — is in place):
- * - this function's Tauri branch (now the `throw`);
- * - if it goes through `sc_api`: `Method` above has no 'POST'; `allowed` in
- *   src-tauri/src/sc/api.rs refuses POST /me/followings/{n} and any write with a `?` (so a
- *   `?signature=` too); `owned_write_path` in src-tauri/src/sc/web.rs takes only PUT/DELETE
- *   without a query; `like.js` sends whatever method it is given;
- * - its tests: src/sc/follow.test.ts (the UI side) and the Rust ones next to `allowed` and
- *   `owned_write_path`.
- */
+/** Follows someone in the site's session. Native code adds the signature using the account,
+ * current client id and the service browser's actual user agent immediately before sending. */
 export async function follow(u: Pick<ScUser, 'id' | 'permalink'>): Promise<void> {
-  if (!isTauri()) {
-    const { mockFollow } = await import('./mock')
-    return mockFollow(u.id, true)
-  }
-  throw new ScApiError('invalid', FOLLOW_NOT_DONE)
+  if (!meId) throw new ScApiError('signedOut', '')
+  if (!Number.isSafeInteger(u.id) || u.id <= 0 || u.id === meId) throw new ScApiError('invalid', 'bad follow target')
+  await call('POST', `/me/followings/${u.id}`)
 }
 
 /** Stops following someone (the site's session, like a like). */

@@ -2,7 +2,7 @@ import { albumRaw, commentsRaw, listenerRaw, meRaw, playlistRaw, selectionsRaw, 
 
 const following = new Set<number>([userRaw.id])
 
-/** The browser build's follow (the app's is not made yet: see `follow` in api.ts). */
+/** The browser build's following state. */
 export async function mockFollow(id: number, on: boolean): Promise<void> {
   await new Promise((r) => setTimeout(r, 300))
   if (on) following.add(id)
@@ -14,8 +14,8 @@ export async function mockScCall(method: string, path: string): Promise<unknown>
   await new Promise((r) => setTimeout(r, 120))
   const [p, query = ''] = path.split('?')
   const q = new URLSearchParams(query)
-  const unfollow = /^\/me\/followings\/(\d+)$/.exec(p)
-  if (method === 'DELETE' && unfollow) return void (await mockFollow(Number(unfollow[1]), false))
+  const follow = /^\/me\/followings\/(\d+)$/.exec(p)
+  if ((method === 'POST' || method === 'DELETE') && follow) return mockFollow(Number(follow[1]), method === 'POST')
   if (method !== 'GET') return null
   if (p === '/me') return meRaw
   if (p === '/mixed-selections') return { collection: selectionsRaw }

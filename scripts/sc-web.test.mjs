@@ -6,12 +6,14 @@ const script = readFileSync(new URL('../src-tauri/src/sc/like.js', import.meta.u
 
 const params = { key: 'one', url: 'https://api-v2.soundcloud.com/users/7/track_likes/402?client_id=public', method: 'PUT', token: 'test-token' }
 
-async function run(origin, answer) {
+const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0'
+
+async function run(origin, answer, args = params, ua = userAgent) {
   const fetch = vi.fn(answer)
-  const window = {}
-  const started = runInNewContext(`(${script})(${JSON.stringify(params)})`, {
+  const window = { navigator: { userAgent: ua } }
+  const started = runInNewContext(`(${script})(${JSON.stringify(args)})`, {
     location: { origin }, window, fetch, AbortController,
-    setTimeout: () => 1, clearTimeout: () => {}, URL,
+    setTimeout: () => 1, clearTimeout: () => {}, URL, TextEncoder,
   })
   await vi.waitFor(() => {
     if (started) expect(window.__nocturneScLikes.one.reply).not.toBeNull()
@@ -20,6 +22,23 @@ async function run(origin, answer) {
 }
 
 describe('SoundCloud browser request', () => {
+  // Oracle values from the sign() function in SoundCloud's 55-240c8d7e.js on 2026-10-20.
+  test.each([
+    [7, 'public', userAgent, '1:73c1f3'],
+    [9, 'other-client', userAgent, '1:5ceeac'],
+    [7, 'public', 'Nocturne Тест/1.0', '1:c1201a'],
+  ])('signs a follow with the current account, client id and actual browser agent (%s, %s)', async (me, client, ua, signature) => {
+    const args = { ...params, method: 'POST', url: `https://api-v2.soundcloud.com/me/followings/12?client_id=${client}`, me }
+    const r = await run('https://soundcloud.com', async () => ({ status: 200 }), args, ua)
+    const [url, options] = r.fetch.mock.calls[0]
+    const sent = new URL(url)
+    expect(sent.pathname).toBe('/me/followings/12')
+    expect(sent.searchParams.get('signature')).toBe(signature)
+    expect(sent.searchParams.get('client_id')).toBe(client)
+    expect(options).toMatchObject({ method: 'POST', credentials: 'include' })
+    expect(r.reply.status).toBe(200)
+  })
+
   test('polling detects only visible challenges while the site holds a fetch', () => {
     const poll = (visible) => runInNewContext(`(${script})({key: 'one', poll: true})`, {
       location: { origin: 'https://soundcloud.com' },
