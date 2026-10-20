@@ -96,7 +96,7 @@ pub fn allowed(method: &str, path: &str) -> bool {
         ("GET", ["tracks", n, "related"] | ["playlists", n] | ["users", n]) => numeric(n),
         ("GET", ["system-playlists", urn]) => system_urn(urn),
         ("GET", ["users", n, "track_likes" | "playlists_without_albums" | "albums" | "toptracks" | "tracks" | "likes"]) => numeric(n),
-        ("GET", ["users", n, "followings", "ids"] | ["stream", "users", n, "reposts"] | ["tracks", n, "comments"]) => numeric(n),
+        ("GET", ["users", n, "followings"] | ["users", n, "followings", "ids"] | ["stream", "users", n, "reposts"] | ["tracks", n, "comments"]) => numeric(n),
         ("PUT" | "DELETE", ["users", user, "track_likes", track]) => numeric(user) && numeric(track),
         // following someone is signed by the site's own code: not here (see the profile plan)
         ("DELETE", ["me", "followings", n]) => numeric(n),
@@ -289,6 +289,14 @@ mod tests {
         ] {
             assert!(!allowed(m, p), "{m} {p}");
         }
+    }
+
+    #[test]
+    fn the_people_someone_follows_can_be_read() {
+        assert!(allowed("GET", "/users/12/followings?limit=50"));
+        assert!(allowed("GET", "/users/12/followings?offset=x&limit=50"));
+        assert!(!allowed("GET", "/users/x/followings"));
+        assert!(!allowed("DELETE", "/users/12/followings"));
     }
 
     #[test]

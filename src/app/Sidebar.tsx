@@ -181,6 +181,7 @@ function ScNav() {
         <div className={s.groupHead}>Медиатека</div>
         <NavItem route={{ name: 'sc-likes' }} icon={<Heart {...ic} />} label="Лайки" />
         <NavItem route={{ name: 'sc-playlists' }} icon={<ListMusic {...ic} />} label="Плейлисты" />
+        <NavItem route={{ name: 'sc-following' }} icon={<Users {...ic} />} label="Подписки" />
       </div>
       <div className={s.group}>
         <div className={s.groupHead}>Мои плейлисты</div>

@@ -8,11 +8,6 @@
   pointer-events: none;
   z-index: 2;
 }
-/* the mini player: on the wave's top, not up among the buttons above it */
-.layer[data-inset] {
-  top: 0;
-  bottom: auto;
-}
 
 .slot {
   position: absolute;

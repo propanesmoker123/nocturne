@@ -224,3 +224,9 @@
     animation: none;
   }
 }
+
+/* the big waveform: SoundCloud comments rest on its top, so it keeps room above for them */
+.bigWave {
+  position: relative;
+  margin-top: 18px;
+}

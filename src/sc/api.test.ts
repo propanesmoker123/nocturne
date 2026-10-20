@@ -175,3 +175,17 @@ describe('SoundCloud profiles', () => {
     expect(calls[0].path).toBe('/tracks/402/comments?threaded=0&filter_replies=1&limit=200')
   })
 })
+
+describe('whom someone follows', () => {
+  test('the people come a page at a time, with their counts', async () => {
+    const calls = record(() => ({
+      collection: [{ id: 501, username: 'night owl', followers_count: 12480, permalink_url: 'https://soundcloud.com/night-owl' }],
+      next_href: 'https://api-v2.soundcloud.com/users/7/followings?offset=1&limit=50',
+    }))
+    const page = await sc.getFollowingUsers(7)
+    expect(page.items).toMatchObject([{ id: 501, name: 'night owl', followers: 12480 }])
+    expect(page.next).toBe('/users/7/followings?offset=1&limit=50')
+    await sc.getFollowingUsers(7, page.next)
+    expect(calls.map((c) => c.path)).toEqual(['/users/7/followings?limit=50', '/users/7/followings?offset=1&limit=50'])
+  })
+})

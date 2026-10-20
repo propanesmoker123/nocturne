@@ -217,6 +217,12 @@ export async function getMyFollowings(): Promise<number[]> {
   return out
 }
 
+/** The people someone follows, a page at a time (with their counts). */
+export async function getFollowingUsers(id: number, cursor?: string): Promise<ScPage<ScUser>> {
+  const raw = await get<RawScCollection<RawScUser>>(cursor ?? `/users/${id}/followings?limit=50`)
+  return { items: (raw.collection ?? []).map(normalizeScUser), next: nextPath(raw.next_href) }
+}
+
 /** What a follow from Nocturne answers until it is made (see `follow`). */
 export const FOLLOW_NOT_DONE = 'follow not implemented'
 

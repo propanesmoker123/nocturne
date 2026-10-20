@@ -84,3 +84,16 @@
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: 22px 18px;
 }
+
+/* «Подписки»: the people one follows */
+.peopleGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 24px 16px;
+}
+
+.personSub {
+  margin-top: -4px;
+  color: var(--label-2);
+  font: var(--t-caption);
+}

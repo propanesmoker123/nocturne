@@ -37,9 +37,11 @@ export async function toggleFollow(u: Person, deps = { follow, unfollow, open: o
   try {
     if (was) {
       await deps.unfollow(u.id)
+      void queryClient.invalidateQueries({ queryKey: scKeys.followingUsers(me) })
       return toast('Вы отписались', 'removed', site)
     }
     await deps.follow(u)
+    void queryClient.invalidateQueries({ queryKey: scKeys.followingUsers(me) })
     toast('Вы подписались', 'added')
   } catch (e) {
     set(was)

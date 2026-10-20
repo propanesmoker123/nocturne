@@ -41,11 +41,11 @@ function BigScrubber() {
   const [drag, setDrag] = useState<number | null>(null)
   const shown = drag ?? position
   return (
-    <div style={{ position: 'relative' }}>
-      <WaveComments size={20} />
+    <div className={s.bigWave}>
+      <WaveComments size={26} />
       <WaveformScrubber
         trackKey={trackKey}
-        height={56}
+        height={76}
         label="Позиция трека"
         value={duration ? position / duration : 0}
         buffered={duration ? buffered / duration : 0}

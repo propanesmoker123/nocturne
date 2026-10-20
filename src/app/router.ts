@@ -19,6 +19,7 @@ export type Route =
   | { name: 'sc-stream' }
   | { name: 'sc-likes' }
   | { name: 'sc-playlists' }
+  | { name: 'sc-following' }
   /** `urn` for SoundCloud's system playlists (they have no id) */
   | { name: 'sc-playlist'; id: number; urn?: string; title?: string }
   | { name: 'sc-user'; id: number; title?: string }

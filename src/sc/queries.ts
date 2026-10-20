@@ -16,6 +16,7 @@ export const scKeys = {
   userReposts: (id: number) => ['sc-user-reposts', id],
   userLikes: (id: number) => ['sc-user-likes', id],
   followings: (me: number) => ['sc-followings', me],
+  followingUsers: (id: number) => ['sc-following-users', id],
   comments: (trackId: number) => ['sc-comments', trackId],
   search: (q: string) => ['sc-search', q],
 } as const

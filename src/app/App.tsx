@@ -19,6 +19,7 @@ import { ScHome } from '../pages/sc/ScHome'
 import { ScLikes } from '../pages/sc/ScLikes'
 import { ScPlaylistPage } from '../pages/sc/ScPlaylistPage'
 import { ScPlaylists } from '../pages/sc/ScPlaylists'
+import { ScFollowing } from '../pages/sc/ScFollowing'
 import { ScSearch } from '../pages/sc/ScSearch'
 import { ScStream } from '../pages/sc/ScStream'
 import { ScUser } from '../pages/sc/ScUser'
@@ -72,6 +73,8 @@ function Page({ route }: { route: Route }) {
       return <ScLikes />
     case 'sc-playlists':
       return <ScPlaylists />
+    case 'sc-following':
+      return <ScFollowing />
     case 'sc-playlist':
       return <ScPlaylistPage id={route.id} urn={route.urn} title={route.title} />
     case 'sc-user':

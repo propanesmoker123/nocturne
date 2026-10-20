@@ -31,6 +31,7 @@ export async function mockScCall(method: string, path: string): Promise<unknown>
   if (/^\/users\/\d+\/albums$/.test(p)) return { collection: [albumRaw] }
   if (p === '/me/library/all') return { collection: [{ type: 'system-playlist-like', system_playlist: systemPlaylistRaw }] }
   if (/^\/users\/\d+\/followings\/ids$/.test(p)) return { collection: [...following] }
+  if (/^\/users\/\d+\/followings$/.test(p)) return { collection: [userRaw, listenerRaw].filter((u) => following.has(u.id)) }
   if (/^\/stream\/users\/\d+\/reposts$/.test(p)) return { collection: listener ? streamRaw : streamRaw.slice(0, 2) }
   if (/^\/users\/\d+\/likes$/.test(p)) return { collection: [...tracks.slice(2, 5).map((track) => ({ kind: 'like', track })), { kind: 'like', playlist: playlistRaw }] }
   if (/^\/tracks\/\d+\/comments$/.test(p)) return { collection: commentsRaw(Number(p.split('/')[2])) }
