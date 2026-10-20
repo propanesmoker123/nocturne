@@ -90,7 +90,7 @@ async function playPlaylist(p: Playlist, shuffle = false) {
   }
 }
 
-export function PlaylistCard({ playlist: p }: { playlist: Playlist }) {
+export function PlaylistCard({ playlist: p, note }: { playlist: Playlist; note?: ReactNode }) {
   const push = useRouter((r) => r.push)
   const [busy, setBusy] = useState(false)
   const open = () => push(p.service === 'sc' ? { name: 'sc-playlist', id: p.id, urn: p.urn, title: p.title } : { name: 'playlist', ownerId: p.ownerId, id: p.id, accessKey: p.accessKey })
@@ -139,6 +139,7 @@ export function PlaylistCard({ playlist: p }: { playlist: Playlist }) {
         {p.title}
       </button>
       <div className={`${s.cardSub} truncate`}>{playlistSubtitle(p)}</div>
+      {note}
       {p.plays && (
         <div className={s.cardPlays} title={formatPlays(p.plays)}>
           <Headphones size={12} strokeWidth={2.2} aria-hidden="true" />

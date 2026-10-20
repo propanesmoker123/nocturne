@@ -109,6 +109,9 @@
   text-decoration-color: var(--label-3);
   text-underline-offset: 2px;
 }
+.note {
+  min-width: 0;
+}
 .album {
   font: 400 13px/17px var(--font);
   color: var(--label-2);

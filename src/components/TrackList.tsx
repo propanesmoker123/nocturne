@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import type { MenuItem } from '../app/menu'
 import { artistRoute, useRouter } from '../app/router'
 import { ServiceLogo } from './ServiceLogo'
@@ -52,6 +52,8 @@ interface RowProps {
   isCurrent: boolean
   isPlaying: boolean
   showAlbum: boolean
+  /** the list's own column in place of the album (set, even null: the cell is there) */
+  note?: ReactNode
   markService: boolean
   onPlay(index: number): void
   onMenu(e: MouseEvent, track: Track, index: number): void
@@ -59,7 +61,7 @@ interface RowProps {
   onDrop?(from: number, to: number): void
 }
 
-const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, markService, onPlay, onMenu, onDrop }: RowProps) {
+const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, note, markService, onPlay, onMenu, onDrop }: RowProps) {
   const push = useRouter((r) => r.push)
   const scPhase = useScSession((x) => x.phase)
   return (
@@ -116,7 +118,9 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
           </div>
         </div>
       </div>
-      {showAlbum && (
+      {note !== undefined ? (
+        <div className={s.note}>{note}</div>
+      ) : showAlbum && (
         <div className={`${s.album} truncate`}>
           {track.album && (
             <button type="button" onClick={() => push({ name: 'playlist', ownerId: track.album!.ownerId, id: track.album!.id, accessKey: track.album!.accessKey })}>
@@ -150,10 +154,12 @@ interface TrackListProps {
   menuExtra?(track: Track, index: number): MenuItem[]
   /** rows can be dragged to a new place */
   onReorder?(from: number, to: number): void
+  /** a column of the list's own in place of the album (the feed: who and when) */
+  note?: { label: string; render(track: Track, index: number): ReactNode }
 }
 
 /** Apple Music-style song table, virtualized against the page scroller. */
-export function TrackList({ tracks, queueSource, playlist, showAlbum = true, showHeader = true, markService = false, menuExtra, onReorder }: TrackListProps) {
+export function TrackList({ tracks, queueSource, playlist, showAlbum = true, showHeader = true, markService = false, menuExtra, onReorder, note }: TrackListProps) {
   const scroller = useScroller()
   const listRef = useRef<HTMLDivElement>(null)
   const [margin, setMargin] = useState(0)
@@ -188,7 +194,8 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
     usePlayer.getState().playList(source, Math.max(0, at))
   }
   const onMenu = (e: MouseEvent, track: Track, index: number) => openTrackMenu(e, track, { list: source, index, playlist, extra: menuExtra?.(track, index) })
-  const cols = showAlbum ? '28px minmax(0, 1.6fr) minmax(0, 1fr) 62px 52px 30px' : '28px minmax(0, 1fr) 62px 52px 30px'
+  const third = showAlbum || !!note
+  const cols = third ? '28px minmax(0, 1.6fr) minmax(0, 1fr) 62px 52px 30px' : '28px minmax(0, 1fr) 62px 52px 30px'
 
   return (
     <div style={{ ['--cols' as string]: cols }}>
@@ -196,7 +203,7 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
         <div className={s.head} role="row">
           <span style={{ textAlign: 'center' }}>#</span>
           <span>Название</span>
-          {showAlbum && <span>Альбом</span>}
+          {third && <span>{note?.label ?? 'Альбом'}</span>}
           <span />
           <span style={{ textAlign: 'right' }}>Время</span>
           <span />
@@ -214,6 +221,7 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
               isCurrent={t.key === currentKey}
               isPlaying={isPlaying}
               showAlbum={showAlbum}
+              note={note ? (note.render(t, item.index) ?? null) : undefined}
               markService={markService}
               onDrop={onReorder}
               onPlay={onPlay}
