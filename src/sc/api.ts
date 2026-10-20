@@ -229,13 +229,15 @@ export async function getStreamFeed(cursor?: string): Promise<{ items: FeedItem[
   return { items: withLikes(streamFeed(raw.collection ?? [])), next: nextPath(raw.next_href) }
 }
 
-/** One followed profile's latest tracks, reposts and likes; a part that fails is left out. */
+/** One followed profile's latest tracks, reposts and likes; a part that fails is left out, all three failing is an error. */
 export async function getUserActivity(who: FeedPerson): Promise<FeedItem[]> {
-  const [tracks, reposts, likes] = await Promise.allSettled([
+  const parts = await Promise.allSettled([
     get<RawScCollection<RawScTrack>>(`/users/${who.id}/tracks?limit=10`),
     get<RawScCollection<RawScActivity>>(`/stream/users/${who.id}/reposts?limit=10`),
     get<RawScCollection<RawScActivity>>(`/users/${who.id}/likes?limit=10`),
   ])
+  const [tracks, reposts, likes] = parts
+  if (parts.every((p) => p.status === 'rejected')) throw (parts[0] as PromiseRejectedResult).reason
   const list = <T>(r: PromiseSettledResult<RawScCollection<T>>) => (r.status === 'fulfilled' ? (r.value.collection ?? []) : [])
   return withLikes(userActivity(who, { tracks: list(tracks), reposts: list(reposts), likes: list(likes) }))
 }

@@ -15,6 +15,7 @@ import c from './cards.module.css'
 import { EdgeArrows, useHorizontalScroll } from './HScroll'
 import { IconMore, IconPlay } from './Icons'
 import { AlbumAddButton, HeartButton } from './TrackButtons'
+import { enterPlays } from './rowKeys'
 import s from './TrackList.module.css'
 
 const ROW = 56
@@ -75,7 +76,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
       title={unplayableHint(track, scPhase)}
       onClick={(e) => playClick(e) && track.playable && onPlay(index)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' && track.playable) onPlay(index)
+        if (enterPlays(e) && track.playable) onPlay(index)
       }}
       onContextMenu={(e) => onMenu(e, track, index)}
       draggable={!!onDrop}

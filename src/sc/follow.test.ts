@@ -33,6 +33,12 @@ describe('following on SoundCloud', () => {
     expect(d.follow).toHaveBeenCalledWith(person)
   })
 
+  test('after a follow the feed is read again on the next visit', async () => {
+    queryClient.setQueryData(scKeys.feed(7), { pages: [], pageParams: [] })
+    await toggleFollow(person, deps())
+    expect(queryClient.getQueryData(scKeys.feed(7))).toBeUndefined()
+  })
+
   test('a follow that fails turns back and says why', async () => {
     const d = deps()
     d.follow.mockRejectedValue(new ScApiError('challenge', ''))

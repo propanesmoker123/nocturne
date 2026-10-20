@@ -101,6 +101,31 @@ export function kindLabel(it: FeedItem): string {
   return it.playlist ? 'новый плейлист' : 'новый трек'
 }
 
+export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown }
+
+export const settle = <T>(p: Promise<T>): Promise<Settled<T>> =>
+  p.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  )
+
+/**
+ * One page of the feed from its parts (the stream, each profile): what came is kept and the parts
+ * that did not are counted; nothing coming at all is an error, so the feed already shown stays.
+ */
+export function settlePage(parts: Settled<FeedItem[]>[]): { items: FeedItem[]; failed: number } {
+  const ok = parts.flatMap((p) => (p.ok ? [p.value] : []))
+  const first = parts.find((p) => !p.ok)
+  if (parts.length && !ok.length && first && !first.ok) throw first.error
+  return { items: mergeFeed(ok), failed: parts.length - ok.length }
+}
+
+/** The tracks to play, each once, at its first (newest) place. */
+export function uniqueTracks(tracks: Track[]): Track[] {
+  const seen = new Set<string>()
+  return tracks.filter((t) => !seen.has(t.key) && !!seen.add(t.key))
+}
+
 /** `fn` over `xs` with at most `n` running at once; results in the order of `xs`. */
 export async function mapLimit<T, R>(xs: T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(xs.length)

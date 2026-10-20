@@ -36,6 +36,7 @@ export async function toggleFollow(u: Person, deps = { follow, unfollow, open: o
   try {
     await (was ? deps.unfollow(u.id) : deps.follow(u))
     void queryClient.invalidateQueries({ queryKey: scKeys.followingUsers(me) })
+    queryClient.removeQueries({ queryKey: scKeys.feed(me) })
   } catch (e) {
     set(was)
     const err = ScApiError.from(e)

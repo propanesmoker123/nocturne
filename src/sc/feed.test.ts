@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { playlistRaw, trackRaw } from './fixtures'
-import { agoRu, feedPage, mergeFeed, streamFeed, userActivity, type FeedItem } from './feed'
+import { agoRu, feedPage, mergeFeed, settlePage, streamFeed, uniqueTracks, userActivity, type FeedItem } from './feed'
 
 const owl = { id: 501, username: 'night owl', avatar_url: 'https://i1.sndcdn.com/avatars-000501-aaaaaa-large.jpg' }
 const peep = { id: 7, name: 'LIL PEEP' }
@@ -80,4 +80,28 @@ test('profiles are read a few at a time, in order', async () => {
   })
   expect(out).toEqual([10, 20, 30, 40, 50, 60, 70, 80, 90])
   expect(most).toBe(4)
+})
+
+describe('a page of the feed when SoundCloud does not answer', () => {
+  const a = userActivity({ id: 7, name: 'a' }, { tracks: [{ ...trackRaw(410, 'x'), created_at: '2026-10-20T01:00:00Z' }], reposts: [], likes: [] })
+  const b = userActivity({ id: 8, name: 'b' }, { tracks: [{ ...trackRaw(411, 'y'), created_at: '2026-10-19T01:00:00Z' }], reposts: [], likes: [] })
+  const down = new Error('offline')
+
+  test('what came is kept, and the profiles that did not are counted', () => {
+    const page = settlePage([{ ok: true, value: a }, { ok: false, error: down }, { ok: true, value: b }])
+    expect(page.items.map((i) => i.track?.title)).toEqual(['x', 'y'])
+    expect(page.failed).toBe(1)
+  })
+
+  test('nothing coming at all is an error, not an empty feed', () => {
+    expect(() => settlePage([{ ok: false, error: down }, { ok: false, error: new Error('later') }])).toThrow('offline')
+    expect(settlePage([])).toEqual({ items: [], failed: 0 })
+  })
+})
+
+test('a track in the feed several times plays once, at its newest place', () => {
+  const t = (id: number, title: string) => ({ ...userActivity({ id, name: title }, { tracks: [{ ...trackRaw(id, title), created_at: '2026-10-20T01:00:00Z' }], reposts: [], likes: [] })[0].track! })
+  const x = t(1, 'x')
+  const y = t(2, 'y')
+  expect(uniqueTracks([x, y, x, x]).map((tr) => tr.title)).toEqual(['x', 'y'])
 })
