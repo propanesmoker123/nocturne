@@ -74,7 +74,7 @@ function FeedBody() {
 
   return (
     <>
-      <PageHeader title="Лента" subtitle="Новые треки, репосты и лайки тех, на кого вы подписаны" />
+      <PageHeader title="Лента" />
       {all.length > 0 && (
         <div className={c.tabs}>
           <Segmented id="sc-feed" value={filter} options={FILTERS} onChange={setFilter} />
