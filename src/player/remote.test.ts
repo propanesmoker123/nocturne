@@ -118,6 +118,17 @@ describe('the remote mode of the player', () => {
     expect(h.calls.load).toEqual([])
   })
 
+  test('a canceled pending load can resume locally after leaving remote mode', async () => {
+    const stale = { ...t(6), urlFetchedAt: 0 }
+    usePlayer.getState().playList([stale], 0)
+    setPlayerRemote(remote().r)
+    await settle()
+    setPlayerRemote(null)
+    usePlayer.getState().play()
+    await settle()
+    expect(h.calls.load).toEqual([stale.url])
+  })
+
   test('the live position in remote mode is the steered device’s, never this engine’s', async () => {
     usePlayer.getState().playList([t(1)], 0)
     await settle()

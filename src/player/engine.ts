@@ -2,6 +2,10 @@ import Hls, { type ErrorData } from 'hls.js'
 import { isTauri } from '../lib/tauri'
 import { volumeToGain } from './logic'
 import { TauriLoader } from './tauriLoader'
+import { drmConfig, type ScPlaybackSource } from '../sc/playback'
+
+export type StreamOptions = Pick<ScPlaybackSource, 'drm' | 'waveformUrl'>
+export interface EngineSource extends StreamOptions { url: string; hls: Hls | null }
 
 export type EngineEvent = 'time' | 'state' | 'ended' | 'error' | 'loading'
 
@@ -15,7 +19,7 @@ class Engine {
   private recovered = false
   lastError = ''
   /** Told about every new source, so the waveform can tap the same stream. */
-  onSource: ((src: { url: string; hls: Hls | null }) => void) | null = null
+  onSource: ((src: EngineSource) => void) | null = null
 
   constructor() {
     this.audio = new Audio()
@@ -62,13 +66,14 @@ class Engine {
   }
 
   /** Loads a stream URL (HLS through the Rust proxy, anything else directly). */
-  load(url: string, startAt = 0, autoplay = true) {
+  load(url: string, startAt = 0, autoplay = true, options?: StreamOptions) {
     this.teardown()
     this.recovered = false
     this.lastError = ''
     const a = this.audio
     if (url.includes('.m3u8') && Hls.isSupported()) {
       const hls = new Hls({
+        ...(options?.drm ? drmConfig(options.drm) : {}),
         loader: isTauri() ? TauriLoader : Hls.DefaultConfig.loader,
         enableWorker: true,
         startPosition: startAt > 0 ? startAt : -1,
@@ -78,7 +83,7 @@ class Engine {
         backBufferLength: 30,
       })
       this.hls = hls
-      this.onSource?.({ url, hls })
+      this.onSource?.({ url, hls, ...options })
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (autoplay) void a.play().catch(() => {})
       })

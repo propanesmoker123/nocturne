@@ -25,6 +25,8 @@ import { invoke, isTauri } from './lib/tauri'
 import { startBridges } from './player/bridges'
 import { openQuickSearch, startQuickSearch } from './quicksearch/bridge'
 import { initPlayer, usePlayer } from './player/store'
+import { setDrmAvailable } from './sc/normalize'
+import { probeDrm } from './sc/playback'
 import { initScSession } from './sc/session'
 import { setCaptchaHandler } from './vk/api'
 
@@ -76,6 +78,8 @@ async function boot() {
   )
 
   await initSession()
+  // protected SoundCloud tracks play only where the browser has Widevine or PlayReady; else they stay grey
+  void probeDrm().then(setDrmAvailable)
   void initScSession()
   void showWhatsNew().catch(() => {})
   await initPlayer()

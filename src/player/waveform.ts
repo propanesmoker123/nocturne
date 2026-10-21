@@ -3,6 +3,8 @@ import { journal } from '../lib/journal'
 import { invoke, isTauri } from '../lib/tauri'
 import { accumulate, isComplete, newAcc, toPeaks, type PeakAcc } from './peaks'
 import { useWaveform } from './waveformStore'
+import type { EngineSource } from './engine'
+import { providerPeaks } from '../sc/playback'
 
 /**
  * Real waveform of the current track. hls.js already downloads, decrypts and remuxes the
@@ -114,9 +116,20 @@ export function beginWaveform(key: string, duration: number) {
 }
 
 /** Hooks the capture into the stream the engine just created. */
-export function captureSource(src: { url: string; hls: Hls | null }) {
+export function captureSource(src: EngineSource) {
   const cap = current
-  if (!cap || typeof OfflineAudioContext === 'undefined') return
+  if (!cap) return
+  if (src.drm) {
+    if (src.waveformUrl) void readWhole(src.waveformUrl).then((data) => {
+      const peaks = providerPeaks(JSON.parse(new TextDecoder().decode(data)))
+      if (peaks && cap.alive) {
+        useWaveform.setState({ key: cap.key, peaks })
+        remember(cap.key, peaks)
+      }
+    }).catch(() => {})
+    return
+  }
+  if (typeof OfflineAudioContext === 'undefined') return
   if (!src.hls) {
     cap.fromFile(src.url)
     return

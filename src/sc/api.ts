@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '../lib/tauri'
 import type { Playlist, Track } from '../vk/models'
 import { ScApiError } from './errors'
+import type { ScPlaybackSource } from './playback'
 import { normalizeScComment, normalizeScPlaylist, normalizeScTrack, normalizeScUser, streamItems, type ScComment, type ScUser } from './normalize'
 import { streamFeed, userActivity, type FeedItem, type FeedPerson } from './feed'
 import type { RawScActivity, RawScCollection, RawScComment, RawScLibraryItem, RawScLike, RawScPlaylist, RawScSelection, RawScStreamItem, RawScTrack, RawScUser } from './types'
@@ -295,12 +296,14 @@ export async function search(q: string): Promise<{ tracks: Track[]; users: ScUse
   }
 }
 
-/** A fresh stream link for the track (SoundCloud's links last minutes). */
-export async function streamUrl(t: Pick<Track, 'id'>): Promise<string> {
-  if (!isTauri()) return 'https://example.invalid/sc.m3u8'
+/** A fresh source and its temporary license authorization, if protected. */
+export async function streamSource(t: Pick<Track, 'id'>): Promise<ScPlaybackSource> {
+  if (!isTauri()) return { url: 'https://example.invalid/sc.m3u8' }
   try {
-    return await invoke<string>('sc_stream', { trackId: t.id })
+    const source = await invoke<ScPlaybackSource | string>('sc_stream', { trackId: t.id })
+    return typeof source === 'string' ? { url: source } : source
   } catch (raw) {
     throw ScApiError.from(raw)
   }
 }
+

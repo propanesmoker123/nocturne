@@ -3,6 +3,7 @@ import { toast } from '../app/toast'
 import { journal } from '../lib/journal'
 import { debouncedSaver, loadJSON } from '../lib/persist'
 import * as sc from '../sc/api'
+import type { ScPlaybackSource } from '../sc/playback'
 import { describeScError, SC_UNREACHABLE, ScApiError } from '../sc/errors'
 import * as vk from '../vk/api'
 import { serviceOf, type Track } from '../vk/models'
@@ -59,7 +60,8 @@ export interface PlayerState {
   toggle(): void
   play(): void
   pause(): void
-  next(manual?: boolean): void
+  /** `autoplay` false: the next track is loaded paused (the person had paused the one that failed). */
+  next(manual?: boolean, autoplay?: boolean): void
   /** `always`: the previous track even late in this one (a swipe), not a restart. */
   prev(always?: boolean): void
   seek(sec: number): void
@@ -189,6 +191,9 @@ const sessionSaver = debouncedSaver('session', 1200)
 const historySaver = debouncedSaver('history', 2000)
 
 export const usePlayer = create<PlayerState>((set, get) => {
+  let pendingLoad: { token: number; autoplay: boolean } | null = null
+  const currentLoad = () => pendingLoad?.token === loadToken ? pendingLoad : null
+
   const replaceTrack = (track: Track) => {
     const q = get().queue
     if (!q) return
@@ -234,8 +239,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
     const q = get().queue
     const t = q && Q.current(q)
     const token = ++loadToken
+    const intent = { token, autoplay }
+    pendingLoad = intent
     stopScWatch()
     if (!t) {
+      pendingLoad = null
       engine.stop()
       loadedKey = null
       set({ current: null, isPlaying: false, isLoading: false })
@@ -245,15 +253,17 @@ export const usePlayer = create<PlayerState>((set, get) => {
     heard = { key: t.key, seconds: 0, last: startAt, recorded: false }
     preloadCovers(Q.upcoming(q)[0])
     let track = t
-    if (needsFreshUrl(t, Date.now()) && serviceOf(t) === 'sc') {
+    let scSource: ScPlaybackSource | undefined
+    if (serviceOf(t) === 'sc') {
       try {
-        const url = await sc.streamUrl(t)
+        scSource = await sc.streamSource(t)
         if (token !== loadToken) return
-        track = { ...t, url, urlFetchedAt: Date.now() }
+        track = { ...t, url: scSource.url, urlFetchedAt: Date.now() }
         replaceTrack(track)
       } catch (e) {
         if (token !== loadToken) return
-        onFailure(t, scLinkFailure(e))
+        pendingLoad = null
+        onFailure(t, scLinkFailure(e), intent.autoplay)
         return
       }
     } else if (needsFreshUrl(t, Date.now())) {
@@ -268,19 +278,21 @@ export const usePlayer = create<PlayerState>((set, get) => {
         if (token !== loadToken) return
       }
     }
+    pendingLoad = null
     if (!track.url || !track.playable) {
-      onFailure(track, 'Трек недоступен в вашем регионе или удалён')
+      onFailure(track, 'Трек недоступен в вашем регионе или удалён', intent.autoplay)
       return
     }
     if (remote) return
     loadedKey = track.key
     beginWaveform(track.key, track.duration)
-    engine.load(track.url, startAt, autoplay)
-    if (autoplay && serviceOf(track) === 'sc') watchScStart(token, track)
+    engine.load(track.url, startAt, intent.autoplay, scSource ? { drm: scSource.drm, waveformUrl: scSource.waveformUrl } : undefined)
+    if (intent.autoplay && serviceOf(track) === 'sc') watchScStart(token, track)
     void extendMixIfNeeded()
   }
 
-  const onFailure = (t: Track, reason?: string) => {
+  /** `autoplay`: false when the person paused while it loaded — the next track waits too. */
+  const onFailure = (t: Track, reason?: string, autoplay = true) => {
     consecutiveFailures++
     if (consecutiveFailures >= 5) {
       journal('player', 'five tracks in a row failed, stopping')
@@ -292,7 +304,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       return
     }
     toast(reason ?? `Не получилось включить «${t.title}»`, 'error')
-    get().next(true)
+    get().next(true, autoplay)
   }
 
   // Engine → store
@@ -396,7 +408,14 @@ export const usePlayer = create<PlayerState>((set, get) => {
       if (remote) return remote.toggle()
       const cur = get().current
       if (!cur) return
-      if (!allow(loadedKey === cur.key && engine.playing ? 'pause' : 'resume')) return
+      const pending = currentLoad()
+      if (!allow((pending ? pending.autoplay : loadedKey === cur.key && engine.playing) ? 'pause' : 'resume')) return
+      if (pending) {
+        pending.autoplay = !pending.autoplay
+        set({ isLoading: pending.autoplay })
+        if (!pending.autoplay) engine.pause()
+        return
+      }
       if (loadedKey !== cur.key) {
         void loadCurrent(true, get().position)
         return
@@ -411,6 +430,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
       if (remote) return remote.play()
       const cur = get().current
       if (!cur || !allow('resume')) return
+      const pending = currentLoad()
+      if (pending) {
+        pending.autoplay = true
+        set({ isLoading: true })
+        return
+      }
       if (loadedKey !== cur.key) void loadCurrent(true, get().position)
       else engine.play()
     },
@@ -418,11 +443,14 @@ export const usePlayer = create<PlayerState>((set, get) => {
     pause() {
       if (remote) return remote.pause()
       if (!allow('pause')) return
+      const pending = currentLoad()
+      if (pending) pending.autoplay = false
       stopScWatch()
       engine.pause()
+      set({ isLoading: false })
     },
 
-    next(manual = true) {
+    next(manual = true, autoplay = true) {
       if (remote) return remote.next()
       const q = get().queue
       if (!q || (manual && !allow('skip'))) return
@@ -449,7 +477,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
         return
       }
       set({ queue: n })
-      void loadCurrent(true)
+      void loadCurrent(autoplay)
     },
 
     prev(always = false) {

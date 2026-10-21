@@ -27,12 +27,20 @@ export function artwork(url: string | null | undefined): Cover | undefined {
   return { s: size('t67x67'), m: size('t300x300'), l: size('t500x500') }
 }
 
-/** A plain HLS stream exists (AAC or MP3, not a 30-second preview) and the track is not blocked or Go+ only. */
+/** This computer plays protected (CTR) streams: set at start by `probeDrm` (playback.ts). */
+let drmAvailable = true
+export function setDrmAvailable(on: boolean) {
+  drmAvailable = on
+}
+
+/** Clear HLS (AAC or MP3), or CTR HLS in MP4 where this computer has Widevine/PlayReady; full tracks only. CBC requires FairPlay. */
 export function playableTrack(r: RawScTrack): boolean {
   if (r.streamable === false || r.policy === 'BLOCK' || r.policy === 'SNIP') return false
   return (r.media?.transcodings ?? []).some((c) => {
     const mime = c.format?.mime_type ?? ''
-    return c.format?.protocol === 'hls' && !c.snipped && (mime.startsWith('audio/mp4') || (mime.startsWith('audio/mpeg') && !mime.startsWith('audio/mpegurl')))
+    if (c.snipped) return false
+    if (c.format?.protocol === 'hls') return mime.startsWith('audio/mp4') || (mime.startsWith('audio/mpeg') && !mime.startsWith('audio/mpegurl'))
+    return drmAvailable && c.format?.protocol === 'ctr-encrypted-hls' && mime.startsWith('audio/mp4')
   })
 }
 

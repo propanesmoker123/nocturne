@@ -25,8 +25,13 @@ describe('SoundCloud tracks', () => {
     expect(t.artists).toEqual([{ id: '501', name: 'night owl' }])
   })
 
-  test('an encrypted-only, snipped, SNIP or BLOCK track is not playable', () => {
-    for (const raw of [encryptedOnly, snippedOnly, snipPolicy, blocked]) expect(normalizeScTrack(raw).playable, raw.title).toBe(false)
+  test('a full CTR track is playable through the browser CDM', () => {
+    expect(normalizeScTrack(encryptedOnly).playable).toBe(true)
+  })
+
+  test('CBC-only, snipped, SNIP or BLOCK tracks are not playable on the Windows path', () => {
+    const cbcOnly = { ...encryptedOnly, media: { transcodings: encryptedOnly.media!.transcodings.filter((c) => c.format.protocol === 'cbc-encrypted-hls') } }
+    for (const raw of [cbcOnly, snippedOnly, snipPolicy, blocked]) expect(normalizeScTrack(raw).playable, raw.title).toBe(false)
   })
 
   test('no artwork falls back to the avatar; none at all gives no cover', () => {
@@ -78,5 +83,19 @@ describe('SoundCloud profiles and comments', () => {
       expect(normalizeScComment({ id: 2, body: 'x', timestamp: 5, user, ...bad })).toBeNull()
     }
     expect(normalizeScComment({ id: 3, body: 'я'.repeat(400), timestamp: 5, user })!.body).toHaveLength(300)
+  })
+})
+
+describe('protected SoundCloud tracks', () => {
+  const ctr = (mime: string) => ({ id: 1, title: 't', media: { transcodings: [{ url: 'u', snipped: false, format: { protocol: 'ctr-encrypted-hls', mime_type: mime } }] } }) as never
+
+  test('play only where this computer has DRM, and only in MP4 (encrypted MP3 does not exist for the browser)', async () => {
+    const { playableTrack, setDrmAvailable } = await import('./normalize')
+    setDrmAvailable(true)
+    expect(playableTrack(ctr('audio/mp4; codecs="mp4a.40.2"'))).toBe(true)
+    expect(playableTrack(ctr('audio/mpeg'))).toBe(false)
+    setDrmAvailable(false)
+    expect(playableTrack(ctr('audio/mp4; codecs="mp4a.40.2"'))).toBe(false)
+    setDrmAvailable(true)
   })
 })
