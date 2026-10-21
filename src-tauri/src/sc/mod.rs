@@ -7,6 +7,7 @@ pub mod login;
 pub mod store;
 pub mod stream;
 pub mod web;
+pub mod web_rules;
 
 use std::path::PathBuf;
 use std::future::Future;
