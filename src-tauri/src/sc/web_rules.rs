@@ -7,12 +7,15 @@ use url::Url;
 
 use super::api::{self, ScError};
 
+// the phone checks the address in Kotlin (ScSite), before its script runs
+#[cfg_attr(mobile, allow(dead_code))]
 pub(crate) const SITE: &str = "https://soundcloud.com/";
 
 pub(crate) fn network() -> ScError {
     ScError::Network { message: "SoundCloud browser request did not finish".to_string() }
 }
 
+#[cfg_attr(mobile, allow(dead_code))]
 pub(crate) fn is_site(url: &Url) -> bool {
     url.scheme() == "https" && url.host_str() == Some("soundcloud.com") && url.port_or_known_default() == Some(443)
 }
