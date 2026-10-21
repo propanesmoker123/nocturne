@@ -1,4 +1,4 @@
-//! What both site sessions share (the desktop's hidden window, the phone's hidden page): which
+//! What every hidden site session shares: which
 //! writes the signed-in person may make, the page script that makes them, and what its answer means.
 
 use serde::Deserialize;
@@ -7,7 +7,7 @@ use url::Url;
 
 use super::api::{self, ScError};
 
-// the phone checks the address in Kotlin (ScSite), before its script runs
+// a session that checks the address on its own side does not need these
 #[cfg_attr(mobile, allow(dead_code))]
 pub(crate) const SITE: &str = "https://soundcloud.com/";
 

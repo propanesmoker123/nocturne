@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { loadJSON, saveJSON } from '../lib/persist'
+import { useScSession, type ScPhase } from '../sc/session'
 import type { ServiceId } from '../vk/models'
 import { routeService, useRouter, type Route } from './router'
 
@@ -45,13 +46,21 @@ export const useService = create<ServiceState>(() => ({
   },
 }))
 
+/**
+ * Whether the app opens on `s` next time: SoundCloud only once one is signed in to it (a curious
+ * tap must not leave someone who uses VK alone on SoundCloud's sign-in page at every start).
+ */
+export function remembers(s: ServiceId, scPhase: ScPhase): boolean {
+  return s !== 'sc' || scPhase !== 'signed-out'
+}
+
 function follow(r: Route) {
   const s = routeService(r)
   if (!s) return
   lastRoute.set(s, r)
   if (useService.getState().current === s) return
   useService.setState({ current: s })
-  void saveJSON('service', s)
+  if (remembers(s, useScSession.getState().phase)) void saveJSON('service', s)
 }
 
 let following = false

@@ -82,3 +82,10 @@ describe('«Моё»', () => {
     expect(service.useService.getState().current).toBe('sc')
   })
 })
+
+test('SoundCloud is remembered as where the app opens only once one is signed in to it', () => {
+  expect(service.remembers('sc', 'signed-in')).toBe(true)
+  expect(service.remembers('sc', 'checking')).toBe(true)
+  expect(service.remembers('sc', 'signed-out')).toBe(false)
+  expect(service.remembers('vk', 'signed-out')).toBe(true)
+})
