@@ -13,7 +13,7 @@ const directive = (name: string) =>
 describe('the release content policy', () => {
   test("VK's own mp3 links may play, and no other outside address", () => {
     const media = directive('media-src')
-    for (const host of ['https://*.vkuseraudio.ru', 'https://*.vkuseraudio.net', 'https://*.vkuseraudio.com']) expect(media).toContain(host)
+    for (const host of ['https://*.vkuseraudio.ru', 'https://*.vkuseraudio.net', 'https://*.vkuseraudio.com', 'https://*.okcdn.ru', 'https://*.mycdn.me']) expect(media).toContain(host)
     expect(media).not.toContain('https:')
     expect(media).not.toContain('*')
   })

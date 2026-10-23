@@ -58,6 +58,16 @@ describe('SoundCloud browser request', () => {
     expect(r.reply).toEqual({ status: 204, captcha: false })
   })
 
+  test.each(['PUT', 'DELETE'])('changes a playlist like through the browser session (%s)', async (method) => {
+    const args = { ...params, method, url: 'https://api-v2.soundcloud.com/users/7/playlist_likes/9002?client_id=public' }
+    const r = await run('https://soundcloud.com', async () => ({ status: 204 }), args)
+    expect(r.started).toBe(true)
+    expect(r.fetch).toHaveBeenCalledWith(args.url, expect.objectContaining({
+      method, credentials: 'include', headers: { Authorization: 'OAuth test-token', Accept: 'application/json' },
+    }))
+    expect(r.reply).toEqual({ status: 204, captcha: false })
+  })
+
   test('never sends the key from another origin', async () => {
     const r = await run('https://soundcloud.com.evil.test', async () => ({ status: 200 }))
     expect(r.started).toBe(false)

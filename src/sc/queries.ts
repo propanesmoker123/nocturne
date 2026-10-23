@@ -11,6 +11,7 @@ export const scKeys = {
   feedPeople: (me: number) => ['sc-feed-people', me],
   likes: (me: number) => ['sc-likes', me],
   myPlaylists: (me: number) => ['sc-my-playlists', me],
+  playlistLikes: (me: number) => ['sc-playlist-likes', me],
   user: (id: number) => ['sc-user', id],
   userTop: (id: number) => ['sc-user-top', id],
   userTracks: (id: number) => ['sc-user-tracks', id],

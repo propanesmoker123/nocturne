@@ -105,11 +105,13 @@ pub fn allowed(method: &str, path: &str) -> bool {
     if method != "GET" && query.is_some() { return false; }
     match (method, segs.as_slice()) {
         ("GET", ["me"] | ["me", "library", "all"] | ["mixed-selections"] | ["stream"] | ["tracks"] | ["search"] | ["search", "tracks" | "users" | "playlists"]) => true,
+        ("GET", ["me", "playlist_likes", "ids"] | ["me", "system_playlist_likes", "urns"]) => true,
         ("GET", ["tracks", n, "related"] | ["playlists", n] | ["users", n]) => numeric(n),
         ("GET", ["system-playlists", urn]) => system_urn(urn),
         ("GET", ["users", n, "track_likes" | "playlists_without_albums" | "albums" | "toptracks" | "tracks" | "likes"]) => numeric(n),
         ("GET", ["users", n, "followings"] | ["users", n, "followings", "ids"] | ["stream", "users", n, "reposts"] | ["tracks", n, "comments"]) => numeric(n),
-        ("PUT" | "DELETE", ["users", user, "track_likes", track]) => numeric(user) && numeric(track),
+        ("PUT" | "DELETE", ["users", user, "track_likes" | "playlist_likes", target]) => numeric(user) && numeric(target),
+        ("PUT" | "DELETE", ["users", user, "system_playlist_likes", urn]) => numeric(user) && system_urn(urn),
         ("DELETE", ["me", "followings", n]) => numeric(n),
         _ => false,
     }
@@ -300,6 +302,39 @@ mod tests {
         ] {
             assert!(!allowed(m, p), "{m} {p}");
         }
+    }
+
+    #[test]
+    fn playlist_likes_allow_put_and_delete_only_on_the_exact_route() {
+        for method in ["PUT", "DELETE"] {
+            assert!(allowed(method, "/users/7/playlist_likes/9002"), "{method}");
+            for path in [
+                "/users/x/playlist_likes/9002",
+                "/users/7/playlist_likes/x",
+                "/users/7/playlist_likes/9002?x=1",
+                "/users/7/playlist_likes/9002?",
+                "/users/7/playlist_likes/9002/extra",
+                "/users/7/playlist_likes/9002/",
+            ] {
+                assert!(!allowed(method, path), "{method} {path}");
+            }
+        }
+        for method in ["GET", "POST", "PATCH"] {
+            assert!(!allowed(method, "/users/7/playlist_likes/9002"), "{method}");
+        }
+    }
+
+    #[test]
+    fn system_playlist_likes_use_their_urn_and_the_liked_lists_can_be_read() {
+        assert!(allowed("GET", "/me/playlist_likes/ids?limit=5000"));
+        assert!(allowed("GET", "/me/system_playlist_likes/urns?limit=5000"));
+        for method in ["PUT", "DELETE"] {
+            assert!(allowed(method, "/users/7/system_playlist_likes/soundcloud:system-playlists:mixed-for-you:7"));
+            for target in ["bad", "soundcloud:system-playlists:", "soundcloud:system-playlists:x?foo=1", "soundcloud:system-playlists:x/other"] {
+                assert!(!allowed(method, &format!("/users/7/system_playlist_likes/{target}")));
+            }
+        }
+        assert!(!allowed("POST", "/users/7/system_playlist_likes/soundcloud:system-playlists:x"));
     }
 
     #[test]

@@ -141,6 +141,50 @@ async function setLiked(t: Pick<Track, 'id'>, liked: boolean): Promise<void> {
 export const like = (t: Pick<Track, 'id'>) => setLiked(t, true)
 export const unlike = (t: Pick<Track, 'id'>) => setLiked(t, false)
 
+export interface ScPlaylistLikes { ids: number[]; urns: string[] }
+type PlaylistTarget = Pick<Playlist, 'id' | 'urn'>
+const systemPlaylistUrn = (urn: string) => /^soundcloud:system-playlists:[A-Za-z0-9:_-]+$/.test(urn)
+
+/** SoundCloud keeps ordinary playlist ids and system playlist urns in separate lists. */
+export async function getPlaylistLikes(): Promise<ScPlaylistLikes> {
+  const account = meId
+  const version = accountVersion
+  if (!account) return { ids: [], urns: [] }
+  const all = async <T>(path: string): Promise<T[]> => {
+    const out = new Set<T>()
+    const seen = new Set<string>()
+    let next: string | undefined = path
+    while (next && !seen.has(next)) {
+      seen.add(next)
+      const page: RawScCollection<T> = await get(next)
+      if (meId !== account || version !== accountVersion) throw new ScApiError('signedOut', '')
+      for (const value of page.collection ?? []) out.add(value)
+      next = nextPath(page.next_href)
+    }
+    return [...out]
+  }
+  const [ids, urns] = await Promise.all([
+    all<number>('/me/playlist_likes/ids?limit=5000'),
+    all<string>('/me/system_playlist_likes/urns?limit=5000'),
+  ])
+  return { ids, urns }
+}
+
+export function isPlaylistLiked(p: PlaylistTarget, saved: ScPlaylistLikes): boolean {
+  return p.urn ? saved.urns.includes(p.urn) : saved.ids.includes(p.id)
+}
+
+/** A service-library like: goes through the authenticated SoundCloud browser session. */
+export async function setPlaylistLiked(p: PlaylistTarget, liked: boolean): Promise<void> {
+  const account = meId
+  const version = accountVersion
+  if (!account) throw new ScApiError('signedOut', '')
+  if (p.urn ? !systemPlaylistUrn(p.urn) : !Number.isSafeInteger(p.id) || p.id <= 0) throw new ScApiError('invalid', '')
+  const resource = p.urn ? `system_playlist_likes/${p.urn}` : `playlist_likes/${p.id}`
+  await call(liked ? 'PUT' : 'DELETE', `/users/${account}/${resource}`)
+  if (meId !== account || version !== accountVersion) throw new ScApiError('signedOut', '')
+}
+
 const playlistKey = (p: Playlist) => `${p.id}_${p.urn ?? ''}`
 
 /** The person's own playlists and albums, then the ones they liked, each once. */

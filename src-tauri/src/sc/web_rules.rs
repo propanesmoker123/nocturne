@@ -32,7 +32,8 @@ pub(crate) fn owned_write_path(method: &str, path: &str, me: i64) -> bool {
             && parts.get(3).and_then(|s| s.parse::<i64>().ok()).is_some_and(|id| id > 0 && id != me);
     }
     parts.get(2).and_then(|s| s.parse::<i64>().ok()) == Some(me)
-        && parts.get(4).and_then(|s| s.parse::<u64>().ok()).is_some_and(|id| id > 0)
+        && (parts.get(3) == Some(&"system_playlist_likes")
+            || parts.get(4).and_then(|s| s.parse::<u64>().ok()).is_some_and(|id| id > 0))
 }
 
 #[derive(Deserialize, Debug)]
@@ -92,6 +93,41 @@ mod tests {
             ("GET", "/users/7/track_likes/402", 7), ("PUT", "/users/7/track_likes/0", 7),
             ("PUT", "/users/7/track_likes/402?x=1", 7), ("PUT", "/users/7/track_likes/402/extra", 7),
         ] { assert!(!owned_write_path(method, path, me), "{method} {path}"); }
+    }
+
+    #[test]
+    fn playlist_likes_can_change_only_in_the_current_account() {
+        for method in ["PUT", "DELETE"] {
+            assert!(owned_write_path(method, "/users/7/playlist_likes/9002", 7), "{method}");
+            for (path, me) in [
+                ("/users/8/playlist_likes/9002", 7),
+                ("/users/0/playlist_likes/9002", 0),
+                ("/users/7/playlist_likes/9002", 0),
+                ("/users/7/playlist_likes/0", 7),
+                ("/users/7/playlist_likes/-1", 7),
+                ("/users/7/playlist_likes/18446744073709551616", 7),
+                ("/users/7/playlist_likes/9002?x=1", 7),
+                ("/users/7/playlist_likes/9002?", 7),
+                ("/users/7/playlist_likes/9002/extra", 7),
+            ] {
+                assert!(!owned_write_path(method, path, me), "{method} {path}, account {me}");
+            }
+        }
+        for method in ["GET", "POST", "PATCH"] {
+            assert!(!owned_write_path(method, "/users/7/playlist_likes/9002", 7), "{method}");
+        }
+    }
+
+    #[test]
+    fn a_system_playlist_like_belongs_to_the_current_account_too() {
+        let path = "/users/7/system_playlist_likes/soundcloud:system-playlists:mixed-for-you:7";
+        for method in ["PUT", "DELETE"] {
+            assert!(owned_write_path(method, path, 7));
+            assert!(!owned_write_path(method, path, 8));
+            assert!(!owned_write_path(method, path, 0));
+            assert!(!owned_write_path(method, &format!("{path}?x=1"), 7));
+        }
+        assert!(!owned_write_path("POST", path, 7));
     }
 
     #[test]

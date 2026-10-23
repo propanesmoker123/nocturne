@@ -14,6 +14,7 @@ import { usePlayer } from '../../player/store'
 import * as sc from '../../sc/api'
 import { describeScError } from '../../sc/errors'
 import { scKeys } from '../../sc/queries'
+import { PlaylistSaveButton } from '../../sc/PlaylistSaveButton'
 import s from '../pages.module.css'
 import { ScGate } from './ScGate'
 
@@ -57,6 +58,7 @@ function PlaylistBody({ id, urn, title }: { id: number; urn?: string; title?: st
             <Button variant="tinted" disabled={!playable} onClick={() => usePlayer.getState().playList(tracks, 0, { shuffle: true, source })}>
               <Shuffle size={15} strokeWidth={2.2} /> Перемешать
             </Button>
+            {p && <PlaylistSaveButton key={urn ?? String(id)} playlist={p} />}
             {p && (
               <IconButton label="Ещё" onClick={(e) => showMenu(e, playlistMenuItems(p, tracks))}>
                 <IconMore size={20} />

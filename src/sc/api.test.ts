@@ -21,6 +21,76 @@ afterEach(() => {
 
 const idsOf = (path: string) => new URLSearchParams(path.split('?')[1]).get('ids')!.split(',').map(Number)
 
+describe('SoundCloud playlist library', () => {
+  test('reads every page of regular and system playlist likes separately', async () => {
+    sc.setScMeId(7)
+    const calls = record((path) => path.includes('system_playlist_likes')
+      ? { collection: ['soundcloud:system-playlists:mixed-for-you:7'] }
+      : path.includes('cursor=next')
+        ? { collection: [9002, 9001] }
+        : { collection: [9001], next_href: 'https://api-v2.soundcloud.com/me/playlist_likes/ids?cursor=next' })
+    const saved = await sc.getPlaylistLikes()
+    expect(saved).toEqual({ ids: [9001, 9002], urns: ['soundcloud:system-playlists:mixed-for-you:7'] })
+    expect(sc.isPlaylistLiked({ id: 9001 }, saved)).toBe(true)
+    expect(sc.isPlaylistLiked({ id: 0, urn: 'soundcloud:system-playlists:mixed-for-you:7' }, saved)).toBe(true)
+    expect(sc.isPlaylistLiked({ id: 9003 }, saved)).toBe(false)
+    expect(calls).toHaveLength(3)
+  })
+
+  test('adds and removes playlists through the current account with no body', async () => {
+    sc.setScMeId(7)
+    const calls = record(() => null)
+    await sc.setPlaylistLiked({ id: 9001 }, true)
+    await sc.setPlaylistLiked({ id: 9001 }, false)
+    await sc.setPlaylistLiked({ id: 0, urn: 'soundcloud:system-playlists:mixed-for-you:7' }, true)
+    await sc.setPlaylistLiked({ id: 0, urn: 'soundcloud:system-playlists:mixed-for-you:7' }, false)
+    expect(calls).toEqual([
+      { method: 'PUT', path: '/users/7/playlist_likes/9001' },
+      { method: 'DELETE', path: '/users/7/playlist_likes/9001' },
+      { method: 'PUT', path: '/users/7/system_playlist_likes/soundcloud:system-playlists:mixed-for-you:7' },
+      { method: 'DELETE', path: '/users/7/system_playlist_likes/soundcloud:system-playlists:mixed-for-you:7' },
+    ])
+  })
+
+  test('signed-out and invalid playlist targets send nothing', async () => {
+    const calls = record(() => null)
+    expect(await sc.getPlaylistLikes()).toEqual({ ids: [], urns: [] })
+    await expect(sc.setPlaylistLiked({ id: 9001 }, true)).rejects.toMatchObject({ kind: 'signedOut' })
+    sc.setScMeId(7)
+    for (const p of [{ id: 0 }, { id: -1 }, { id: 1.5 }, { id: Number.MAX_SAFE_INTEGER + 1 }, { id: 0, urn: 'soundcloud:system-playlists:x/other' }, { id: 0, urn: 'https://evil.test/x' }]) {
+      await expect(sc.setPlaylistLiked(p, true)).rejects.toMatchObject({ kind: 'invalid' })
+    }
+    expect(calls).toEqual([])
+  })
+
+  test('a rejected playlist write remains a failure', async () => {
+    sc.setScMeId(7)
+    record(() => { throw { kind: 'http', status: 403 } })
+    await expect(sc.setPlaylistLiked({ id: 9001 }, true)).rejects.toMatchObject({ kind: 'http', status: 403 })
+  })
+
+  test('an old write cannot complete into a later account session', async () => {
+    sc.setScMeId(7)
+    let finish!: () => void
+    sc.setTransport(() => new Promise<void>((resolve) => { finish = resolve }))
+    const write = sc.setPlaylistLiked({ id: 9001 }, true)
+    sc.setScMeId(0)
+    sc.setScMeId(7)
+    finish()
+    await expect(write).rejects.toMatchObject({ kind: 'signedOut' })
+  })
+
+  test('an old library read cannot complete into a later account session', async () => {
+    sc.setScMeId(7)
+    const replies: ((value: unknown) => void)[] = []
+    sc.setTransport(() => new Promise((resolve) => { replies.push(resolve) }))
+    const read = sc.getPlaylistLikes()
+    sc.setScMeId(9)
+    for (const finish of replies) finish({ collection: [] })
+    await expect(read).rejects.toMatchObject({ kind: 'signedOut' })
+  })
+})
+
 describe('SoundCloud API', () => {
   test('likes and unlikes update subsequent track reads only after success', async () => {
     sc.setScMeId(7)
