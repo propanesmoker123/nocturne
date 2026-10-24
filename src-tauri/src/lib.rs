@@ -12,7 +12,7 @@ mod sc;
 mod session;
 mod vk;
 
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 
 #[tauri::command]
 fn app_quit(app: tauri::AppHandle) {
@@ -93,7 +93,9 @@ pub fn run() {
                 "main" => {
                     if tray::close_to_tray() {
                         api.prevent_close();
-                        let _ = window.hide();
+                        if window.hide().is_ok() {
+                            let _ = window.emit_to("main", "window:visibility", false);
+                        }
                     } else {
                         window.app_handle().exit(0);
                     }
@@ -101,6 +103,10 @@ pub fn run() {
                 _ => {}
             },
             WindowEvent::Destroyed if window.label().starts_with(sc::login::LABEL_PREFIX) => sc::login::closed(window.app_handle(), window.label()),
+            WindowEvent::Focused(_) | WindowEvent::Resized(_) if window.label() == "main" => {
+                let visible = window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
+                let _ = window.emit_to("main", "window:visibility", visible);
+            }
             // The quick search panel goes away as soon as the user clicks anywhere else
             WindowEvent::Focused(false) if window.label() == quicksearch::LABEL => {
                 let _ = window.hide();

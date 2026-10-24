@@ -3,6 +3,7 @@
 pub mod api;
 pub mod auth;
 pub mod client_id;
+mod idle;
 pub mod login;
 pub mod store;
 pub mod stream;

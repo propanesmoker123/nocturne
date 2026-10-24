@@ -19,6 +19,7 @@ import { startGlobalHotkeys } from './lib/globalHotkeys'
 import { journalUncaughtErrors } from './lib/journal'
 import { startServerTimeSync } from './lib/serverTime'
 import { startUpdateChecks } from './lib/updates'
+import { setMainWindowVisible, startWindowVisibility } from './lib/windowVisibility'
 import { takeWhatsNew } from './lib/whatsNew'
 import { initSettings, useSettings } from './lib/settings'
 import { invoke, isTauri } from './lib/tauri'
@@ -36,11 +37,13 @@ async function showMainWindow(toggle = false) {
   const w = getCurrentWindow()
   if (toggle && (await w.isVisible()) && (await w.isFocused())) {
     await w.hide()
+    setMainWindowVisible(false)
     return
   }
   await w.unminimize()
   await w.show()
   await w.setFocus()
+  setMainWindowVisible(true)
 }
 
 /** The first start after an update: «Что нового» once, from the notes kept before installing. */
@@ -61,6 +64,7 @@ async function showWhatsNew() {
 
 async function boot() {
   journalUncaughtErrors()
+  startWindowVisibility()
   setCaptchaHandler((e) => (e.captchaImg ? askCaptcha(e.captchaImg) : Promise.resolve(null)))
   installShortcuts()
   await initSettings()

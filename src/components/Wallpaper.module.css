@@ -7,6 +7,12 @@
   pointer-events: none;
 }
 
+/* Remove animated/filter surfaces from rendering while the native window is hidden. */
+.layer[data-paused],
+.preset[data-paused] {
+  display: none;
+}
+
 .media {
   position: absolute;
   inset: -4%;

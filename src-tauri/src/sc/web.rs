@@ -9,17 +9,20 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder}
 use tokio::sync::oneshot;
 
 use super::web_rules::{is_site, network, owned_write_path, progress, script, Poll, SITE};
-use super::{api::{self, ScError}, login, trace, ScState};
+use super::{api::{self, ScError}, idle::IdleCleanup, login, trace, ScState};
 
 const LABEL: &str = "sc-session";
 const DEADLINE: Duration = Duration::from_secs(30);
 static WRITING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static IDLE: IdleCleanup = IdleCleanup::new();
 
-fn window(app: &AppHandle) -> Result<WebviewWindow, ScError> {
+async fn window(app: &AppHandle) -> Result<WebviewWindow, ScError> {
+    tokio::time::timeout(Duration::from_secs(3), IDLE.wait_for_retirement(|| app.get_webview_window(LABEL).is_some()))
+        .await.map_err(|_| network())?;
     if let Some(w) = app.get_webview_window(LABEL) {
         return Ok(w);
     }
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(SITE.parse().expect("site")))
+    let w = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(SITE.parse().expect("site")))
         .title("Проверка SoundCloud — Nocturne")
         .inner_size(960.0, 720.0)
         .center()
@@ -28,13 +31,35 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, ScError> {
         .on_navigation(is_site)
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .build()
-        .map_err(|_| network())
+        .map_err(|_| network())?;
+    w.on_window_event(|event| {
+        if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+            IDLE.cancel();
+            IDLE.retire();
+        }
+    });
+    Ok(w)
 }
 
 pub fn close(app: &AppHandle) {
+    IDLE.cancel();
     if let Some(w) = app.get_webview_window(LABEL) {
+        IDLE.retire();
         let _ = w.destroy();
     }
+}
+
+fn idle(app: &AppHandle) {
+    let Some(w) = app.get_webview_window(LABEL) else { return };
+    // Keep an active challenge available for as long as the person needs it. An unknown
+    // visibility is also left alone. Destroy only the window, preserving its profile cookies.
+    if !matches!(w.is_visible(), Ok(false)) { return; }
+    IDLE.arm(&WRITING, move || {
+        if matches!(w.is_visible(), Ok(false)) {
+            IDLE.retire();
+            let _ = w.destroy();
+        }
+    });
 }
 
 async fn eval(w: &WebviewWindow, script: String) -> Result<String, ScError> {
@@ -49,7 +74,7 @@ async fn eval(w: &WebviewWindow, script: String) -> Result<String, ScError> {
 }
 
 async fn send(app: &AppHandle, method: &str, path: &str, token: &str) -> Result<Value, ScError> {
-    let w = window(app)?;
+    let w = window(app).await?;
     let until = Instant::now() + DEADLINE;
     loop {
         if Instant::now() >= until { close(app); return Err(network()); }
@@ -88,7 +113,16 @@ async fn send(app: &AppHandle, method: &str, path: &str, token: &str) -> Result<
 }
 
 pub async fn request(app: &AppHandle, method: &str, path: &str) -> Result<Value, ScError> {
+    IDLE.cancel();
     let _one = WRITING.lock().await;
+    // The preceding write may have armed its timer while this request waited for the lock.
+    IDLE.cancel();
+    let answer = write(app, method, path).await;
+    idle(app);
+    answer
+}
+
+async fn write(app: &AppHandle, method: &str, path: &str) -> Result<Value, ScError> {
     let st = app.state::<ScState>();
     let me = st.status().user.ok_or(ScError::SignedOut)?.id;
     if !owned_write_path(method, path, me) {

@@ -2,6 +2,8 @@ import type { RepeatMode } from '../player/queue'
 
 /** Event names shared by the main window, the island and Rust. */
 export const EV = {
+  /** Rust → main: the native window is shown and not minimized. */
+  windowVisibility: 'window:visibility',
   playerState: 'player:state',
   playerCommand: 'player:command',
   requestState: 'player:request-state',
