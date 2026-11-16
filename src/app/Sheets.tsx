@@ -1,6 +1,8 @@
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
 import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { Button, Spinner } from '../components/controls'
+import { Button, Segmented, Spinner, Switch } from '../components/controls'
+import { sendFeedback, type FeedbackKind } from '../lib/feedback'
+import { journalTail } from '../lib/journal'
 import * as vk from '../vk/api'
 import { LinkDevice } from '../connect/DevicesPanel'
 import { describeError, VkError } from '../vk/errors'
@@ -242,6 +244,115 @@ function LinkDeviceBody() {
   )
 }
 
+function FeedbackBody({ req }: { req: Extract<SheetRequest, { kind: 'feedback' }> }) {
+  const initialKind = req.defaultKind ?? 'bug'
+  const [kind, setKind] = useState<FeedbackKind>(initialKind)
+  const [message, setMessage] = useState('')
+  const [contact, setContact] = useState('')
+  const [includeLog, setIncludeLog] = useState(initialKind === 'bug')
+  const [logTouched, setLogTouched] = useState(false)
+  const [preview, setPreview] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const close = useSheet((x) => x.close)
+
+  const changeKind = (next: FeedbackKind) => {
+    setKind(next)
+    if (!logTouched) setIncludeLog(next === 'bug')
+  }
+
+  const togglePreview = async () => {
+    if (preview !== null) {
+      setPreview(null)
+      return
+    }
+    const raw = (await journalTail().catch(() => '')) || ''
+    setPreview(raw.trim() ? raw.slice(-8000) : 'Журнал пока пуст')
+  }
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    const trimmed = message.trim()
+    if (!trimmed) {
+      setError(kind === 'bug' ? 'Опишите, что пошло не так' : 'Напишите вашу идею или отзыв')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await sendFeedback({ kind, message: trimmed, contact, includeLog })
+      toast('Спасибо! Отчёт отправлен разработчику', 'added')
+      close()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <h2 className={s.sheetTitle}>Обратная связь</h2>
+      <p className={s.sheetText}>Отправляется напрямую разработчику в Telegram. Ни ваш аккаунт, ни пароли или треки не передаются.</p>
+      <div className={s.feedbackSwitch}>
+        <Segmented
+          id="feedback-kind"
+          value={kind}
+          onChange={changeKind}
+          options={[
+            { value: 'bug', label: 'Ошибка (баг)' },
+            { value: 'idea', label: 'Идея / отзыв' },
+          ]}
+        />
+      </div>
+      <label className={s.field}>
+        <span className={s.fieldLabel}>{kind === 'bug' ? 'Что случилось и как повторить' : 'Описание идеи или пожелания'}</span>
+        <textarea
+          className={s.textarea}
+          value={message}
+          maxLength={4000}
+          autoFocus
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder={kind === 'bug' ? 'Например: при входе в SoundCloud через Google открывается белое окно…' : 'Например: хочется видеть…'}
+        />
+      </label>
+      <label className={s.field}>
+        <span className={s.fieldLabel}>Контакт для ответа (необязательно)</span>
+        <input
+          className={s.input}
+          value={contact}
+          maxLength={160}
+          onChange={(e) => setContact(e.target.value)}
+          placeholder="@telegram или почта, если нужен ответ"
+        />
+      </label>
+      <div className={s.feedbackLogRow}>
+        <div className={s.feedbackLogMeta}>
+          <span className={s.feedbackLogTitle}>Прикрепить журнал работы</span>
+          <button type="button" className={s.feedbackPreviewBtn} onClick={() => void togglePreview()}>
+            {preview !== null ? 'Скрыть лог' : 'Посмотреть что внутри'}
+          </button>
+        </div>
+        <Switch
+          label="Прикрепить журнал работы"
+          checked={includeLog}
+          onChange={(v) => {
+            setLogTouched(true)
+            setIncludeLog(v)
+          }}
+        />
+      </div>
+      {preview !== null && <pre className={s.feedbackLogBox}>{preview}</pre>}
+      {error && <p className={s.error}>{error}</p>}
+      <div className={s.sheetActions}>
+        <Button onClick={close}>Отмена</Button>
+        <Button variant="primary" type="submit" disabled={busy}>
+          {busy ? <Spinner size={16} /> : 'Отправить'}
+        </Button>
+      </div>
+    </form>
+  )
+}
+
 /** The dimming layer stops catching clicks as soon as it starts leaving. */
 function Layer({ children, onDismiss }: { children: ReactNode; onDismiss(): void }) {
   const present = useIsPresent()
@@ -303,6 +414,8 @@ export function Sheets() {
                 <AlbumShareBody req={sheet} />
               ) : sheet.kind === 'album-join' ? (
                 <AlbumJoinBody />
+              ) : sheet.kind === 'feedback' ? (
+                <FeedbackBody req={sheet} />
               ) : (
                 <PlaylistForm req={sheet} />
               )}

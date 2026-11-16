@@ -1,0 +1,5 @@
+# Вставьте этот блок внутрь вашего существующего блока сайта для 64.188.95.211 в /etc/caddy/Caddyfile
+# (до общего reverse_proxy / file_server сайта Lyra), затем выполните: systemctl reload caddy
+handle /nocturne-feedback* {
+    reverse_proxy 127.0.0.1:8787
+}

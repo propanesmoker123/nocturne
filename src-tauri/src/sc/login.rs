@@ -10,12 +10,12 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::webview::NewWindowResponse;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::oneshot;
 use url::Url;
 
 use super::auth::{self, CallbackError, Pkce};
-use super::{api, emit_status, store, trace, ScState, EV_LOGIN_FAILED};
+use super::{api, emit_status, shown_path, store, trace, ScState, EV_LOGIN_FAILED};
 use crate::http::Http;
 
 /// Each attempt has its own label (`sc-login-<n>`), so a closed old window never ends a new attempt.
@@ -63,6 +63,60 @@ fn close_windows(app: &AppHandle) {
     }
 }
 
+fn safe_url(url: &Url) -> String {
+    if url.scheme() == "about" {
+        return format!("about:{}", url.path());
+    }
+    match url.host_str() {
+        Some(host) if !host.is_empty() => format!("{}://{host}{}", url.scheme(), shown_path(url.path())),
+        _ => format!("{}:{}", url.scheme(), shown_path(url.path())),
+    }
+}
+
+fn title_issue(title: &str) -> Option<&'static str> {
+    let t = title.to_ascii_lowercase();
+    for (needle, label) in [
+        ("disallowed_useragent", "disallowed_useragent"),
+        ("access blocked", "access_blocked"),
+        ("access denied", "access_denied"),
+        ("just a moment", "challenge"),
+        ("attention required", "challenge"),
+        ("403", "http_403"),
+        ("400", "http_400"),
+        ("404", "http_404"),
+        ("500", "http_500"),
+        ("502", "http_502"),
+        ("503", "http_503"),
+        ("can't reach this page", "network_unreachable"),
+        ("cannot connect", "network_unreachable"),
+        ("err_", "webview_error"),
+    ] {
+        if t.contains(needle) {
+            return Some(label);
+        }
+    }
+    None
+}
+
+fn handle_nav(app: &AppHandle, scope: &str, url: &Url, silent: bool) -> bool {
+    if auth::is_callback(url) {
+        trace!("{scope} callback ({})", auth::callback_kind(url));
+        let app = app.clone();
+        let u = url.clone();
+        tauri::async_runtime::spawn(async move { finish(&app, u).await });
+        return false;
+    }
+    let allow = matches!(url.scheme(), "https" | "about");
+    if allow {
+        if !silent && url.scheme() != "about" {
+            trace!("{scope} nav -> {}", safe_url(url));
+        }
+    } else {
+        trace!("{scope} nav blocked: {}", safe_url(url));
+    }
+    allow
+}
+
 /// Opens the sign-in page for a new attempt (hidden for a silent one). The receiver hears how it ended.
 pub fn open(app: &AppHandle, silent: bool) -> Result<oneshot::Receiver<Result<(), String>>, String> {
     close_windows(app);
@@ -70,6 +124,7 @@ pub fn open(app: &AppHandle, silent: bool) -> Result<oneshot::Receiver<Result<()
     let ids = st.ids();
     let pkce = auth::new_pkce();
     let page: Url = auth::auth_url(&ids.client_id, &ids.app_id, &st.device_id(), &pkce).parse().map_err(|_| "bad sign-in address".to_string())?;
+    let page_summary = safe_url(&page);
     let label = format!("{LABEL_PREFIX}{}", ATTEMPTS.fetch_add(1, Ordering::Relaxed));
     let (tx, rx) = oneshot::channel();
     if let Ok(mut g) = st.pending.lock() {
@@ -77,8 +132,9 @@ pub fn open(app: &AppHandle, silent: bool) -> Result<oneshot::Receiver<Result<()
     }
     let dir = profile_dir(app)?;
     let nav_app = app.clone();
+    let load_silent = silent;
+    let title_silent = silent;
     let popup_app = app.clone();
-    let popup_dir = dir.clone();
     WebviewWindowBuilder::new(app, &label, WebviewUrl::External(page))
         .title("Вход в SoundCloud — Nocturne")
         .inner_size(480.0, 760.0)
@@ -86,31 +142,73 @@ pub fn open(app: &AppHandle, silent: bool) -> Result<oneshot::Receiver<Result<()
         .visible(!silent)
         .data_directory(dir)
         .initialization_script(auth::INIT_SCRIPT)
-        .on_navigation(move |url| {
-            if auth::is_callback(url) {
-                let app = nav_app.clone();
-                let url = url.clone();
-                tauri::async_runtime::spawn(async move { finish(&app, url).await });
-                return false;
+        .on_navigation(move |url| handle_nav(&nav_app, "sign-in", url, silent))
+        .on_page_load(move |_window, payload| {
+            if !load_silent {
+                trace!("sign-in page {:?}: {}", payload.event(), safe_url(payload.url()));
             }
-            matches!(url.scheme(), "https" | "about")
         })
-        .on_new_window(move |_url, features| {
+        .on_document_title_changed(move |_window, title| {
+            if !title_silent {
+                if let Some(issue) = title_issue(&title) {
+                    trace!("sign-in title issue: {issue}");
+                }
+            }
+        })
+        .on_new_window(move |url, features| {
+            let requested = safe_url(&url);
+            if silent {
+                trace!("silent sign-in denied popup: {requested}");
+                return NewWindowResponse::Deny;
+            }
             let n = POPUPS.fetch_add(1, Ordering::Relaxed);
+            trace!("popup #{n} requested: {requested}");
             let blank: Url = "about:blank".parse().expect("about:blank");
+            let popup_nav_app = popup_app.clone();
+            let scope = format!("popup #{n}");
+            let nav_scope = scope.clone();
+            let load_scope = scope.clone();
+            let title_scope = scope.clone();
             match WebviewWindowBuilder::new(&popup_app, format!("{POPUP_PREFIX}{n}"), WebviewUrl::External(blank))
                 .window_features(features)
-                .data_directory(popup_dir.clone())
                 .title("Вход — SoundCloud (Nocturne)")
+                .on_navigation(move |nav_url| handle_nav(&popup_nav_app, &nav_scope, nav_url, false))
+                .on_page_load(move |_window, payload| {
+                    trace!("{load_scope} page {:?}: {}", payload.event(), safe_url(payload.url()));
+                })
+                .on_document_title_changed(move |_window, title| {
+                    if let Some(issue) = title_issue(&title) {
+                        trace!("{title_scope} title issue: {issue}");
+                    }
+                })
+                .on_new_window(move |nested, _| {
+                    trace!("popup #{n} nested popup denied: {}", safe_url(&nested));
+                    NewWindowResponse::Deny
+                })
                 .build()
             {
-                Ok(window) => NewWindowResponse::Create { window },
-                Err(_) => NewWindowResponse::Deny,
+                Ok(window) => {
+                    trace!("{scope} created");
+                    window.on_window_event(move |event| {
+                        if matches!(event, WindowEvent::Destroyed) {
+                            trace!("popup #{n} closed");
+                        }
+                    });
+                    NewWindowResponse::Create { window }
+                }
+                Err(e) => {
+                    trace!("{scope} build failed: {e}");
+                    NewWindowResponse::Deny
+                }
             }
         })
         .build()
-        .map_err(|e| e.to_string())?;
-    trace!("{} sign-in window opened", if silent { "silent" } else { "visible" });
+        .map_err(|e| {
+            let msg = e.to_string();
+            trace!("sign-in window build failed: {msg}");
+            msg
+        })?;
+    trace!("{} sign-in window opened ({page_summary})", if silent { "silent" } else { "visible" });
     Ok(rx)
 }
 
@@ -122,7 +220,7 @@ async fn finish(app: &AppHandle, url: Url) {
     match &result {
         Ok(()) => trace!("signed in"),
         Err(f) if f.cancelled => trace!("sign-in cancelled"),
-        Err(_) => {}
+        Err(f) => trace!("sign-in failed: {}", f.message),
     }
     if let Err(f) = &result {
         if !p.silent {
@@ -155,16 +253,22 @@ async fn exchange(app: &AppHandle, p: &Pending, url: &Url) -> Result<(), Failure
         .form(&auth::token_form(&code, &p.pkce.verifier, &ids.client_id))
         .send()
         .await
-        .map_err(|_| {
-            trace!("sign-in: SoundCloud did not answer");
+        .map_err(|e| {
+            trace!("sign-in: SoundCloud token request failed (timeout={}, connect={})", e.is_timeout(), e.is_connect());
             Failure::new(api::UNREACHABLE)
         })?;
     if !resp.status().is_success() {
-        trace!("sign-in failed: HTTP {}", resp.status().as_u16());
+        trace!("sign-in token exchange HTTP {}", resp.status().as_u16());
         return Err(Failure::new(GENERIC_FAILURE));
     }
-    let body: Value = resp.json().await.map_err(|_| Failure::new(GENERIC_FAILURE))?;
-    let token = auth::token_from(&body).ok_or_else(|| Failure::new(GENERIC_FAILURE))?;
+    let body: Value = resp.json().await.map_err(|_| {
+        trace!("sign-in token response was not valid JSON");
+        Failure::new(GENERIC_FAILURE)
+    })?;
+    let token = auth::token_from(&body).ok_or_else(|| {
+        trace!("sign-in token response missing access_token");
+        Failure::new(GENERIC_FAILURE)
+    })?;
     // without Credential Manager the key still works for this run
     if let Err(e) = store::save_token(&token) {
         trace!("could not keep the key: {e}");
@@ -296,5 +400,21 @@ mod tests {
     #[test]
     fn a_silent_sign_in_with_the_failed_key_still_there_tries() {
         assert_eq!(after_wait(Some("k"), "k"), Waited::Try);
+    }
+
+    #[test]
+    fn safe_url_strips_query_fragment_and_numeric_ids() {
+        let oauth = Url::parse("https://accounts.google.com/o/oauth2/v2/auth/123456?client_id=secret&login_hint=user@example.com#frag").unwrap();
+        assert_eq!(safe_url(&oauth), "https://accounts.google.com/o/oauth2/v2/auth/{n}");
+        let blank = Url::parse("about:blank").unwrap();
+        assert_eq!(safe_url(&blank), "about:blank");
+    }
+
+    #[test]
+    fn title_issue_flags_safe_error_markers_without_user_data() {
+        assert_eq!(title_issue("403 Forbidden"), Some("http_403"));
+        assert_eq!(title_issue("Error 403 (disallowed_useragent)"), Some("disallowed_useragent"));
+        assert_eq!(title_issue("Just a moment..."), Some("challenge"));
+        assert_eq!(title_issue("Sign in - Google Accounts — user@gmail.com"), None);
     }
 }

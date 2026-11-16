@@ -40,6 +40,7 @@ const COMMANDS: &[&str] = &[
     "journal_write",
     "journal_tail",
     "journal_open_dir",
+    "send_feedback",
     "app_quit",
 ];
 

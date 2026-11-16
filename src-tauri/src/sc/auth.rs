@@ -74,6 +74,18 @@ pub fn is_callback(url: &Url) -> bool {
     url.scheme() == "https" && url.host_str() == Some("soundcloud.com") && url.path() == "/signin/callback"
 }
 
+/// Safe journal label for a callback navigation (`code`, `error=cancelled`, etc.) without exposing secrets.
+pub fn callback_kind(url: &Url) -> String {
+    if let Some((_, err)) = url.query_pairs().find(|(k, _)| k == "error") {
+        let safe: String = err.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').take(40).collect();
+        return if safe.is_empty() { "error".to_string() } else { format!("error={safe}") };
+    }
+    if url.query_pairs().any(|(k, v)| k == "code" && !v.is_empty()) {
+        return "code".to_string();
+    }
+    "missing".to_string()
+}
+
 #[derive(Debug, PartialEq)]
 pub enum CallbackError {
     /// The person closed the sign-in form.
@@ -253,6 +265,16 @@ mod tests {
         ] {
             assert!(!is_callback(&Url::parse(bad).unwrap()), "{bad}");
         }
+    }
+
+    #[test]
+    fn callback_kind_never_leaks_code_or_state() {
+        let ok = callback("code=SECRET_CODE&state=SECRET_STATE");
+        assert_eq!(callback_kind(&ok), "code");
+        let cancelled = callback("error=cancelled&state=SECRET");
+        assert_eq!(callback_kind(&cancelled), "error=cancelled");
+        let denied = callback("error=access_denied%20oops");
+        assert_eq!(callback_kind(&denied), "error=access_deniedoops");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { FeedbackKind } from '../lib/feedback'
 import type { Playlist, Track } from '../vk/models'
 
 export type SheetRequest =
@@ -12,6 +13,7 @@ export type SheetRequest =
   | { kind: 'album-rename'; id: string }
   | { kind: 'album-share'; id: string }
   | { kind: 'album-join' }
+  | { kind: 'feedback'; defaultKind?: FeedbackKind }
   /** «Что нового»: release notes as a short list, with an optional action (e.g. «Обновить»). */
   | { kind: 'notes'; title: string; notes: string; action?: { label: string; run: () => void } }
 

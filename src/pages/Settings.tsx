@@ -493,9 +493,15 @@ export function SettingsPage() {
       </Group>
 
       <Group
-        title="Журнал"
+        title="Журнал и обратная связь"
         note="Записи о входе, ошибках VK, воспроизведения и обновлений — чтобы разобраться, если что-то сломалось. Без паролей, токенов, ссылок и названий треков. Хранится только на этом компьютере, не больше 10 МБ: старые записи удаляются сами."
       >
+        <Row title="Обратная связь" sub="Отправить ошибку с журналом или предложить идею разработчику">
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button onClick={() => useSheet.getState().open({ kind: 'feedback', defaultKind: 'bug' })}>Сообщить о баге</Button>
+            <Button onClick={() => useSheet.getState().open({ kind: 'feedback', defaultKind: 'idea' })}>Предложить идею</Button>
+          </div>
+        </Row>
         <Row title="Журнал работы" sub="Скопируйте и отправьте тому, кто помогает разобраться">
           <div style={{ display: 'flex', gap: 8 }}>
             <Button

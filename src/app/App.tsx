@@ -130,12 +130,10 @@ function Shell() {
             </motion.div>
           </div>
           <Titlebar />
-          <Toasts />
           {spotifyPlaying ? <SpotifyMiniPlayer /> : <MiniPlayer />}
         </main>
         <NowPlaying />
         <ContextMenu />
-        <Sheets />
       </div>
     </ScrollerContext.Provider>
   )
@@ -145,8 +143,8 @@ export function App() {
   const spotify = useRouter(state => routeService(state.route) === 'spotify')
   const phase = useSession((x) => x.phase)
   const busy = useSession((x) => x.busy)
-  if (phase === 'pending' && !spotify) {
-    return (
+  const body =
+    phase === 'pending' && !spotify ? (
       <div className={s.splash} data-tauri-drag-region>
         <div className={s.splashChrome}>
           <WindowControls />
@@ -163,8 +161,17 @@ export function App() {
           </>
         )}
       </div>
+    ) : phase === 'none' && !spotify ? (
+      <Login />
+    ) : (
+      <Shell />
     )
-  }
-  if (phase === 'none' && !spotify) return <Login />
-  return <Shell />
+
+  return (
+    <>
+      {body}
+      <Toasts />
+      <Sheets />
+    </>
+  )
 }

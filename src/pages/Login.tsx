@@ -9,26 +9,36 @@ import { copyJournal } from '../lib/journal'
 import { useUpdates } from '../lib/updates'
 import s from './Login.module.css'
 import { useService } from '../app/service'
+import { useSheet } from '../app/sheetStore'
 
 /** Lets someone stuck on login send what happened to whoever helps them. */
 export function CopyJournalLink() {
   const [state, setState] = useState<'idle' | 'copied' | 'empty' | 'failed'>('idle')
   const label = { idle: 'Скопировать журнал входа', copied: 'Журнал скопирован — отправьте его', empty: 'Журнал пока пуст', failed: 'Не получилось скопировать' }[state]
   return (
-    <button
-      type="button"
-      className={s.link}
-      onClick={async () => {
-        try {
-          setState((await copyJournal()) ? 'copied' : 'empty')
-        } catch {
-          setState('failed')
-        }
-        setTimeout(() => setState('idle'), 2500)
-      }}
-    >
-      {label}
-    </button>
+    <>
+      <button
+        type="button"
+        className={s.link}
+        onClick={() => useSheet.getState().open({ kind: 'feedback', defaultKind: 'bug' })}
+      >
+        Не получается войти? Отправить проблему с логами
+      </button>
+      <button
+        type="button"
+        className={s.link}
+        onClick={async () => {
+          try {
+            setState((await copyJournal()) ? 'copied' : 'empty')
+          } catch {
+            setState('failed')
+          }
+          setTimeout(() => setState('idle'), 2500)
+        }}
+      >
+        {label}
+      </button>
+    </>
   )
 }
 

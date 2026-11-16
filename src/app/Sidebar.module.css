@@ -127,9 +127,16 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 10px 14px 12px;
   box-shadow: 0 -0.5px 0 var(--separator-soft);
+}
+.footerActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: -4px;
 }
 .user {
   display: flex;

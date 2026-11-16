@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Clock3, Compass, Disc3, Heart, Home, LibraryBig, ListMusic, Plus, Rss, Search, Settings, Users } from 'lucide-react'
+import { Bug, Clock3, Compass, Disc3, Heart, Home, LibraryBig, ListMusic, Plus, Rss, Search, Settings, Users } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton } from '../components/controls'
@@ -264,6 +264,7 @@ export function Sidebar() {
   const push = useRouter((r) => r.push)
   const service = useService((x) => x.current)
   const mine = useRouter((r) => routeSection(r.route) === 'mine')
+  const feedbackOpen = useSheet((x) => x.sheet?.kind === 'feedback')
   // the account of the service picked on the rail
   const user = accountFor(service, vkUser, scUser, spUser)
   return (
@@ -283,9 +284,19 @@ export function Sidebar() {
             <div className={s.userSub}>Настройки</div>
           </span>
         </button>
-        <IconButton size={30} label="Настройки" onClick={() => push({ name: 'settings' })}>
-          <Settings size={17} strokeWidth={2} />
-        </IconButton>
+        <div className={s.footerActions}>
+          <IconButton
+            size={30}
+            active={feedbackOpen}
+            label="Обратная связь: баг или идея"
+            onClick={() => useSheet.getState().open({ kind: 'feedback', defaultKind: 'bug' })}
+          >
+            <Bug size={17} strokeWidth={2} />
+          </IconButton>
+          <IconButton size={30} label="Настройки" onClick={() => push({ name: 'settings' })}>
+            <Settings size={17} strokeWidth={2} />
+          </IconButton>
+        </div>
       </div>
     </nav>
   )

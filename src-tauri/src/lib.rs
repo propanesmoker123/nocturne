@@ -1,4 +1,5 @@
 mod clipboard;
+mod feedback;
 mod http;
 mod island;
 mod journal;
@@ -102,6 +103,7 @@ pub fn run() {
             journal::journal_write,
             journal::journal_tail,
             journal::journal_open_dir,
+            feedback::send_feedback,
             app_quit,
         ])
         .on_window_event(|window, event| match event {

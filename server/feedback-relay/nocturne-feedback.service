@@ -1,0 +1,16 @@
+[Unit]
+Description=Nocturne Feedback Relay (Telegram)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/nocturne-feedback
+EnvironmentFile=/opt/nocturne-feedback/.env
+ExecStart=/usr/bin/node /opt/nocturne-feedback/server.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
