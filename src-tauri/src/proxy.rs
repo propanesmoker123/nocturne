@@ -22,11 +22,15 @@ const ALLOWED_SUFFIXES: &[&str] = &[
 /// SoundCloud's stream and artwork hosts.
 const SC_SUFFIXES: &[&str] = &["sndcdn.com", "soundcloud.cloud"];
 
+/// Spotify's artwork and preview audio hosts.
+const SPOTIFY_SUFFIXES: &[&str] = &["scdn.co", "spotifycdn.com"];
+
 /// Whose media a host carries: it decides the headers.
 #[derive(Debug, PartialEq)]
 pub enum Origin {
     Vk,
     Sc,
+    Spotify,
 }
 
 pub fn origin_for(url: &str) -> Option<Origin> {
@@ -40,6 +44,8 @@ pub fn origin_for(url: &str) -> Option<Origin> {
         Some(Origin::Vk)
     } else if under(SC_SUFFIXES) {
         Some(Origin::Sc)
+    } else if under(SPOTIFY_SUFFIXES) {
+        Some(Origin::Spotify)
     } else {
         None
     }
@@ -58,6 +64,7 @@ pub async fn proxy_fetch(http: State<'_, Http>, url: String) -> Result<tauri::ip
     let (origin, referer) = match origin {
         Origin::Vk => ("https://vk.ru", "https://vk.ru/"),
         Origin::Sc => ("https://soundcloud.com", "https://soundcloud.com/"),
+        Origin::Spotify => ("https://open.spotify.com", "https://open.spotify.com/"),
     };
     // Signed CDN links must not reach the journal: host only.
     let host = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
@@ -107,8 +114,11 @@ mod tests {
     fn soundcloud_media_hosts_get_soundcloud_headers() {
         assert_eq!(origin_for("https://playback.media-streaming.soundcloud.cloud/a/playlist.m3u8"), Some(Origin::Sc));
         assert_eq!(origin_for("https://cf-hls-media.sndcdn.com/x"), Some(Origin::Sc));
+        assert_eq!(origin_for("https://i.scdn.co/image/ab67616d0000b273"), Some(Origin::Spotify));
+        assert_eq!(origin_for("https://p.scdn.co/mp3-preview/123"), Some(Origin::Spotify));
         assert_eq!(origin_for("https://cs1-2v4.vkuseraudio.net/s/v1/ac/x/index.m3u8"), Some(Origin::Vk));
         assert_eq!(origin_for("https://soundcloud.cloud.evil.com/x"), None);
+        assert_eq!(origin_for("https://scdn.co.evil.com/x"), None);
         assert_eq!(origin_for("http://playback.media-streaming.soundcloud.cloud/x"), None);
     }
 

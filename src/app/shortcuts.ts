@@ -1,6 +1,10 @@
 import { usePlayer } from '../player/store'
 import { toggleLibrary } from './library'
 import { useRouter } from './router'
+import { runCommand } from '../player/commands'
+import type { PlayerCommand } from '../lib/events'
+
+const command = (cmd: PlayerCommand) => runCommand(cmd, { toggleLike: () => { void toggleLibrary(usePlayer.getState().current) }, showWindow() {} })
 
 const isTyping = (t: EventTarget | null) => {
   const el = t as HTMLElement | null
@@ -12,9 +16,8 @@ const isTyping = (t: EventTarget | null) => {
 export function installShortcuts() {
   window.addEventListener('keydown', (e) => {
     if (e.defaultPrevented) return
-    const p = usePlayer.getState()
     const ctrl = e.ctrlKey || e.metaKey
-    if (ctrl && e.code === 'KeyF') {
+    if (ctrl && !e.altKey && e.code === 'KeyF') {
       e.preventDefault()
       document.getElementById('global-search')?.focus()
       return
@@ -29,31 +32,31 @@ export function installShortcuts() {
     if (e.altKey && e.key === 'ArrowRight') return useRouter.getState().forward()
     if (e.code === 'Space' && !ctrl && !e.altKey) {
       e.preventDefault()
-      p.toggle()
+      command({ type: 'toggle' })
       return
     }
     if (ctrl && e.code === 'KeyL') {
       e.preventDefault()
-      void toggleLibrary(p.current)
+      command({ type: 'toggleLike' })
       return
     }
     switch (e.key) {
       case 'ArrowRight':
         e.preventDefault()
-        return ctrl ? p.next(true) : p.seekBy(5)
+        return command(ctrl ? { type: 'next' } : { type: 'seekBy', value: 5 })
       case 'ArrowLeft':
         e.preventDefault()
-        return ctrl ? p.prev() : p.seekBy(-5)
+        return command(ctrl ? { type: 'prev' } : { type: 'seekBy', value: -5 })
       case 'ArrowUp':
         if (ctrl) {
           e.preventDefault()
-          p.nudgeVolume(0.05)
+          command({ type: 'volumeBy', value: 0.05 })
         }
         return
       case 'ArrowDown':
         if (ctrl) {
           e.preventDefault()
-          p.nudgeVolume(-0.05)
+          command({ type: 'volumeBy', value: -0.05 })
         }
         return
     }

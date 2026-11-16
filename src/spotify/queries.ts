@@ -1,0 +1,17 @@
+export const spKeys = {
+  me: () => ['sp-me'] as const,
+  home: () => ['sp-home'] as const,
+  browse: () => ['sp-browse'] as const,
+  likes: () => ['sp-likes'] as const,
+  myPlaylists: () => ['sp-my-playlists'] as const,
+  albums: () => ['sp-albums'] as const,
+  artists: () => ['sp-artists'] as const,
+  recent: () => ['sp-recent'] as const,
+  editablePlaylists: () => ['sp-editable-playlists'] as const,
+  playlist: (id: string, kind: 'playlist' | 'album' = 'playlist') => ['sp-playlist', kind, id] as const,
+  artist: (id: string) => ['sp-artist', id] as const,
+  artistRelated: (id: string) => ['sp-artist-related', id] as const,
+  trackRelated: (id: string) => ['sp-track-related', id] as const,
+  search: (q: string) => ['sp-search', q] as const,
+  category: (title: string, id = '', uri = '') => ['sp-category', title, id, uri] as const,
+} as const

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-whisper-probe-asset"
+description = "Enables the whisper_probe_asset command without any pre-configured scope."
+commands.allow = ["whisper_probe_asset"]
+
+[[permission]]
+identifier = "deny-whisper-probe-asset"
+description = "Denies the whisper_probe_asset command without any pre-configured scope."
+commands.deny = ["whisper_probe_asset"]

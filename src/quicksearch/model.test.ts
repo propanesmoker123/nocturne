@@ -16,6 +16,7 @@ describe('quick search rows', () => {
       'c',
     ])
     expect(buildRows([], [t('b')])[0]).toMatchObject({ kind: 'header', label: 'VK Музыка' })
+    expect(buildRows([], [t('sp1')], 'Spotify')[0]).toMatchObject({ kind: 'header', label: 'Spotify' })
   })
 
   test('arrows walk over tracks, skipping headers and tracks that cannot play, and stop at the ends', () => {

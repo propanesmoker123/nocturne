@@ -91,6 +91,8 @@ export interface QuickResults {
   seq: number
   own: QuickTrack[]
   others: QuickTrack[]
+  /** Active service whose catalog was searched. */
+  service?: 'vk' | 'sc' | 'spotify'
   /** Still waiting for the library or VK. */
   loading: boolean
   error: string | null

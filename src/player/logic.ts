@@ -9,6 +9,7 @@ export const SC_URL_MAX_AGE_MS = 60_000
 
 export function needsFreshUrl(t: Track, now: number, maxAge = URL_MAX_AGE_MS): boolean {
   if (!t.url) return true
+  if (serviceOf(t) === 'spotify' || t.url.startsWith('spotify:')) return false
   if (t.url.startsWith('blob:') || t.url.startsWith('data:')) return false
   return now - t.urlFetchedAt > (serviceOf(t) === 'sc' ? SC_URL_MAX_AGE_MS : maxAge)
 }

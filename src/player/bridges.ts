@@ -5,11 +5,38 @@ import { emitTo, invoke, isTauri, listen } from '../lib/tauri'
 import { usePlayer, type PlayerState } from './store'
 import { useTogether } from '../together/session'
 import { useWaveform } from './waveformStore'
+import { runCommand, type BridgeActions } from './commands'
+import { useSpotify } from '../spotify/runtime'
+export { runCommand } from './commands'
 
 let accent: string | null = null
 let artworkColor: string | null = null
+const SPOTIFY_GREEN = '#1ed760'
+
+/** While Spotify is the player, the island shows its track instead of the paused VK/SC one. */
+function spotifySnapshot(s: PlayerState): PlayerSnapshot | null {
+  const sp = useSpotify.getState()
+  const t = sp.track
+  if (!sp.owner || !t) return null
+  return {
+    track: { key: `spotify:${t.title}\u0000${t.artist}`, title: t.title, artist: t.artist, cover: t.cover, coverLarge: t.coverLarge, explicit: false, liked: t.liked === true, duration: t.duration },
+    isPlaying: sp.playing,
+    isLoading: false,
+    position: t.position,
+    at: sp.at,
+    duration: t.duration,
+    volume: t.volume ?? s.volume,
+    muted: false,
+    shuffle: t.shuffle,
+    repeat: t.repeat,
+    accent: useSettings.getState().accent !== 'auto' ? accent : SPOTIFY_GREEN,
+    together: null,
+  }
+}
 
 function snapshot(s: PlayerState): PlayerSnapshot {
+  const spotify = spotifySnapshot(s)
+  if (spotify) return spotify
   const t = s.current
   return {
     track: t
@@ -33,46 +60,6 @@ function togetherSnapshot(): PlayerSnapshot['together'] {
   const t = useTogether.getState()
   if (!t.role || t.phase === 'connecting') return null
   return { role: t.role, listeners: t.listeners.length, hostName: t.hostName }
-}
-
-export interface BridgeActions {
-  toggleLike(): void
-  showWindow(): void
-}
-
-/** Runs one player command, whoever sent it (island, tray, hotkey, media keys). */
-export function runCommand(cmd: PlayerCommand, actions: BridgeActions) {
-  const p = usePlayer.getState()
-  switch (cmd.type) {
-    case 'toggle':
-      return p.toggle()
-    case 'play':
-      return p.play()
-    case 'pause':
-      return p.pause()
-    case 'next':
-      return p.next(true)
-    case 'prev':
-      return p.prev()
-    case 'toggleShuffle':
-      return p.toggleShuffle()
-    case 'cycleRepeat':
-      return p.cycleRepeat()
-    case 'toggleMute':
-      return p.toggleMute()
-    case 'toggleLike':
-      return actions.toggleLike()
-    case 'showWindow':
-      return actions.showWindow()
-    case 'seek':
-      return p.seek(cmd.value)
-    case 'seekBy':
-      return p.seekBy(cmd.value)
-    case 'volume':
-      return p.setVolume(cmd.value)
-    case 'volumeBy':
-      return p.nudgeVolume(cmd.value)
-  }
 }
 
 /** Artwork color unless the user pinned an accent in settings. */
@@ -105,6 +92,12 @@ export function startBridges(actions: BridgeActions) {
 
   const pushSmtc = (s: PlayerState) => {
     if (!isTauri()) return
+    const sp = useSpotify.getState()
+    if (sp.owner && sp.track) {
+      const t = sp.track
+      void invoke('media_update', { update: { title: t.title, artist: t.artist, album: t.album, coverUrl: t.coverLarge ?? null, duration: t.duration, position: t.position, playing: sp.playing } }).catch(() => {})
+      return
+    }
     const t = s.current
     void invoke('media_update', {
       update: t
@@ -115,6 +108,13 @@ export function startBridges(actions: BridgeActions) {
 
   const pushMediaSession = (s: PlayerState) => {
     if (!('mediaSession' in navigator)) return
+    const sp = useSpotify.getState()
+    if (sp.owner && sp.track) {
+      const t = sp.track
+      navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album, artwork: t.coverLarge ? [{ src: t.coverLarge }] : [] })
+      navigator.mediaSession.playbackState = sp.playing ? 'playing' : 'paused'
+      return
+    }
     const t = s.current
     navigator.mediaSession.metadata = t
       ? new MediaMetadata({ title: t.title, artist: t.artist, album: t.album?.title ?? '', artwork: t.cover ? [{ src: t.cover.l, sizes: '600x600' }] : [] })
@@ -124,11 +124,11 @@ export function startBridges(actions: BridgeActions) {
 
   if ('mediaSession' in navigator) {
     const ms = navigator.mediaSession
-    ms.setActionHandler('play', () => usePlayer.getState().play())
-    ms.setActionHandler('pause', () => usePlayer.getState().pause())
-    ms.setActionHandler('nexttrack', () => usePlayer.getState().next(true))
-    ms.setActionHandler('previoustrack', () => usePlayer.getState().prev())
-    ms.setActionHandler('seekto', (d) => d.seekTime !== undefined && usePlayer.getState().seek(d.seekTime))
+    ms.setActionHandler('play', () => runCommand({ type: 'play' }, actions))
+    ms.setActionHandler('pause', () => runCommand({ type: 'pause' }, actions))
+    ms.setActionHandler('nexttrack', () => runCommand({ type: 'next' }, actions))
+    ms.setActionHandler('previoustrack', () => runCommand({ type: 'prev' }, actions))
+    ms.setActionHandler('seekto', (d) => d.seekTime !== undefined && runCommand({ type: 'seek', value: d.seekTime }, actions))
   }
 
   usePlayer.subscribe((s, prev) => {
@@ -168,9 +168,29 @@ export function startBridges(actions: BridgeActions) {
     if (t.role !== prev.role || t.phase !== prev.phase || t.hostName !== prev.hostName || t.listeners.length !== prev.listeners.length) pushIsland()
   })
 
+  useSpotify.subscribe((sp, prev) => {
+    const t = sp.track, p = prev.track
+    const changed = sp.owner !== prev.owner || sp.playing !== prev.playing || t?.title !== p?.title || t?.artist !== p?.artist || t?.coverLarge !== p?.coverLarge || t?.duration !== p?.duration
+    if (changed) {
+      const s = usePlayer.getState()
+      pushMediaSession(s)
+      pushSmtc(s)
+      pushIsland()
+      return
+    }
+    if (!sp.owner || !t || !p) return
+    // A seek or a stall: the reading moved away from where the island expects it.
+    const expected = p.position + (prev.playing ? (sp.at - prev.at) / 1000 : 0)
+    if (Math.abs(t.position - expected) > 1.5 || t.liked !== p.liked || t.shuffle !== p.shuffle || t.repeat !== p.repeat || t.volume !== p.volume) {
+      scheduleIsland()
+      if (Math.abs(t.position - expected) > 1.5) pushSmtc(usePlayer.getState())
+    }
+  })
+
   // Heartbeat keeps the island's interpolation honest while playing.
   setInterval(() => {
-    if (usePlayer.getState().isPlaying) pushIsland()
+    const sp = useSpotify.getState()
+    if (usePlayer.getState().isPlaying || (sp.owner && sp.playing)) pushIsland()
   }, 2000)
 
   applyAccent(null)

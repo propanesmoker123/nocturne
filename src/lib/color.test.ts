@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { pickAccent, toCss } from './color'
+import { parseCssRgb, pickAccent, toCss } from './color'
 
 function pixels(colors: [number, number, number][], each = 16): Uint8ClampedArray {
   const out = new Uint8ClampedArray(colors.length * each * 4)
@@ -47,5 +47,13 @@ describe('pickAccent', () => {
 describe('toCss', () => {
   test('formats rgb', () => {
     expect(toCss({ r: 1, g: 2, b: 3 })).toBe('rgb(1 2 3)')
+  })
+
+  test('parses hex, short hex, space-separated rgb, and rgba strings', () => {
+    expect(parseCssRgb('rgb(40 165 255)')).toEqual({ r: 40, g: 165, b: 255 })
+    expect(parseCssRgb('rgba(12, 240, 128, 0.75)')).toEqual({ r: 12, g: 240, b: 128 })
+    expect(parseCssRgb('#30d158')).toEqual({ r: 48, g: 209, b: 88 })
+    expect(parseCssRgb('#0af')).toEqual({ r: 0, g: 170, b: 255 })
+    expect(parseCssRgb('invalid')).toBeNull()
   })
 })

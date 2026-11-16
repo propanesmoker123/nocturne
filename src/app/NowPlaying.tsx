@@ -1,6 +1,6 @@
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, CircleAlert, Maximize2, Minimize2 } from 'lucide-react'
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton, Segmented, Spinner } from '../components/controls'
 import { IconBackward, IconForward, IconLyrics, IconMore, IconPause, IconPlay, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
@@ -8,6 +8,8 @@ import { Slider } from '../components/Slider'
 import { WaveComments } from '../components/WaveComments'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
+import { useSettings } from '../lib/settings'
+import { ParticlesCanvas } from '../lyrics/ParticlesCanvas'
 import { usePlayer } from '../player/store'
 import { useControlledBy } from '../together/TogetherControls'
 import type { Track } from '../vk/models'
@@ -19,6 +21,96 @@ import { WindowControls } from './Titlebar'
 import { LyricsPanel, QueuePanel } from './SidePanels'
 import { copyTrackName, openTrackMenu } from './trackActions'
 import { useUi, type NowPlayingTab } from './ui'
+
+function LyricsSyncHint({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const [pinned, setPinned] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const closeTimerRef = useRef<number | null>(null)
+  const open = pinned || hovered
+
+  const clearTimer = () => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = null
+    }
+  }
+
+  useEffect(() => () => clearTimer(), [])
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (e: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setPinned(false)
+        setHovered(false)
+      }
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setPinned(false)
+        setHovered(false)
+      }
+    }
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [open])
+
+  return (
+    <div
+      ref={rootRef}
+      className={s.syncHint}
+      onMouseEnter={() => {
+        clearTimer()
+        setHovered(true)
+      }}
+      onMouseLeave={() => {
+        clearTimer()
+        closeTimerRef.current = window.setTimeout(() => setHovered(false), 140)
+      }}
+    >
+      <IconButton
+        size={32}
+        className={s.theaterBtn}
+        active={open}
+        label="Информация о синхронизации текста"
+        title=""
+        aria-expanded={open}
+        onClick={() => setPinned((v) => !v)}
+      >
+        <CircleAlert size={15} />
+      </IconButton>
+
+      {open && (
+        <div className={s.syncPopover} role="dialog" aria-label="Синхронизация текста">
+          <div className={s.syncPopoverHead}>
+            <CircleAlert size={14} className={s.syncPopoverIcon} />
+            <span>Синхронизация с треком</span>
+          </div>
+          <p className={s.syncPopoverText}>
+            Сейчас синхронизация текста с треком может расходиться. В настройках в блоке «Тексты и анимации» её можно выключить — тогда будет просто выделяться текущая строка.
+          </p>
+          <button
+            type="button"
+            className={s.syncPopoverBtn}
+            onClick={() => {
+              setPinned(false)
+              setHovered(false)
+              onOpenSettings()
+            }}
+          >
+            Открыть настройки
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function Backdrop({ src }: { src?: string }) {
   if (!src) return null
@@ -47,7 +139,7 @@ function BigScrubber() {
         trackKey={trackKey}
         height={76}
         label="Позиция трека"
-        value={duration ? position / duration : 0}
+        value={duration ? shown / duration : 0}
         buffered={duration ? buffered / duration : 0}
         disabled={!duration || !!controlledBy}
         step={5 / Math.max(duration, 1)}
@@ -109,6 +201,7 @@ export function NowPlaying() {
   const { toggle, next, prev, toggleShuffle, cycleRepeat, setVolume } = usePlayer.getState()
   const controlledBy = useControlledBy()
   const push = useRouter((r) => r.push)
+  const particlesOn = useSettings((st) => st.lyrics.particles)
   const [sideOpen, setSideOpen] = useState(false)
 
   useEffect(() => {
@@ -120,7 +213,8 @@ export function NowPlaying() {
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
-  const setTab = (t: NowPlayingTab) => useUi.setState({ tab: t })
+  const [lyricsTheater, setLyricsTheater] = useState(false)
+  const setTab = (t: NowPlayingTab) => useUi.getState().setTab(t)
   const toggleSide = (t: NowPlayingTab) => {
     if (sideOpen && tab === t) setSideOpen(false)
     else {
@@ -144,6 +238,14 @@ export function NowPlaying() {
           <PointerGate />
           <Backdrop src={current.cover?.m} />
           <div className={s.scrim} />
+          <ParticlesCanvas
+            mode="ambient"
+            enabled={particlesOn}
+            playing={isPlaying}
+            trackKey={current.key}
+            duration={current.duration}
+            className={s.particles}
+          />
           <div className={s.chrome} data-tauri-drag-region>
             <IconButton label="Свернуть" onClick={() => useUi.getState().closeNowPlaying()}>
               <ChevronDown size={22} strokeWidth={2.2} />
@@ -151,7 +253,7 @@ export function NowPlaying() {
             <WindowControls />
           </div>
 
-          <div className={s.layout}>
+          <div className={s.layout} data-theater={(tab === 'lyrics' && lyricsTheater) || undefined}>
             <div className={s.stage}>
               <CoverArt track={current} playing={isPlaying} />
 
@@ -216,16 +318,37 @@ export function NowPlaying() {
             </div>
 
             <aside className={s.side} data-forced={sideOpen || undefined}>
-              <Segmented
-                id="np-tabs"
-                value={tab}
-                onChange={setTab}
-                options={[
-                  { value: 'queue', label: 'Далее' },
-                  { value: 'lyrics', label: 'Текст' },
-                ]}
-              />
-              <div className={s.sidePanel}>{tab === 'queue' ? <QueuePanel /> : <LyricsPanel />}</div>
+              <div className={s.sideHeader}>
+                <Segmented
+                  id="np-tabs"
+                  value={tab}
+                  onChange={setTab}
+                  options={[
+                    { value: 'queue', label: 'Далее' },
+                    { value: 'lyrics', label: 'Текст' },
+                  ]}
+                />
+                {tab === 'lyrics' && (
+                  <>
+                    <LyricsSyncHint
+                      onOpenSettings={() => {
+                        push({ name: 'settings' })
+                        useUi.getState().closeNowPlaying()
+                      }}
+                    />
+                    <IconButton
+                      size={32}
+                      className={s.theaterBtn}
+                      data-active={lyricsTheater || undefined}
+                      label={lyricsTheater ? 'Компактный текст' : 'Широкий экран текста'}
+                      onClick={() => setLyricsTheater((v) => !v)}
+                    >
+                      {lyricsTheater ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                    </IconButton>
+                  </>
+                )}
+              </div>
+              <div className={s.sidePanel}>{tab === 'queue' ? <QueuePanel /> : <LyricsPanel theater={lyricsTheater} />}</div>
             </aside>
           </div>
         </motion.section>

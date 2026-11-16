@@ -1,4 +1,5 @@
 import './styles/global.css'
+import '@fontsource-variable/onest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -6,7 +7,8 @@ import { App } from './app/App'
 import { applyDemoHash } from './app/demo'
 import { toggleLibrary } from './app/library'
 import { queryClient } from './app/queryClient'
-import { initService } from './app/service'
+import { initService, useService } from './app/service'
+import { useRouter } from './app/router'
 import { initSession, useSession } from './app/session'
 import { askCaptcha, useSheet } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
@@ -24,12 +26,15 @@ import { takeWhatsNew } from './lib/whatsNew'
 import { initSettings, useSettings } from './lib/settings'
 import { invoke, isTauri } from './lib/tauri'
 import { startBridges } from './player/bridges'
+import { runCommand } from './player/commands'
 import { openQuickSearch, startQuickSearch } from './quicksearch/bridge'
 import { initPlayer, usePlayer } from './player/store'
 import { setDrmAvailable } from './sc/normalize'
 import { probeDrm } from './sc/playback'
 import { initScSession } from './sc/session'
+import { hydrateSpotifyWarmState, initSpotifySession } from './spotify/session'
 import { setCaptchaHandler } from './vk/api'
+import { startSpotifyBridge } from './spotify/runtime'
 
 async function showMainWindow(toggle = false) {
   if (!isTauri()) return
@@ -71,6 +76,8 @@ async function boot() {
   // the saved albums before anything shows: one made at once is added to them, not saved over them
   await loadAlbums()
   await initService()
+  if (window.location.hash === '#spotify') useService.getState().select('spotify')
+  hydrateSpotifyWarmState()
   if (isTauri()) void invoke('set_user_agent', { ua: navigator.userAgent }).catch(() => {})
 
   createRoot(document.getElementById('root')!).render(
@@ -81,12 +88,14 @@ async function boot() {
     </StrictMode>,
   )
 
+  void initSpotifySession()
+  void initScSession()
   await initSession()
   // protected SoundCloud tracks play only where the browser has Widevine or PlayReady; else they stay grey
   void probeDrm().then(setDrmAvailable)
-  void initScSession()
   void showWhatsNew().catch(() => {})
   await initPlayer()
+  startSpotifyBridge()
   startServerTimeSync()
   // albums need this device's id and link code, which Connect loads
   void startConnect().finally(() => void startAlbumSync())
@@ -97,16 +106,16 @@ async function boot() {
   startSystemSync()
   startUpdateChecks()
   startGlobalHotkeys({
-    playPause: () => usePlayer.getState().toggle(),
-    next: () => usePlayer.getState().next(true),
-    prev: () => usePlayer.getState().prev(),
-    volUp: () => usePlayer.getState().nudgeVolume(0.05),
-    volDown: () => usePlayer.getState().nudgeVolume(-0.05),
-    toggleLike: actions.toggleLike,
-    seekFwd: () => usePlayer.getState().seekBy(10),
-    seekBack: () => usePlayer.getState().seekBy(-10),
-    shuffle: () => usePlayer.getState().toggleShuffle(),
-    repeat: () => usePlayer.getState().cycleRepeat(),
+    playPause: () => runCommand({ type: 'toggle' }, actions),
+    next: () => runCommand({ type: 'next' }, actions),
+    prev: () => runCommand({ type: 'prev' }, actions),
+    volUp: () => runCommand({ type: 'volumeBy', value: 0.05 }, actions),
+    volDown: () => runCommand({ type: 'volumeBy', value: -0.05 }, actions),
+    toggleLike: () => runCommand({ type: 'toggleLike' }, actions),
+    seekFwd: () => runCommand({ type: 'seekBy', value: 10 }, actions),
+    seekBack: () => runCommand({ type: 'seekBy', value: -10 }, actions),
+    shuffle: () => runCommand({ type: 'toggleShuffle' }, actions),
+    repeat: () => runCommand({ type: 'cycleRepeat' }, actions),
     toggleIsland: () => {
       const enabled = !useSettings.getState().island.enabled
       useSettings.getState().updateIsland({ enabled })
@@ -114,7 +123,10 @@ async function boot() {
     },
     toggleWindow: () => void showMainWindow(true),
     // Signed out there is nothing to search: bring up the sign-in screen instead
-    quickSearch: () => (useSession.getState().phase === 'ready' ? openQuickSearch() : void showMainWindow()),
+    quickSearch: () => {
+      if (useService.getState().current === 'spotify') { useRouter.getState().push({ name: 'spotify-search', q: '' }); void showMainWindow(); return }
+      if (useSession.getState().phase === 'ready') openQuickSearch(); else void showMainWindow()
+    },
   })
 }
 

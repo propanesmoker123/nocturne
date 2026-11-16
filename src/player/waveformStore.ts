@@ -7,6 +7,8 @@ import { create } from 'zustand'
 export interface WaveformState {
   key: string | null
   peaks: Float32Array | null
+  beats: Float32Array | null
+  vocal: Float32Array | null
 }
 
-export const useWaveform = create<WaveformState>(() => ({ key: null, peaks: null }))
+export const useWaveform = create<WaveformState>(() => ({ key: null, peaks: null, beats: null, vocal: null }))

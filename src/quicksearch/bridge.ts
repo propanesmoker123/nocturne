@@ -8,6 +8,9 @@ import { usePlayer } from '../player/store'
 import * as sc from '../sc/api'
 import { describeScError } from '../sc/errors'
 import { scKeys } from '../sc/queries'
+import * as spotify from '../spotify/api'
+import { spKeys } from '../spotify/queries'
+import { spotifyError } from '../spotify/runtime'
 import * as vk from '../vk/api'
 import type { Page } from '../vk/api'
 import { describeError } from '../vk/errors'
@@ -58,12 +61,38 @@ function scLikes(): Promise<Track[]> {
   return queryClient.fetchQuery({ queryKey: ['sc-quick-likes', me], queryFn: async () => (await sc.getLikes(me)).items, staleTime: LIBRARY_TTL })
 }
 
+/** Spotify's «own» list is the person's liked tracks: from the liked-tracks cache when complete, else fetched up to 500 tracks once a minute. */
+async function spLikes(): Promise<Track[]> {
+  const shared = queryClient.getQueryData<InfiniteData<{ items: Track[]; total: number; nextOffset?: number }>>(spKeys.likes())
+  if (shared) {
+    const items = shared.pages.flatMap((p) => p.items)
+    const total = shared.pages[0]?.total ?? items.length
+    if (items.length >= total || items.length >= 500) return items
+  }
+  return queryClient.fetchQuery({
+    queryKey: ['sp-quick-likes'],
+    queryFn: async () => {
+      const items: Track[] = []
+      let offset = 0
+      for (;;) {
+        const page = await spotify.getLikes(offset, 50)
+        items.push(...page.items)
+        if (!page.items.length || page.nextOffset === undefined || items.length >= Math.min(page.total || 500, 500)) break
+        offset = page.nextOffset
+      }
+      return items
+    },
+    staleTime: LIBRARY_TTL,
+  })
+}
+
 let newest = -1
 let shown: { q: string; own: Track[]; others: Track[] } = { q: '', own: [], others: [] }
 
 function answer({ seq, q }: QuickQuery) {
   newest = Math.max(newest, seq)
   const term = q.trim()
+  const service = useService.getState().current
   let own: Track[] | null = null
   let global: Track[] | null = null
   let error: string | null = null
@@ -75,6 +104,7 @@ function answer({ seq, q }: QuickQuery) {
       seq,
       own: found.own.map(toQuickTrack),
       others: found.others.map(toQuickTrack),
+      service,
       loading: own === null || (global === null && error === null),
       error,
       accent: document.documentElement.style.getPropertyValue('--accent').trim() || null,
@@ -89,17 +119,20 @@ function answer({ seq, q }: QuickQuery) {
     return publish()
   }
   // the service picked in the main window is the one searched
-  const soundcloud = useService.getState().current === 'sc'
-  ;(soundcloud ? scLikes() : wholeLibrary()).then(
+  const ownReq = service === 'spotify' ? spLikes() : service === 'sc' ? scLikes() : wholeLibrary()
+  ownReq.then(
     (items) => ((own = items), publish()),
     () => ((own = []), publish()),
   )
-  const found = soundcloud
-    ? queryClient.fetchQuery({ queryKey: scKeys.search(term), queryFn: () => sc.search(term) }).then((r) => r.tracks)
-    : queryClient.fetchQuery({ queryKey: ['search-tracks', term], queryFn: () => vk.searchTracks(term, 0, 80) }).then((page) => page.items)
+  const found =
+    service === 'spotify'
+      ? queryClient.fetchQuery({ queryKey: spKeys.search(term), queryFn: () => spotify.search(term) }).then((r) => r.tracks)
+      : service === 'sc'
+        ? queryClient.fetchQuery({ queryKey: scKeys.search(term), queryFn: () => sc.search(term) }).then((r) => r.tracks)
+        : queryClient.fetchQuery({ queryKey: ['search-tracks', term], queryFn: () => vk.searchTracks(term, 0, 80) }).then((page) => page.items)
   found.then(
     (items) => ((global = items), publish()),
-    (e: unknown) => ((error = soundcloud ? describeScError(e) : describeError(e)), publish()),
+    (e: unknown) => ((error = service === 'spotify' ? spotifyError(e) : service === 'sc' ? describeScError(e) : describeError(e)), publish()),
   )
 }
 
@@ -109,13 +142,15 @@ function play({ key, next }: QuickPlay) {
   const index = at >= 0 ? at : shown.others.findIndex((t) => t.key === key)
   if (index < 0 || !list[index].playable) return
   const p = usePlayer.getState()
+  const service = useService.getState().current
   if (next) p.playNext([list[index]])
-  else p.playList(list, index, { source: { kind: 'list', label: `Поиск: «${shown.q}»` } })
+  else p.playList(list, index, { source: { kind: 'list', service: service === 'spotify' ? 'spotify' : 'vk', label: `Поиск: «${shown.q}»` } })
 }
 
 /** The hotkey: show the panel over whatever is in front (or hide it if it already is). */
 export function openQuickSearch() {
-  void (useService.getState().current === 'sc' ? scLikes() : wholeLibrary()).catch(() => {})
+  const service = useService.getState().current
+  void (service === 'spotify' ? spLikes() : service === 'sc' ? scLikes() : wholeLibrary()).catch(() => {})
   void invoke('search_open').catch(() => {})
 }
 

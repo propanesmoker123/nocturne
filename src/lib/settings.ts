@@ -36,6 +36,19 @@ export interface IslandSettings {
 
 export const ISLAND_MAX_TRANSPARENCY = 0.7
 
+export const WHISPER_MODELS = ['tiny', 'base'] as const
+export type WhisperModelSize = (typeof WHISPER_MODELS)[number]
+
+export interface LyricsSettings {
+  wordSync: boolean
+  effects: boolean
+  notifications: boolean
+  particles: boolean
+  geminiKey: string
+  whisperModel: WhisperModelSize
+  whisperAuto: boolean
+}
+
 export interface Settings {
   wallpaper: WallpaperConfig
   wallpaperBlur: number
@@ -45,6 +58,7 @@ export interface Settings {
   /** Played part of the waveform: 'accent' or a hex color */
   waveColor: string
   island: IslandSettings
+  lyrics: LyricsSettings
   hotkeys: HotkeyMap
   hotkeysEnabled: boolean
   closeToTray: boolean
@@ -60,6 +74,7 @@ export const DEFAULT_SETTINGS: Settings = {
   accent: 'auto',
   waveColor: 'accent',
   island: { enabled: true, expandOn: 'hover', visibility: 'always', showOnTrackChange: true, hideInFullscreen: true, monitor: null, position: null, locked: false, transparency: 0, progress: 'ring' },
+  lyrics: { wordSync: true, effects: true, notifications: false, particles: true, geminiKey: '', whisperModel: 'tiny', whisperAuto: false },
   hotkeys: DEFAULT_HOTKEYS,
   hotkeysEnabled: true,
   closeToTray: true,
@@ -102,6 +117,7 @@ export function mergeSettings(saved: unknown): Settings {
     else if (taken.has(hotkeys[action].toLowerCase())) hotkeys[action] = ''
   }
   const isl = isObj(saved.island) ? saved.island : {}
+  const lyr = isObj(saved.lyrics) ? saved.lyrics : {}
   return {
     wallpaper: wallpaper(saved.wallpaper),
     wallpaperBlur: num(saved.wallpaperBlur, d.wallpaperBlur, 0, 60),
@@ -123,6 +139,15 @@ export function mergeSettings(saved: unknown): Settings {
       transparency: num(isl.transparency, d.island.transparency, 0, ISLAND_MAX_TRANSPARENCY),
       progress: oneOf(isl.progress, ISLAND_PROGRESS_STYLES, d.island.progress),
     },
+    lyrics: {
+      wordSync: bool(lyr.wordSync, d.lyrics.wordSync),
+      effects: bool(lyr.effects, d.lyrics.effects),
+      notifications: bool(lyr.notifications, d.lyrics.notifications),
+      particles: bool(lyr.particles, d.lyrics.particles),
+      geminiKey: typeof lyr.geminiKey === 'string' ? lyr.geminiKey.trim().slice(0, 256) : d.lyrics.geminiKey,
+      whisperModel: oneOf(lyr.whisperModel, WHISPER_MODELS, d.lyrics.whisperModel),
+      whisperAuto: bool(lyr.whisperAuto, d.lyrics.whisperAuto),
+    },
     hotkeys,
     hotkeysEnabled: bool(saved.hotkeysEnabled, d.hotkeysEnabled),
     closeToTray: bool(saved.closeToTray, d.closeToTray),
@@ -135,6 +160,7 @@ interface SettingsState extends Settings {
   loaded: boolean
   update(patch: Partial<Settings>): void
   updateIsland(patch: Partial<IslandSettings>): void
+  updateLyrics(patch: Partial<LyricsSettings>): void
 }
 
 const saver = debouncedSaver('settings', 400)
@@ -146,6 +172,7 @@ const pick = (s: SettingsState): Settings => ({
   accent: s.accent,
   waveColor: s.waveColor,
   island: s.island,
+  lyrics: s.lyrics,
   hotkeys: s.hotkeys,
   hotkeysEnabled: s.hotkeysEnabled,
   closeToTray: s.closeToTray,
@@ -162,6 +189,10 @@ export const useSettings = create<SettingsState>((set, get) => ({
   },
   updateIsland(patch) {
     set({ island: { ...get().island, ...patch } })
+    saver.save(pick(get()))
+  },
+  updateLyrics(patch) {
+    set({ lyrics: { ...get().lyrics, ...patch } })
     saver.save(pick(get()))
   },
 }))

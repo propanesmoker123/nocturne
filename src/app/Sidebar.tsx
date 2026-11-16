@@ -6,6 +6,9 @@ import { IconButton } from '../components/controls'
 import { ServiceLogo } from '../components/ServiceLogo'
 import * as sc from '../sc/api'
 import { useScSession } from '../sc/session'
+import * as spotify from '../spotify/api'
+import { spKeys } from '../spotify/queries'
+import { useSpotifySession } from '../spotify/session'
 import * as vk from '../vk/api'
 import s from './Sidebar.module.css'
 import appIcon from '../assets/app-icon.png'
@@ -34,20 +37,21 @@ function NavItem({ route, icon, label }: { route: Route; icon: ReactNode; label:
   )
 }
 
-/** The search of the selected service: VK's `search` page or SoundCloud's `sc-search`. */
+/** The search of the selected service: VK's `search`, SoundCloud's `sc-search`, or Spotify's `spotify-search`. */
 function SearchField() {
   const route = useRouter((r) => r.route)
   const push = useRouter((r) => r.push)
   const replace = useRouter((r) => r.replace)
   const service = useService((x) => x.current)
-  const page = service === 'sc' ? 'sc-search' : 'search'
+  const page = service === 'spotify' ? 'spotify-search' : service === 'sc' ? 'sc-search' : 'search'
   const here = route.name === page
-  const [value, setValue] = useState(route.name === 'search' || route.name === 'sc-search' ? (route.q ?? '') : '')
+  const rawRouteQ = route.name === 'search' || route.name === 'sc-search' || route.name === 'spotify-search' ? (route.q ?? '') : ''
+  const [value, setValue] = useState(rawRouteQ.startsWith('genre:') ? '' : rawRouteQ)
   const ref = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (!here) setValue('')
-  }, [here])
+    if (!here || rawRouteQ.startsWith('genre:')) setValue('')
+  }, [here, rawRouteQ])
 
   const update = (q: string) => {
     setValue(q)
@@ -62,7 +66,7 @@ function SearchField() {
         ref={ref}
         id="global-search"
         className={s.searchInput}
-        placeholder={service === 'sc' ? 'Поиск в SoundCloud' : 'Поиск в VK'}
+        placeholder={service === 'spotify' ? 'Поиск в Spotify' : service === 'sc' ? 'Поиск в SoundCloud' : 'Поиск в VK'}
         value={value}
         spellCheck={false}
         onFocus={() => !here && push({ name: page, q: value })}
@@ -256,11 +260,12 @@ function UpdateCard() {
 export function Sidebar() {
   const vkUser = useSession((x) => x.user)
   const scUser = useScSession((x) => x.user)
+  const spUser = useSpotifySession((x) => x.user)
   const push = useRouter((r) => r.push)
   const service = useService((x) => x.current)
   const mine = useRouter((r) => routeSection(r.route) === 'mine')
   // the account of the service picked on the rail
-  const user = accountFor(service, vkUser, scUser)
+  const user = accountFor(service, vkUser, scUser, spUser)
   return (
     <nav className={s.sidebar} aria-label="Разделы">
       <div className={s.brand} data-tauri-drag-region>
@@ -268,7 +273,7 @@ export function Sidebar() {
         {mine ? 'Моё' : serviceInfo(service).name}
       </div>
       <SearchField />
-      <div className={s.scroll}>{mine ? <MineNav /> : service === 'sc' ? <ScNav /> : <VkNav />}</div>
+      <div className={s.scroll}>{mine ? <MineNav /> : service === 'spotify' ? <SpotifyNav /> : service === 'sc' ? <ScNav /> : <VkNav />}</div>
       <UpdateCard />
       <div className={s.footer}>
         <button type="button" className={s.user} onClick={() => push({ name: 'settings' })}>
@@ -283,5 +288,88 @@ export function Sidebar() {
         </IconButton>
       </div>
     </nav>
+  )
+}
+
+function SpotifyPlaylistLinks() {
+  const route = useRouter((r) => r.route)
+  const push = useRouter((r) => r.push)
+  const phase = useSpotifySession((x) => x.phase)
+  const q = useQuery({ queryKey: spKeys.myPlaylists(), queryFn: spotify.getMyPlaylists, enabled: phase === 'signed-in' })
+  if (phase !== 'signed-in') return null
+  if (q.isLoading) return <div className={s.hint}>Загружаем…</div>
+  if (q.isError) return <div className={s.hint}>Плейлисты не загрузились</div>
+  const items = q.data ?? []
+  if (!items.length) return <div className={s.hint}>Плейлистов пока нет</div>
+  return (
+    <>
+      {items.map((p) => {
+        const active = route.name === 'spotify-playlist' && route.id === p.spotifyId
+        return (
+          <button
+            key={p.spotifyId ?? p.id}
+            type="button"
+            className={`${s.item} ${s.playlistItem}`}
+            aria-current={active ? 'page' : undefined}
+            onClick={() => push({ name: 'spotify-playlist', id: p.spotifyId!, kind: p.type, title: p.title })}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              showMenu(e, playlistMenuItems(p, undefined))
+            }}
+          >
+            <Artwork src={p.cover} size={24} radius={5} seed={p.title} />
+            <span className={`${s.itemLabel} truncate`}>{p.title}</span>
+          </button>
+        )
+      })}
+    </>
+  )
+}
+
+function SpotifyNav() {
+  const route = useRouter((state) => state.route)
+  const push = useRouter((state) => state.push)
+  const current = (page: 'home' | 'browse' | 'library' | 'liked' | 'albums' | 'artists' | 'recent') =>
+    route.name === 'spotify' && !route.q && !route.link && (route.page ?? 'home') === page ? 'page' : undefined
+  return (
+    <>
+      <div className={s.group}>
+        <button type="button" className={s.item} aria-current={current('home')} onClick={() => push({ name: 'spotify', page: 'home' })}>
+          <span className={s.itemIcon}><Home {...ic} /></span>
+          <span className={`${s.itemLabel} truncate`}>Для вас</span>
+        </button>
+        <button type="button" className={s.item} aria-current={current('browse')} onClick={() => push({ name: 'spotify', page: 'browse' })}>
+          <span className={s.itemIcon}><Compass {...ic} /></span>
+          <span className={`${s.itemLabel} truncate`}>Обзор</span>
+        </button>
+      </div>
+      <div className={s.group}>
+        <div className={s.groupHead}>Медиатека</div>
+        <button type="button" className={s.item} aria-current={current('liked')} onClick={() => push({ name: 'spotify', page: 'liked' })}>
+          <span className={s.itemIcon}><Heart {...ic} /></span>
+          <span className={`${s.itemLabel} truncate`}>Любимые треки</span>
+        </button>
+        <button type="button" className={s.item} aria-current={current('albums')} onClick={() => push({ name: 'spotify', page: 'albums' })}>
+          <span className={s.itemIcon}><Disc3 {...ic} /></span>
+          <span className={`${s.itemLabel} truncate`}>Альбомы</span>
+        </button>
+        <button type="button" className={s.item} aria-current={current('artists')} onClick={() => push({ name: 'spotify', page: 'artists' })}>
+          <span className={s.itemIcon}><Users {...ic} /></span>
+          <span className={`${s.itemLabel} truncate`}>Исполнители</span>
+        </button>
+        <button type="button" className={s.item} aria-current={current('recent')} onClick={() => push({ name: 'spotify', page: 'recent' })}>
+          <span className={s.itemIcon}><Clock3 {...ic} /></span>
+          <span className={`${s.itemLabel} truncate`}>Недавнее</span>
+        </button>
+        <button type="button" className={s.item} aria-current={current('library')} onClick={() => push({ name: 'spotify', page: 'library' })}>
+          <span className={s.itemIcon}><ListMusic {...ic} /></span>
+          <span className={`${s.itemLabel} truncate`}>Плейлисты</span>
+        </button>
+      </div>
+      <div className={s.group}>
+        <div className={s.groupHead}>Мои плейлисты</div>
+        <SpotifyPlaylistLinks />
+      </div>
+    </>
   )
 }

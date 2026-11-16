@@ -2,8 +2,8 @@ import type { QuickTrack } from '../lib/events'
 
 export type Row = { kind: 'header'; id: string; label: string } | { kind: 'track'; id: string; track: QuickTrack }
 
-/** «В моей музыке» first, then the rest of VK; a section shows only when it found something. */
-export function buildRows(own: QuickTrack[], others: QuickTrack[]): Row[] {
+/** «В моей музыке» first, then the rest of the catalog; a section shows only when it found something. */
+export function buildRows(own: QuickTrack[], others: QuickTrack[], othersLabel = 'VK Музыка'): Row[] {
   const rows: Row[] = []
   const section = (id: string, label: string, list: QuickTrack[]) => {
     if (list.length === 0) return
@@ -11,7 +11,7 @@ export function buildRows(own: QuickTrack[], others: QuickTrack[]): Row[] {
     for (const track of list) rows.push({ kind: 'track', id: `${id}:${track.key}`, track })
   }
   section('own', 'В моей музыке', own)
-  section('vk', 'VK Музыка', others)
+  section('vk', othersLabel, others)
   return rows
 }
 

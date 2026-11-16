@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-spotify-login-cancel"
+description = "Enables the spotify_login_cancel command without any pre-configured scope."
+commands.allow = ["spotify_login_cancel"]
+
+[[permission]]
+identifier = "deny-spotify-login-cancel"
+description = "Denies the spotify_login_cancel command without any pre-configured scope."
+commands.deny = ["spotify_login_cancel"]

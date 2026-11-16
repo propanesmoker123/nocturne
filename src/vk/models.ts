@@ -5,7 +5,8 @@ export interface Cover {
 }
 
 /** Where a track or a playlist comes from. */
-export type ServiceId = 'vk' | 'sc'
+export type ServiceId = 'vk' | 'sc' | 'spotify'
+export type AudioServiceId = ServiceId
 
 /** Older saved queues and history have no `service`: they are VK's. */
 export const serviceOf = (x: { service?: ServiceId }): ServiceId => x.service ?? 'vk'
@@ -13,7 +14,11 @@ export const serviceOf = (x: { service?: ServiceId }): ServiceId => x.service ??
 export interface Track {
   /** Absent for VK (and for everything saved before SoundCloud came). */
   service?: ServiceId
-  /** SoundCloud: the track's page — what «Скопировать ссылку» copies. */
+  /** Spotify: the 22-character base62 id of the track. */
+  spotifyId?: string
+  /** Spotify: unique playlist item uid used when removing a track from a playlist. */
+  spotifyUid?: string
+  /** SoundCloud / Spotify: the track's page — what «Скопировать ссылку» copies. */
   permalink?: string
   id: number
   ownerId: number
@@ -28,7 +33,7 @@ export interface Track {
   /** ms timestamp when `url` was received; 0 when there is no url. */
   urlFetchedAt: number
   cover?: Cover
-  album?: { id: number; ownerId: number; accessKey?: string; title: string }
+  album?: { id: number; ownerId: number; accessKey?: string; title: string; spotifyId?: string }
   explicit: boolean
   artists: { id?: string; name: string }[]
   playable: boolean
@@ -40,6 +45,8 @@ export interface Track {
 
 export interface Playlist {
   service?: ServiceId
+  /** Spotify: the 22-character base62 id of the playlist or album. */
+  spotifyId?: string
   /** SoundCloud system playlists («Mixed for you»…) are known by urn, not by id. */
   urn?: string
   permalink?: string
@@ -55,6 +62,7 @@ export interface Playlist {
   isFollowed: boolean
   canEdit: boolean
   type: 'playlist' | 'album'
+  albumType?: 'album' | 'single' | 'compilation'
   ownerName?: string
   year?: number
   /** How many times it was played in VK, when VK says. */
@@ -111,14 +119,27 @@ export interface CatalogSection {
   nextFrom?: string
 }
 
+export interface LyricsWord {
+  text: string
+  /** ms from track start */
+  begin: number
+  end?: number
+}
+
 export interface LyricsLine {
   text: string
   /** ms from track start, only for synced lyrics */
   begin?: number
+  end?: number
+  words?: LyricsWord[]
 }
+
+export type LyricsSource = 'vk' | 'spotify' | 'lrclib' | 'netease' | 'kugou' | 'qq' | 'genius' | 'ovh' | 'ai'
 
 export interface Lyrics {
   synced: boolean
   lines: LyricsLine[]
   credits?: string
+  source?: LyricsSource
+  instrumental?: boolean
 }

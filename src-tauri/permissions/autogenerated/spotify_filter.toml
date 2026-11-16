@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-spotify-filter"
+description = "Enables the spotify_filter command without any pre-configured scope."
+commands.allow = ["spotify_filter"]
+
+[[permission]]
+identifier = "deny-spotify-filter"
+description = "Denies the spotify_filter command without any pre-configured scope."
+commands.deny = ["spotify_filter"]

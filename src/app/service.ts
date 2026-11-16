@@ -16,6 +16,7 @@ export interface ServiceInfo {
 export const SERVICES: ServiceInfo[] = [
   { id: 'vk', name: 'VK Музыка', color: '#0077ff', home: { name: 'home' } },
   { id: 'sc', name: 'SoundCloud', color: '#ff5500', home: { name: 'sc-home' } },
+  { id: 'spotify', name: 'Spotify', color: '#1ed760', home: { name: 'spotify' } },
 ]
 
 export const serviceInfo = (id: ServiceId): ServiceInfo => SERVICES.find((s) => s.id === id) ?? SERVICES[0]
@@ -25,8 +26,10 @@ export function accountFor(
   service: ServiceId,
   vk: { name: string; photo?: string } | null,
   sc: { name: string; avatar?: string | null } | null,
+  sp?: { name: string; avatar?: string | null } | null,
 ): { name: string; photo?: string } | null {
   if (service === 'sc') return { name: sc?.name || 'SoundCloud', photo: sc?.avatar ?? undefined }
+  if (service === 'spotify') return { name: sp?.name || 'Spotify', photo: sp?.avatar ?? undefined }
   return vk ? { name: vk.name, photo: vk.photo } : null
 }
 
@@ -72,8 +75,8 @@ export async function initService() {
     following = true
     useRouter.subscribe((st, prev) => st.route !== prev.route && follow(st.route))
   }
-  if (saved === 'sc') {
-    useService.setState({ current: 'sc' })
-    useRouter.getState().replace(serviceInfo('sc').home)
+  if (saved === 'sc' || saved === 'spotify') {
+    useService.setState({ current: saved })
+    useRouter.getState().replace(serviceInfo(saved).home)
   }
 }

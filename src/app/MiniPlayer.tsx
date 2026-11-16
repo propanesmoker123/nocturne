@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { DevicesButton } from '../connect/DevicesPanel'
 import { IconButton, Spinner } from '../components/controls'
-import { IconBackward, IconForward, IconNote, IconPause, IconPlay, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
+import { IconBackward, IconForward, IconLyrics, IconNote, IconPause, IconPlay, IconQueue, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
 import { Slider } from '../components/Slider'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime, fullTrackName } from '../lib/format'
@@ -37,7 +37,7 @@ export function Scrubber({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
           trackKey={trackKey}
           height={size === 'sm' ? 26 : 40}
           label="Позиция трека"
-          value={duration ? position / duration : 0}
+          value={duration ? shown / duration : 0}
           buffered={duration ? buffered / duration : 0}
           disabled={!trackKey || !duration || !!controlledBy}
           step={5 / Math.max(duration, 1)}
@@ -144,7 +144,10 @@ export function MiniPlayer() {
           <IconButton size={32} label="Поделиться треком" onClick={() => current && shareTrack(current)} disabled={!current}>
             <Send size={17} strokeWidth={2} />
           </IconButton>
-          <IconButton size={32} label="Очередь" active={nowPlayingTab === 'queue'} onClick={() => toggleNowPlaying('queue')} disabled={!current}>
+          <IconButton size={32} label="Текст" active={nowPlayingTab === 'lyrics'} onClick={() => toggleNowPlaying('lyrics')} disabled={!current}>
+            <IconLyrics size={18} />
+          </IconButton>
+          <IconButton size={32} label="Очередь" active={nowPlayingTab === 'queue'} onClick={() => toggleNowPlaying()} disabled={!current}>
             <IconQueue size={18} />
           </IconButton>
           <IconButton size={32} label={muted ? 'Включить звук' : 'Выключить звук'} onClick={toggleMute}>

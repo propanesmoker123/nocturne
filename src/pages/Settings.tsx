@@ -22,6 +22,8 @@ import { deleteWallpaper, listWallpapers, pickWallpaper, wallpaperKind, wallpape
 import { useUpdates } from '../lib/updates'
 import { usePlayer } from '../player/store'
 import { useScSession } from '../sc/session'
+import { useSpotifySession } from '../spotify/session'
+import { useService } from '../app/service'
 import { IslandProgressPicker } from '../components/IslandProgressPicker'
 import s from './Settings.module.css'
 
@@ -75,6 +77,71 @@ function SoundCloudAccount() {
         </Button>
       )}
     </div>
+  )
+}
+
+function SpotifyAccount() {
+  const sp = useSpotifySession()
+  const select = useService((x) => x.select)
+  const signedIn = sp.phase === 'signed-in'
+  const user = sp.user
+  const subtitle = signedIn
+    ? user?.country
+      ? `Подключён к веб-плееру Spotify · Регион ${user.country}`
+      : 'Подключён к веб-плееру Spotify без рекламы.'
+    : sp.regionBlocked
+      ? 'Spotify недоступен в текущем регионе (требуется VPN).'
+      : sp.loginWaiting
+        ? 'Завершите вход в открывшемся окне Chrome и нажмите «Готово, я вошёл».'
+        : sp.error || 'Войдите через Chrome, чтобы синхронизировать медиатеку и рекомендации.'
+
+  return (
+    <>
+      <div className={s.row}>
+        {user?.avatar ? (
+          <img className={s.avatar} src={user.avatar} alt="" referrerPolicy="no-referrer" />
+        ) : (
+          <ServiceLogo id="spotify" size={36} />
+        )}
+        <div className={s.rowText}>
+          <div className={s.rowTitle}>{user?.name || 'Spotify'}</div>
+          <div className={s.rowSub}>{subtitle}</div>
+        </div>
+        {signedIn ? (
+          <>
+            <Button onClick={() => select('spotify')}>Открыть</Button>
+            <Button variant="danger" onClick={() => void sp.logout()}>
+              Выйти
+            </Button>
+          </>
+        ) : sp.loginWaiting ? (
+          <>
+            <Button variant="primary" disabled={sp.signingIn} onClick={() => void sp.finishLogin()}>
+              {sp.signingIn && <Spinner size={14} />} Готово, я вошёл
+            </Button>
+            <Button disabled={sp.signingIn} onClick={() => void sp.cancelLogin()}>
+              Отмена
+            </Button>
+          </>
+        ) : (
+          <Button variant="primary" disabled={sp.signingIn} onClick={() => void sp.startLogin()}>
+            {sp.signingIn && <Spinner size={14} />} Войти через Chrome
+          </Button>
+        )}
+      </div>
+      {signedIn && (
+        <Row
+          title="Фильтр рекламы Spotify"
+          sub={
+            sp.patchedCount > 0
+              ? `Блокировка аудио- и баннерной рекламы (перехвачено запросов: ${sp.patchedCount})`
+              : 'Блокировка аудио- и баннерной рекламы в потоке Spotify'
+          }
+        >
+          <Switch label="Фильтр рекламы Spotify" checked={sp.filterEnabled} onChange={() => void sp.toggleFilter()} />
+        </Row>
+      )}
+    </>
   )
 }
 
@@ -200,6 +267,7 @@ export function SettingsPage() {
           </Button>
         </div>
         <SoundCloudAccount />
+        <SpotifyAccount />
       </Group>
 
       <Group title="Обои" note="Свои обои — картинка, GIF или видео (MP4, WebM). Видео играет без звука и ставится на паузу, когда окно скрыто.">
@@ -338,6 +406,21 @@ export function SettingsPage() {
         </Row>
         <Row title="Прятать в полноэкранных приложениях" sub="Игры, видео на весь экран, презентации">
           <Switch label="Прятать в полноэкранных приложениях" checked={st.island.hideInFullscreen} onChange={(v) => st.updateIsland({ hideInFullscreen: v })} />
+        </Row>
+      </Group>
+
+      <Group
+        title="Тексты и анимации"
+        note="Тексты загружаются со стриминговых площадок (Spotify, ВКонтакте), LRCLIB и Genius. Каждый параметр в этом блоке работает независимо."
+      >
+        <Row title="Кинетические эффекты и реакция на бит" sub="Смысловая типографика, глубина фокуса, хром, неон и импульс в ритм музыки">
+          <Switch label="Кинетические эффекты и реакция на бит" checked={st.lyrics.effects} onChange={(v) => st.updateLyrics({ effects: v })} />
+        </Row>
+        <Row title="Фоновые частицы и свет" sub="Мягкие боке-сферы и летающие искры в ритм по всему экрану плеера; вспышки слов остаются на тексте">
+          <Switch label="Фоновые частицы и свет" checked={st.lyrics.particles} onChange={(v) => st.updateLyrics({ particles: v })} />
+        </Row>
+        <Row title="Пословное заполнение в ритм" sub="Плавное закрашивание слов по ходу пения; если выключить, будет просто выделяться текущая строка целиком">
+          <Switch label="Пословное заполнение в ритм" checked={st.lyrics.wordSync} onChange={(v) => st.updateLyrics({ wordSync: v })} />
         </Row>
       </Group>
 

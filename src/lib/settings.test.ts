@@ -85,4 +85,40 @@ describe('mergeSettings', () => {
     expect(s.island.monitor).toBe('DISPLAY2')
     expect(s.island.enabled).toBe(DEFAULT_SETTINGS.island.enabled)
   })
+
+  test('validates lyrics wordSync, effects, notifications, particles, whisper, and geminiKey settings', () => {
+    expect(DEFAULT_SETTINGS.lyrics).toEqual({
+      wordSync: true,
+      effects: true,
+      notifications: false,
+      particles: true,
+      geminiKey: '',
+      whisperModel: 'tiny',
+      whisperAuto: false,
+    })
+    const s = mergeSettings({
+      lyrics: {
+        wordSync: false,
+        effects: false,
+        notifications: 'bad',
+        particles: false,
+        geminiKey: '  AIzaTestKey123  ',
+        whisperModel: 'base',
+        whisperAuto: true,
+      },
+    })
+    expect(s.lyrics).toEqual({
+      wordSync: false,
+      effects: false,
+      notifications: false,
+      particles: false,
+      geminiKey: 'AIzaTestKey123',
+      whisperModel: 'base',
+      whisperAuto: true,
+    })
+    expect(mergeSettings({ lyrics: { geminiKey: 42, whisperModel: 'large-evil' } }).lyrics).toMatchObject({
+      geminiKey: '',
+      whisperModel: 'tiny',
+    })
+  })
 })

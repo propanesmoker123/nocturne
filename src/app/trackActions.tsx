@@ -1,10 +1,12 @@
-import { Copy, Disc3, ExternalLink, Heart, ListEnd, ListPlus, ListX, Mic2, Plus, Send, SquarePlus, Trash2 } from 'lucide-react'
+import { Copy, Disc3, ExternalLink, Heart, ListEnd, ListPlus, ListX, Mic2, Plus, Radio, Send, SquarePlus, Trash2 } from 'lucide-react'
 import type { MouseEvent } from 'react'
 import { albumMenuItems } from '../albums/addMenu'
 import { IconPlay } from '../components/Icons'
 import { fullTrackName } from '../lib/format'
 import { usePlayer } from '../player/store'
 import { openInSoundCloud } from '../sc/open'
+import * as spotify from '../spotify/api'
+import { spKeys } from '../spotify/queries'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
 import { serviceOf, type Playlist, type Track } from '../vk/models'
@@ -46,17 +48,21 @@ export async function removeTracksFromPlaylist(p: Playlist, tracks: Track[]) {
   }
 }
 
-/** The track's page (in VK, or SoundCloud's): what «Скопировать ссылку» copies and what goes out when sharing. */
-export const trackLink = (t: Pick<Track, 'ownerId' | 'id' | 'service' | 'permalink'>) =>
-  serviceOf(t) === 'sc' ? (t.permalink ?? 'https://soundcloud.com/') : `https://vk.com/audio${t.ownerId}_${t.id}`
+/** The track's page (in VK, SoundCloud, or Spotify): what «Скопировать ссылку» copies and what goes out when sharing. */
+export const trackLink = (t: Pick<Track, 'ownerId' | 'id' | 'service' | 'permalink' | 'spotifyId'>) =>
+  serviceOf(t) === 'spotify'
+    ? (t.permalink ?? (t.spotifyId ? `https://open.spotify.com/track/${t.spotifyId}` : 'https://open.spotify.com/'))
+    : serviceOf(t) === 'sc'
+      ? (t.permalink ?? 'https://soundcloud.com/')
+      : `https://vk.com/audio${t.ownerId}_${t.id}`
 
-export async function copyTrackLink(t: Pick<Track, 'ownerId' | 'id' | 'service' | 'permalink'>) {
+export async function copyTrackLink(t: Pick<Track, 'ownerId' | 'id' | 'service' | 'permalink' | 'spotifyId'>) {
   await navigator.clipboard.writeText(trackLink(t))
 }
 
-/** «Поделиться треком»: a VK track goes to a friend; a SoundCloud one has its link copied. */
+/** «Поделиться треком»: a VK track goes to a friend; a SoundCloud/Spotify one has its link copied. */
 export function shareTrack(t: Track) {
-  if (serviceOf(t) !== 'sc') return useSheet.getState().open({ kind: 'send-track', track: t })
+  if (serviceOf(t) === 'vk') return useSheet.getState().open({ kind: 'send-track', track: t })
   void copyTrackLink(t).then(
     () => toast('Ссылка скопирована', 'info'),
     () => toast('Не получилось скопировать', 'error'),
@@ -110,6 +116,7 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
     )
   }
   if (serviceOf(track) === 'sc') return withExtra(items.concat(scTrackItems(track, liked)), ctx.extra)
+  if (serviceOf(track) === 'spotify') return withExtra(items.concat(spotifyTrackItems(track, liked)), ctx.extra)
   items.push(
     likeItem(track, liked),
     albumItem(track),
@@ -201,6 +208,81 @@ function scTrackItems(track: Track, liked: boolean): MenuItem[] {
   ]
 }
 
+function spotifyTrackItems(track: Track, liked: boolean): MenuItem[] {
+  const router = useRouter.getState()
+  const items: MenuItem[] = [
+    likeItem(track, liked),
+    albumItem(track),
+  ]
+  if (track.spotifyId) {
+    const trackId = track.spotifyId
+    items.push(
+      {
+        label: 'Добавить в плейлист Spotify',
+        icon: <Plus {...ic} />,
+        submenu: async () => {
+          const lists = await queryClient
+            .fetchQuery({ queryKey: spKeys.editablePlaylists(), queryFn: spotify.getEditablePlaylists, staleTime: 60_000 })
+            .catch(() => [] as Playlist[])
+          if (!lists.length) return [{ label: 'Нет доступных плейлистов', disabled: true }]
+          return lists.map((p) => ({
+            label: p.title,
+            onSelect: async () => {
+              try {
+                await spotify.addTrackToPlaylist(p.spotifyId!, trackId)
+                void queryClient.invalidateQueries({ queryKey: spKeys.playlist(p.spotifyId!, 'playlist') })
+                void queryClient.invalidateQueries({ queryKey: spKeys.myPlaylists() })
+                toast(`Добавлено в «${p.title}»`, 'added')
+              } catch (e) {
+                toast(e instanceof Error ? e.message : 'Не удалось добавить в плейлист', 'error')
+              }
+            },
+          }))
+        },
+      },
+      {
+        label: 'Включить радио по треку',
+        icon: <Radio {...ic} />,
+        onSelect: () => {
+          useUi.getState().closeNowPlaying()
+          void usePlayer.getState().playRadio(track)
+        },
+      },
+    )
+  }
+  items.push(
+    { separator: true },
+    {
+      label: 'Перейти к исполнителю',
+      icon: <Mic2 {...ic} />,
+      onSelect: () => {
+        useUi.getState().closeNowPlaying()
+        router.push(artistRoute(track))
+      },
+    },
+  )
+  if (track.album?.spotifyId) {
+    const a = track.album
+    items.push({
+      label: 'Перейти к альбому',
+      icon: <Disc3 {...ic} />,
+      onSelect: () => {
+        useUi.getState().closeNowPlaying()
+        router.push({ name: 'spotify-playlist', id: a.spotifyId!, kind: 'album', title: a.title })
+      },
+    })
+  }
+  items.push({
+    label: 'Скопировать ссылку',
+    icon: <Copy {...ic} />,
+    onSelect: () => {
+      void copyTrackLink(track)
+      toast('Ссылка скопирована', 'info')
+    },
+  })
+  return items
+}
+
 export function openTrackMenu(e: MouseEvent, track: Track, ctx: TrackMenuContext = {}) {
   e.preventDefault()
   e.stopPropagation()
@@ -214,9 +296,49 @@ export function playlistMenuItems(p: Playlist, tracks: Track[] | undefined): Men
     { label: 'Играть следующим', icon: <ListPlus {...ic} />, disabled: !tracks?.length, onSelect: () => tracks && player.playNext(tracks) },
     { label: 'В конец очереди', icon: <ListEnd {...ic} />, disabled: !tracks?.length, onSelect: () => tracks && player.addToQueue(tracks) },
   ]
-  // a SoundCloud playlist is only listened to here; editing it stays in SoundCloud
+  // a SoundCloud or Spotify playlist is only listened to here; editing it stays in its service
   if (p.service === 'sc') {
     if (p.permalink) items.push({ separator: true }, { label: 'Открыть в SoundCloud', icon: <ExternalLink {...ic} />, onSelect: () => void openInSoundCloud(p.permalink) })
+    return items
+  }
+  if (p.service === 'spotify') {
+    const link = p.permalink ?? (p.spotifyId ? `https://open.spotify.com/${p.type ?? 'playlist'}/${p.spotifyId}` : '')
+    if (p.spotifyId) {
+      const id = p.spotifyId
+      const isAlbum = p.type === 'album'
+      items.push(
+        { separator: true },
+        {
+          label: p.isFollowed ? 'Убрать из медиатеки' : isAlbum ? 'Сохранить альбом' : 'Сохранить плейлист',
+          icon: <Heart {...ic} fill={p.isFollowed ? 'currentColor' : 'none'} />,
+          onSelect: async () => {
+            try {
+              const next = !p.isFollowed
+              if (isAlbum) await spotify.setAlbumSaved(id, next)
+              else await spotify.setPlaylistSaved(id, next)
+              void queryClient.invalidateQueries({ queryKey: isAlbum ? spKeys.albums() : spKeys.myPlaylists() })
+              void queryClient.invalidateQueries({ queryKey: ['playlist', p.ownerId, p.id] })
+              toast(next ? 'Добавлено в медиатеку Spotify' : 'Убрано из медиатеки Spotify', next ? 'added' : 'removed')
+            } catch (e) {
+              toast(e instanceof Error ? e.message : 'Не удалось обновить медиатеку Spotify', 'error')
+            }
+          },
+        },
+      )
+    }
+    if (link) {
+      items.push(
+        { separator: true },
+        {
+          label: 'Скопировать ссылку',
+          icon: <Copy {...ic} />,
+          onSelect: () => {
+            void navigator.clipboard.writeText(link)
+            toast('Ссылка скопирована', 'info')
+          },
+        },
+      )
+    }
     return items
   }
   if (p.canEdit) {
@@ -253,9 +375,14 @@ export function playlistMenuItems(p: Playlist, tracks: Track[] | undefined): Men
         danger: true,
         onSelect: async () => {
           try {
-            await vk.deletePlaylist(p)
+            const mine = queryClient.getQueryData<{ items: Playlist[] }>(myPlaylistsKey())
+            const ownCopy = mine?.items?.find(
+              (m) => (m.ownerId === p.ownerId && m.id === p.id) || (m.original?.ownerId === p.ownerId && m.original?.id === p.id),
+            )
+            await vk.deletePlaylist(ownCopy ?? p)
             toast('Плейлист убран', 'removed')
             void queryClient.invalidateQueries({ queryKey: myPlaylistsKey() })
+            void queryClient.invalidateQueries({ queryKey: ['playlist', p.ownerId, p.id] })
           } catch (e) {
             toast(describeError(e), 'error')
           }
@@ -273,6 +400,7 @@ export function playlistMenuItems(p: Playlist, tracks: Track[] | undefined): Men
             await vk.followPlaylist(p)
             toast('Плейлист добавлен к вам', 'added')
             void queryClient.invalidateQueries({ queryKey: myPlaylistsKey() })
+            void queryClient.invalidateQueries({ queryKey: ['playlist', p.ownerId, p.id] })
           } catch (e) {
             toast(describeError(e), 'error')
           }

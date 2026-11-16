@@ -9,6 +9,8 @@ import { upcoming } from '../player/queue'
 import { usePlayer } from '../player/store'
 import * as sc from '../sc/api'
 import { describeScError } from '../sc/errors'
+import * as spotify from '../spotify/api'
+import { spotifyError } from '../spotify/runtime'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
 import type { Playlist, RecommendedPlaylist } from '../vk/models'
@@ -23,11 +25,13 @@ import { PRESETS } from './Wallpaper'
 /** `onOpen` turns the title into a link to the full list, marked with a chevron. */
 export function Section({
   title,
+  subtitle,
   action,
   onOpen,
   children,
 }: {
   title: string
+  subtitle?: string
   action?: { label: string; onClick(): void }
   onOpen?: () => void
   children: ReactNode
@@ -35,16 +39,19 @@ export function Section({
   return (
     <section className={s.section}>
       <div className={s.sectionHead}>
-        <h2 className={s.sectionTitle}>
-          {onOpen ? (
-            <button type="button" className={s.sectionLink} onClick={onOpen} title="Показать все">
-              {title}
-              <ChevronRight size={22} strokeWidth={2.6} aria-hidden="true" />
-            </button>
-          ) : (
-            title
-          )}
-        </h2>
+        <div className={s.sectionHeadText}>
+          {subtitle && <div className={s.sectionSubtitle}>{subtitle}</div>}
+          <h2 className={s.sectionTitle}>
+            {onOpen ? (
+              <button type="button" className={s.sectionLink} onClick={onOpen} title="Показать все">
+                {title}
+                <ChevronRight size={22} strokeWidth={2.6} aria-hidden="true" />
+              </button>
+            ) : (
+              title
+            )}
+          </h2>
+        </div>
         {action && (
           <button type="button" className={s.sectionAction} onClick={action.onClick}>
             {action.label}
@@ -72,28 +79,59 @@ export function Carousel({ children, card = 176 }: { children: ReactNode; card?:
 }
 
 export function playlistSubtitle(p: Playlist): string {
+  if (p.service === 'spotify' && p.type === 'playlist' && p.description && (!p.ownerName || p.ownerName.toLowerCase() === 'spotify')) {
+    return p.description
+  }
   const parts = [p.ownerName, p.type === 'album' && p.year ? String(p.year) : null, p.count ? `${p.count} ${pluralRu(p.count, 'трек', 'трека', 'треков')}` : null]
   return parts.filter(Boolean).join(' · ')
 }
 
-async function playPlaylist(p: Playlist, shuffle = false) {
+export async function playPlaylist(p: Playlist, shuffle = false) {
   const isSc = p.service === 'sc'
+  const isSp = p.service === 'spotify'
   try {
-    const items = isSc ? (await sc.getPlaylistWithTracks(p)).tracks : (await vk.getPlaylistTracks(p, 0, 500)).items
+    let items
+    if (isSp) {
+      const first = await spotify.getPlaylistOrAlbum(p.spotifyId!, p.type)
+      items = [...first.tracks]
+      const target = Math.min(first.playlist.count || items.length, 500)
+      while (items.length < target) {
+        const page = await spotify.getPlaylistTracksPage(p.spotifyId!, p.type, items.length, 100)
+        if (!page.tracks.length) break
+        const seen = new Set(items.map((t) => t.key))
+        const fresh = page.tracks.filter((t) => !seen.has(t.key))
+        if (!fresh.length) break
+        items.push(...fresh)
+      }
+    } else if (isSc) {
+      items = (await sc.getPlaylistWithTracks(p)).tracks
+    } else {
+      items = (await vk.getPlaylistTracks(p, 0, 500)).items
+    }
     if (!items.length) {
       toast('В плейлисте пока нет треков', 'info')
       return
     }
-    usePlayer.getState().playList(items, 0, { shuffle, ...(isSc ? { source: { kind: 'list' as const, label: p.title } } : {}) })
+    usePlayer.getState().playList(items, 0, {
+      shuffle,
+      source: { kind: 'list', ...(isSp ? { service: 'spotify' as const } : {}), label: p.title },
+    })
   } catch (e) {
-    toast(isSc ? describeScError(e) : describeError(e), 'error')
+    toast(isSp ? spotifyError(e) : isSc ? describeScError(e) : describeError(e), 'error')
   }
 }
 
 export function PlaylistCard({ playlist: p, note }: { playlist: Playlist; note?: ReactNode }) {
   const push = useRouter((r) => r.push)
   const [busy, setBusy] = useState(false)
-  const open = () => push(p.service === 'sc' ? { name: 'sc-playlist', id: p.id, urn: p.urn, title: p.title } : { name: 'playlist', ownerId: p.ownerId, id: p.id, accessKey: p.accessKey })
+  const open = () =>
+    push(
+      p.service === 'spotify'
+        ? { name: 'spotify-playlist', id: p.spotifyId!, kind: p.type, title: p.title }
+        : p.service === 'sc'
+          ? { name: 'sc-playlist', id: p.id, urn: p.urn, title: p.title }
+          : { name: 'playlist', ownerId: p.ownerId, id: p.id, accessKey: p.accessKey },
+    )
   return (
     <div className={s.card}>
       <div
@@ -138,7 +176,7 @@ export function PlaylistCard({ playlist: p, note }: { playlist: Playlist; note?:
       <button type="button" className={s.cardTitle} onClick={open}>
         {p.title}
       </button>
-      <div className={`${s.cardSub} truncate`}>{playlistSubtitle(p)}</div>
+      <div className={s.cardSub}>{playlistSubtitle(p)}</div>
       {note}
       {p.plays && (
         <div className={s.cardPlays} title={formatPlays(p.plays)}>
@@ -300,7 +338,15 @@ function mixAura(w: WallpaperConfig, cover: string | undefined): { kind: 'cover'
   return { kind: 'glass' }
 }
 
-export function MixHero({ title, covers = [] }: { title: string; covers?: string[] }) {
+export function MixHero({
+  title,
+  covers = [],
+  service = 'vk',
+}: {
+  title: string
+  covers?: string[]
+  service?: 'vk' | 'spotify'
+}) {
   const source = usePlayer((p) => p.source)
   const isPlaying = usePlayer((p) => p.isPlaying)
   const current = usePlayer((p) => p.current)
@@ -308,14 +354,15 @@ export function MixHero({ title, covers = [] }: { title: string; covers?: string
   const [busy, setBusy] = useState(false)
   const wallpaper = useSettings((x) => x.wallpaper)
   const aura = mixAura(wallpaper, current?.cover?.m)
-  const playingMix = source?.kind === 'mix'
+  const playingMix = source?.kind === 'mix' && (source.service ?? 'vk') === service
   const live = playingMix && current ? current : null
   // Front card first: what plays now and what comes next, or a taste of the catalog.
   const stack = live ? [live.cover?.m, ...(queue ? upcoming(queue) : []).slice(0, 2).map((t) => t.cover?.m)] : covers.slice(0, 3)
   return (
     <section
       className={s.mix}
-      aria-label="VK Микс"
+      aria-label={title.replace(/^Слушать\s+/i, '')}
+      data-service={service}
       data-live={(playingMix && isPlaying) || undefined}
       data-aura={aura.kind}
       style={aura.kind === 'colors' ? ({ ['--aura-1' as string]: aura.colors[0], ['--aura-2' as string]: aura.colors[1], ['--aura-3' as string]: aura.colors[2] } as CSSProperties) : undefined}
@@ -343,7 +390,7 @@ export function MixHero({ title, covers = [] }: { title: string; covers?: string
                 return
               }
               setBusy(true)
-              await usePlayer.getState().playMix()
+              await usePlayer.getState().playMix(service)
               setBusy(false)
             }}
           >

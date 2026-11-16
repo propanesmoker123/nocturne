@@ -28,6 +28,8 @@ const POLL_EVERY: Duration = Duration::from_millis(150);
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long one script round trip into the session page may take.
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
+/// Fallback lifetime when VK omits `expires` (VK's own web client treats missing/zero `expires` as unbounded).
+const DEFAULT_TOKEN_TTL_SECS: i64 = 900;
 /// Extra attempts after a failure that is not VK saying "unauthorized".
 const TRANSIENT_RETRIES: [Duration; 3] = [Duration::from_millis(1500), Duration::from_secs(4), Duration::from_secs(10)];
 /// VK still answers «try again», or is down, or the network is: the session is not gone, so the
@@ -78,10 +80,120 @@ struct Parked {
     error: Option<String>,
     #[serde(default)]
     body: Option<serde_json::Value>,
+    #[serde(default)]
+    page_user_id: Option<serde_json::Value>,
+}
+
+fn parse_i64_loose(v: &serde_json::Value) -> Option<i64> {
+    if let Some(n) = v.as_i64() {
+        return Some(n);
+    }
+    if let Some(n) = v.as_u64() {
+        return i64::try_from(n).ok();
+    }
+    if let Some(n) = v.as_f64() {
+        if n.is_finite() && n >= i64::MIN as f64 && n < 9_223_372_036_854_775_808.0 {
+            return Some(n.trunc() as i64);
+        }
+        return None;
+    }
+    let s = v.as_str()?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        return Some(n);
+    }
+    let f = s.parse::<f64>().ok()?;
+    (f.is_finite() && f >= i64::MIN as f64 && f < 9_223_372_036_854_775_808.0).then_some(f.trunc() as i64)
+}
+
+fn normalize_epoch_secs(raw: i64) -> i64 {
+    if raw > 1_000_000_000_000 { raw / 1000 } else { raw }
+}
+
+fn positive_uid(v: Option<&serde_json::Value>) -> Option<i64> {
+    v.and_then(parse_i64_loose).filter(|&id| id > 0)
+}
+
+fn extract_expires(obj: &serde_json::Map<String, serde_json::Value>, now: i64) -> i64 {
+    for key in ["expires", "expired_at"] {
+        if let Some(v) = obj.get(key).and_then(parse_i64_loose).filter(|&n| n > 0) {
+            return normalize_epoch_secs(v);
+        }
+    }
+    for key in ["expires_in", "ttl"] {
+        if let Some(v) = obj.get(key).and_then(parse_i64_loose).filter(|&n| n > 0) {
+            return now.saturating_add(v);
+        }
+    }
+    now.saturating_add(DEFAULT_TOKEN_TTL_SECS)
+}
+
+fn extract_from_obj(obj: &serde_json::Map<String, serde_json::Value>, body_uid: Option<i64>, page_uid: Option<i64>, now: i64) -> Option<WebToken> {
+    let token = obj
+        .get("access_token")
+        .or_else(|| obj.get("token"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+    let user_id = positive_uid(obj.get("user_id"))
+        .or_else(|| positive_uid(obj.get("uid")))
+        .or(body_uid)
+        .or(page_uid)
+        .unwrap_or(0);
+    Some(WebToken { access_token: token.to_string(), expires: extract_expires(obj, now), user_id })
+}
+
+fn extract_from_value(v: &serde_json::Value, body_uid: Option<i64>, page_uid: Option<i64>, now: i64) -> Option<WebToken> {
+    match v {
+        serde_json::Value::Object(obj) => {
+            extract_from_obj(obj, body_uid, page_uid, now).or_else(|| obj.get("response").and_then(|r| extract_from_value(r, body_uid, page_uid, now)))
+        }
+        serde_json::Value::Array(items) => {
+            let mut first = None;
+            for item in items {
+                let Some(obj) = item.as_object() else { continue };
+                let Some(tok) = extract_from_obj(obj, body_uid, None, now) else { continue };
+                if page_uid.is_some() && Some(tok.user_id) == page_uid {
+                    return Some(tok);
+                }
+                if first.is_none() {
+                    first = Some(if tok.user_id > 0 { tok } else { WebToken { user_id: page_uid.unwrap_or(0), ..tok } });
+                }
+            }
+            first
+        }
+        _ => None,
+    }
+}
+
+/// Redacted, key-and-type-only summary of a JSON payload for journal diagnostics (never emits values).
+fn describe_field(v: &serde_json::Value, depth: usize) -> String {
+    match v {
+        serde_json::Value::Null => "null".into(),
+        serde_json::Value::Bool(_) => "bool".into(),
+        serde_json::Value::Number(_) => "num".into(),
+        serde_json::Value::String(s) => format!("str({})", s.len()),
+        serde_json::Value::Array(a) => format!("[{}]", a.len()),
+        serde_json::Value::Object(m) => {
+            if depth == 0 {
+                return format!("obj({})", m.len());
+            }
+            let fields: Vec<String> = m.iter().take(8).map(|(k, val)| format!("{k}:{}", describe_field(val, depth - 1))).collect();
+            let suffix = if m.len() > 8 { ",..." } else { "" };
+            let out = format!("{{{fields}{suffix}}}", fields = fields.join(","));
+            out.chars().take(160).collect()
+        }
+    }
 }
 
 /// Parses what the poll script returned: `None` while the request is still in flight.
 pub fn parse_poll_result(raw: &str) -> Option<Result<WebToken, SessionMsgError>> {
+    parse_poll_result_at(raw, now_secs())
+}
+
+/// Deterministic variant of `parse_poll_result` taking explicit `now` (Unix seconds).
+pub fn parse_poll_result_at(raw: &str, now: i64) -> Option<Result<WebToken, SessionMsgError>> {
     let raw = raw.trim();
     if raw.is_empty() || raw == "null" {
         return None;
@@ -93,19 +205,40 @@ pub fn parse_poll_result(raw: &str) -> Option<Result<WebToken, SessionMsgError>>
     if !parked.ok {
         return Some(Err(SessionMsgError::Script(parked.error.unwrap_or_default())));
     }
+    let page_uid = positive_uid(parked.page_user_id.as_ref());
     let body = parked.body.unwrap_or(serde_json::Value::Null);
-    if body.get("type").and_then(|t| t.as_str()) != Some("okay") {
+    if body.is_array() {
+        if let Some(tok) = extract_from_value(&body, None, page_uid, now) {
+            return Some(Ok(tok));
+        }
+        return Some(Err(SessionMsgError::Rejected(format!(
+            "array response without a token ({})",
+            describe_field(&body, 2)
+        ))));
+    }
+    let body_type = body.get("type").and_then(|t| t.as_str());
+    if body_type != Some("okay") {
+        if body_type.is_none() && body.get("error").is_none() && body.get("error_info").is_none() {
+            if let Some(tok) = body.get("response").and_then(|r| extract_from_value(r, positive_uid(body.get("user_id")), page_uid, now)) {
+                return Some(Ok(tok));
+            }
+        }
         if body.get("error_info").and_then(|v| v.as_str()) == Some(VK_TRY_AGAIN) {
             return Some(Err(SessionMsgError::Busy(VK_TRY_AGAIN.to_string())));
         }
         let info = body.get("error_info").or_else(|| body.get("error")).map(|v| v.to_string()).unwrap_or_else(|| body.to_string());
         return Some(Err(SessionMsgError::Rejected(info)));
     }
-    let data = &body["data"];
-    match (data["access_token"].as_str(), data["expires"].as_i64(), data["user_id"].as_i64()) {
-        (Some(token), Some(expires), Some(user_id)) if !token.is_empty() => Some(Ok(WebToken { access_token: token.to_string(), expires, user_id })),
-        _ => Some(Err(SessionMsgError::Rejected("okay response without a token".to_string()))),
+    let body_uid = positive_uid(body.get("user_id"));
+    for candidate in [body.get("data"), body.get("response"), Some(&body)] {
+        if let Some(tok) = candidate.and_then(|v| extract_from_value(v, body_uid, page_uid, now)) {
+            return Some(Ok(tok));
+        }
     }
+    Some(Err(SessionMsgError::Rejected(format!(
+        "okay response without a token ({})",
+        describe_field(&body, 2)
+    ))))
 }
 
 /// Does a failed refresh mean the VK session is gone (as opposed to a transient failure)?
@@ -213,10 +346,53 @@ fn token_script(nonce: &str) -> String {
     format!(
         r#"(() => {{
   const box = (window.__nocturne = window.__nocturne || {{}});
-  // vk.ru now hands its own pages their web token (window.vk.webToken); take it when this page has one
-  const vkPage = window.vk, own = vkPage && vkPage.webToken;
-  if (own && !own.is_anonym && typeof own.access_token === 'string' && own.access_token && Number(own.expired_at) * 1000 - Date.now() > 120000 && Number(vkPage.id) > 0) {{
-    box['{nonce}'] = {{ ok: true, from: 'page', body: {{ type: 'okay', data: {{ access_token: own.access_token, expires: Number(own.expired_at), user_id: Number(vkPage.id) }} }} }};
+  const num = (v) => {{
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+  }};
+  const expSecs = (obj) => {{
+    let e = num(obj && (obj.expired_at ?? obj.expires));
+    if (e > 1e12) e = Math.trunc(e / 1000);
+    return e;
+  }};
+  const readStorage = () => {{
+    for (const act of ['web_token', 'video.getWebToken']) {{
+      try {{
+        const raw = window.localStorage && localStorage.getItem('{app}:' + act + ':login:auth');
+        if (!raw) continue;
+        const d = JSON.parse(raw);
+        if (d && typeof d === 'object') return d;
+      }} catch {{}}
+    }}
+    return null;
+  }};
+  const fresh = (obj) => {{
+    if (!obj || obj.is_anonym || typeof obj.access_token !== 'string' || !obj.access_token) return null;
+    const exp = expSecs(obj);
+    if (exp > 0 && exp * 1000 - Date.now() <= 90000) return null;
+    return {{ access_token: obj.access_token, exp }};
+  }};
+  const pickToken = (v) => {{
+    if (!v || typeof v !== 'object') return '';
+    if (Array.isArray(v)) return v.map(pickToken).find(Boolean) || '';
+    if (typeof v.access_token === 'string' && v.access_token) return v.access_token;
+    if (typeof v.token === 'string' && v.token) return v.token;
+    if (v.data) return pickToken(v.data);
+    if (v.response) return pickToken(v.response);
+    return '';
+  }};
+  const vkPage = window.vk;
+  const saved = readStorage();
+  const pageUserId = num(vkPage && vkPage.id) || num(saved && saved.user_id);
+  // vk.ru now hands its own pages their web token (window.vk.webToken); take it when this page has a fresh one
+  const own = fresh(vkPage && vkPage.webToken);
+  if (own && own.exp > 0) {{
+    box['{nonce}'] = {{
+      ok: true,
+      from: 'page',
+      page_user_id: pageUserId || undefined,
+      body: {{ type: 'okay', data: {{ access_token: own.access_token, expires: own.exp, user_id: pageUserId }} }}
+    }};
     return true;
   }}
   fetch('https://login.vk.ru/?act=web_token', {{
@@ -225,7 +401,23 @@ fn token_script(nonce: &str) -> String {
     body: 'version=1&app_id={app}'
   }})
     .then((r) => r.json())
-    .then((body) => {{ box['{nonce}'] = {{ ok: true, body }}; }})
+    .then((body) => {{
+      // If login.vk.ru replies "okay" with no token, reuse a valid token VK already placed on the page/origin
+      if (body && !Array.isArray(body) && body.type === 'okay' && !pickToken(body)) {{
+        const fallback = own || fresh(saved);
+        if (fallback) {{
+          const uid = own ? pageUserId : (num(saved && saved.user_id) || pageUserId);
+          box['{nonce}'] = {{
+            ok: true,
+            from: own ? 'page' : 'storage',
+            page_user_id: pageUserId || undefined,
+            body: {{ type: 'okay', data: {{ access_token: fallback.access_token, expires: fallback.exp || null, user_id: uid }} }}
+          }};
+          return;
+        }}
+      }}
+      box['{nonce}'] = {{ ok: true, page_user_id: pageUserId || undefined, body }};
+    }})
     .catch((e) => {{ box['{nonce}'] = {{ ok: false, error: String(e) }}; }});
   return true;
 }})()"#,
@@ -320,9 +512,10 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
             Err(_) if st.valid_token(120).is_some() => Ok(()),
             r => r.map(|_| ()),
         };
+        let still_hidden = !app.get_webview_window(SESSION_LABEL).and_then(|w| w.is_visible().ok()).unwrap_or(visible);
         match result {
             Ok(_) => {
-                if visible {
+                if !still_hidden {
                     trace!("signed in, closing the login window");
                 }
                 if let Some(w) = app.get_webview_window(SESSION_LABEL) {
@@ -331,17 +524,17 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
                         let _ = w.navigate(IDLE_URL.parse().expect("idle url"));
                     }
                 }
-                if let Some(m) = app.get_webview_window("main") {
+                if let Some(m) = app.get_window("main") {
                     let _ = m.set_focus();
                 }
             }
-            Err(e) if !visible && is_signed_out(&e) => {
+            Err(e) if still_hidden && is_signed_out(&e) => {
                 trace!("no VK session ({e}), showing the login screen");
                 st.set_phase(Phase::None);
                 let _ = app.emit("session:logged-out", ());
             }
             // a patient loop is already waiting for VK: this check leaves it to that one
-            Err(e) if !visible => trace!("still waiting for VK ({e})"),
+            Err(e) if still_hidden => trace!("still waiting for VK ({e})"),
             Err(e) => trace!("login window: not signed in yet ({e})"),
         }
     });
@@ -378,6 +571,27 @@ async fn refresh_with_retries(app: &AppHandle) -> Result<WebToken, String> {
     result
 }
 
+async fn resolve_user_id(app: &AppHandle, access_token: &str) -> Result<Option<i64>, String> {
+    let http = app.state::<crate::http::Http>();
+    let resp = match tokio::time::timeout(Duration::from_secs(5), crate::vk::send(&http, "users.get", &[], access_token)).await {
+        Ok(Ok(v)) => v,
+        _ => return Ok(None),
+    };
+    if let Some(code) = resp.get("error").and_then(|e| e.get("error_code")).and_then(parse_i64_loose) {
+        if matches!(code, 5 | 1116 | 1117) {
+            return Err(format!("{:?}", SessionMsgError::Rejected(format!("users.get error {code}"))));
+        }
+        return Ok(None);
+    }
+    Ok(resp
+        .get("response")
+        .and_then(|r| r.as_array())
+        .and_then(|a| a.first())
+        .and_then(|u| u.get("id"))
+        .and_then(parse_i64_loose)
+        .filter(|&id| id > 0))
+}
+
 pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
     let st = app.state::<SessionState>();
     let mut last = st.last_refresh.lock().await;
@@ -409,6 +623,26 @@ pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
         }
     };
     drop(last);
+
+    let res = match res {
+        Ok(mut tok) if tok.user_id <= 0 => {
+            let cached = st.token.lock().ok().and_then(|g| g.as_ref().map(|t| t.user_id)).filter(|&id| id > 0);
+            if let Some(id) = cached {
+                tok.user_id = id;
+                Ok(tok)
+            } else {
+                match resolve_user_id(app, &tok.access_token).await {
+                    Ok(Some(id)) => {
+                        tok.user_id = id;
+                        Ok(tok)
+                    }
+                    Ok(None) => Ok(tok),
+                    Err(e) => Err(e),
+                }
+            }
+        }
+        other => other,
+    };
 
     match &res {
         Ok(t) => trace!("token ok (expires in {}s)", t.expires - now_secs()),
@@ -514,9 +748,88 @@ mod tests {
     }
 
     #[test]
-    fn okay_without_token_is_rejected() {
+    fn okay_without_token_is_rejected_with_shape() {
         let raw = r#"{"ok":true,"body":{"type":"okay","data":{"user_id":42}}}"#;
-        assert!(matches!(parse_poll_result(raw), Some(Err(SessionMsgError::Rejected(_)))));
+        let err = parse_poll_result(raw).unwrap().unwrap_err();
+        let SessionMsgError::Rejected(msg) = err else { panic!("expected Rejected, got {err:?}") };
+        assert!(msg.starts_with("okay response without a token"), "msg={msg}");
+        assert!(msg.contains("user_id:num") && !msg.contains("42"), "shape must redact values: {msg}");
+    }
+
+    #[test]
+    fn parses_okay_with_missing_or_null_expires_and_missing_user_id() {
+        let now = 1_794_790_000;
+        let raw = r#"{"ok":true,"body":{"type":"okay","data":{"access_token":"tok","expires":null}},"page_user_id":77}"#;
+        assert_eq!(
+            parse_poll_result_at(raw, now),
+            Some(Ok(WebToken { access_token: "tok".into(), expires: now + DEFAULT_TOKEN_TTL_SECS, user_id: 77 }))
+        );
+
+        let no_exp_or_uid = r#"{"ok":true,"body":{"type":"okay","data":{"access_token":"tok"}}}"#;
+        assert_eq!(
+            parse_poll_result_at(no_exp_or_uid, now),
+            Some(Ok(WebToken { access_token: "tok".into(), expires: now + DEFAULT_TOKEN_TTL_SECS, user_id: 0 }))
+        );
+    }
+
+    #[test]
+    fn parses_string_float_and_alternate_vk_fields() {
+        let now = 1_794_790_000;
+        let str_nums = r#"{"ok":true,"body":{"type":"okay","data":{"access_token":"tok","expires":"1794791234","user_id":"42"}}}"#;
+        assert_eq!(
+            parse_poll_result_at(str_nums, now),
+            Some(Ok(WebToken { access_token: "tok".into(), expires: 1794791234, user_id: 42 }))
+        );
+
+        let float_and_alt = r#"{"ok":true,"body":{"type":"okay","data":{"token":"tok","expired_at":1794791234000.0,"uid":42.0}}}"#;
+        assert_eq!(
+            parse_poll_result_at(float_and_alt, now),
+            Some(Ok(WebToken { access_token: "tok".into(), expires: 1794791234, user_id: 42 }))
+        );
+
+        let ttl_shape = r#"{"ok":true,"body":{"type":"okay","data":{"access_token":"tok","expires_in":1200,"user_id":42}}}"#;
+        assert_eq!(
+            parse_poll_result_at(ttl_shape, now),
+            Some(Ok(WebToken { access_token: "tok".into(), expires: now + 1200, user_id: 42 }))
+        );
+    }
+
+    #[test]
+    fn parses_array_wrapped_and_top_level_array_responses() {
+        let now = 1_794_790_000;
+        let data_arr = r#"{"ok":true,"body":{"type":"okay","data":[{"access_token":"t1","expires":1794791000,"user_id":11},{"access_token":"t2","expires":1794792000,"user_id":22}]},"page_user_id":22}"#;
+        assert_eq!(
+            parse_poll_result_at(data_arr, now),
+            Some(Ok(WebToken { access_token: "t2".into(), expires: 1794792000, user_id: 22 }))
+        );
+
+        let top_arr = r#"{"ok":true,"body":[{"access_token":"t1","expires":1794791000,"user_id":11}]}"#;
+        assert_eq!(
+            parse_poll_result_at(top_arr, now),
+            Some(Ok(WebToken { access_token: "t1".into(), expires: 1794791000, user_id: 11 }))
+        );
+
+        let top_level_okay = r#"{"ok":true,"body":{"type":"okay","access_token":"t1","expires":1794791000,"user_id":11}}"#;
+        assert_eq!(
+            parse_poll_result_at(top_level_okay, now),
+            Some(Ok(WebToken { access_token: "t1".into(), expires: 1794791000, user_id: 11 }))
+        );
+
+        let api_gw = r#"{"ok":true,"body":{"response":{"token":"t1","ttl":600,"user_id":11}}}"#;
+        assert_eq!(
+            parse_poll_result_at(api_gw, now),
+            Some(Ok(WebToken { access_token: "t1".into(), expires: now + 600, user_id: 11 }))
+        );
+    }
+
+    #[test]
+    fn okay_with_empty_token_redacts_secrets_and_is_signed_out() {
+        let raw = r#"{"ok":true,"body":{"type":"okay","data":{"access_token":"","secret":"do_not_leak"}}}"#;
+        let err = parse_poll_result(raw).unwrap().unwrap_err();
+        let dbg = format!("{err:?}");
+        assert!(is_signed_out(&dbg));
+        assert!(!dbg.contains("do_not_leak"), "redacted shape leaked secret: {dbg}");
+        assert!(dbg.contains("access_token:str(0)"), "missing empty-string shape: {dbg}");
     }
 
     #[test]

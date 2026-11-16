@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-spotify-close"
+description = "Enables the spotify_close command without any pre-configured scope."
+commands.allow = ["spotify_close"]
+
+[[permission]]
+identifier = "deny-spotify-close"
+description = "Denies the spotify_close command without any pre-configured scope."
+commands.deny = ["spotify_close"]

@@ -25,6 +25,7 @@
   min-height: 100%;
   padding: calc(var(--titlebar-h) + 6px) var(--gutter) calc(var(--player-h) + 56px);
 }
+.spotify { padding-bottom: 16px; }
 
 /* ── Titlebar / navigation bar ─────────────────────────────── */
 .titlebar {

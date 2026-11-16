@@ -9,12 +9,15 @@ import * as vk from '../vk/api'
 import { serviceOf, type Track } from '../vk/models'
 import { engine } from './engine'
 import { dedupeAppend, heardBetween, heardEnough, needsFreshUrl, prevAction } from './logic'
+import { clearPreload, clearPreloadExcept, syncNextPreload, takePreloadedSource } from './preload'
 import * as Q from './queue'
 import { beginWaveform, captureSource } from './waveform'
 
 export interface QueueSource {
   kind: 'list' | 'mix'
   label?: string
+  service?: 'vk' | 'spotify'
+  seed?: string
 }
 
 interface SavedSession {
@@ -56,7 +59,8 @@ export interface PlayerState {
 
   /** `startAt` (seconds) and `paused` start the first track somewhere other than the top, or without playing. */
   playList(tracks: Track[], index: number, opts?: PlayListOptions): void
-  playMix(): Promise<void>
+  playMix(service?: 'vk' | 'spotify'): Promise<void>
+  playRadio(track: Track): Promise<void>
   toggle(): void
   play(): void
   pause(): void
@@ -145,6 +149,15 @@ let beforeRemote: Pick<PlayerState, 'queue' | 'current' | 'source' | 'position' 
 
 export const remoteActive = () => remote !== null
 
+export function nextPreloadTarget(q: Q.QueueState<Track> | null): Track | null {
+  if (!q || q.repeat === 'one') return null
+  const cur = Q.current(q)
+  const nextQ = Q.next(q, isPlayable, false)
+  if (!nextQ || nextQ.pos === q.pos) return null
+  const t = Q.current(nextQ)
+  return t && t.key !== cur?.key ? t : null
+}
+
 /**
  * Remote mode: another device plays, every press goes to `r`, and the player shows that device
  * (`showRemote`). This device's own audio stops; null brings its player back exactly as it was.
@@ -158,6 +171,8 @@ export function setPlayerRemote(r: PlayerRemote | null) {
     // a load still on its way never starts, and this device's own audio stops for good
     loadToken++
     loadedKey = null
+    currentFullyLoaded = false
+    clearPreload()
     engine.stop()
   }
   if (!r && remote && beforeRemote) {
@@ -172,13 +187,9 @@ export function showRemote(v: RemoteView) {
   usePlayer.setState({ remoteName: v.name, remoteNear: v.near ?? null, queue: null, current: v.track, position: v.position, duration: v.duration, isPlaying: v.playing, isLoading: false, volume: v.volume, shuffle: v.shuffle, repeat: v.repeat })
 }
 
-/** Warm the image cache for the next track so the queue card and player swap covers instantly. */
-function preloadCovers(t: Track | undefined) {
-  if (typeof Image === 'undefined' || !t?.cover) return
-  for (const src of [t.cover.m, t.cover.l]) if (src) new Image().src = src
-}
 let loadToken = 0
 let loadedKey: string | null = null
+let currentFullyLoaded = false
 /** Without a VPN, SoundCloud's stream hosts in Russia take the connection and send nothing. */
 export const SC_START_TIMEOUT_MS = 15_000
 let scWatch: ReturnType<typeof setTimeout> | undefined
@@ -202,15 +213,29 @@ export const usePlayer = create<PlayerState>((set, get) => {
     set({ queue: { ...q, items }, current: cur && cur.key === track.key ? track : cur })
   }
 
+  const syncPreload = () => {
+    if (!remote && currentFullyLoaded) syncNextPreload(nextPreloadTarget(get().queue))
+  }
+
   const extendMixIfNeeded = async () => {
     const { source, queue } = get()
     if (source?.kind !== 'mix' || !queue || Q.upcoming(queue).length > 3) return
     try {
-      const more = dedupeAppend(queue.items, await vk.getStreamMix(20))
+      let incoming: Track[] = []
+      if (source.service === 'spotify') {
+        const sp = await import('../spotify/api')
+        incoming = source.seed ? await sp.getTrackRadio(source.seed) : await sp.getSpotifyMix()
+      } else {
+        incoming = await vk.getStreamMix(20)
+      }
+      const more = dedupeAppend(queue.items, incoming)
       const q = get().queue
-      if (q && more.length) set({ queue: Q.append(q, more) })
+      if (q && more.length) {
+        set({ queue: Q.append(q, more) })
+        syncPreload()
+      }
     } catch {
-      // the mix simply ends when VK stops answering
+      // the mix simply ends when upstream stops answering
     }
   }
 
@@ -241,41 +266,58 @@ export const usePlayer = create<PlayerState>((set, get) => {
     const token = ++loadToken
     const intent = { token, autoplay }
     pendingLoad = intent
+    currentFullyLoaded = false
     stopScWatch()
     if (!t) {
       pendingLoad = null
+      clearPreload()
       engine.stop()
       loadedKey = null
       set({ current: null, isPlaying: false, isLoading: false })
       return
     }
+    clearPreloadExcept(t.key)
     set({ current: t, position: startAt, duration: t.duration, buffered: 0, isLoading: autoplay })
     heard = { key: t.key, seconds: 0, last: startAt, recorded: false }
-    preloadCovers(Q.upcoming(q)[0])
     let track = t
     let scSource: ScPlaybackSource | undefined
-    if (serviceOf(t) === 'sc') {
-      try {
-        scSource = await sc.streamSource(t)
-        if (token !== loadToken) return
-        track = { ...t, url: scSource.url, urlFetchedAt: Date.now() }
+    const preloaded = serviceOf(t) === 'spotify' ? null : takePreloadedSource(t)
+    if (serviceOf(t) === 'spotify') {
+      const spId = t.spotifyId || (t.url?.startsWith('spotify:track:') ? t.url.slice('spotify:track:'.length) : '')
+      if (spId) track = { ...t, url: `spotify:track:${spId}`, urlFetchedAt: Date.now() }
+    } else if (serviceOf(t) === 'sc') {
+      if (preloaded?.scSource) {
+        scSource = preloaded.scSource
+        track = { ...t, url: scSource.url, urlFetchedAt: preloaded.fetchedAt }
         replaceTrack(track)
-      } catch (e) {
-        if (token !== loadToken) return
-        pendingLoad = null
-        onFailure(t, scLinkFailure(e), intent.autoplay)
-        return
+      } else {
+        try {
+          scSource = await sc.streamSource(t)
+          if (token !== loadToken) return
+          track = { ...t, url: scSource.url, urlFetchedAt: Date.now() }
+          replaceTrack(track)
+        } catch (e) {
+          if (token !== loadToken) return
+          pendingLoad = null
+          onFailure(t, scLinkFailure(e), intent.autoplay)
+          return
+        }
       }
     } else if (needsFreshUrl(t, Date.now())) {
-      try {
-        const [fresh] = await vk.getByIds([t])
-        if (token !== loadToken) return
-        if (fresh) {
-          track = { ...t, url: fresh.url, urlFetchedAt: fresh.urlFetchedAt, playable: fresh.playable, liked: fresh.liked || t.liked }
-          replaceTrack(track)
+      if (preloaded?.url) {
+        track = { ...t, url: preloaded.url, urlFetchedAt: preloaded.fetchedAt }
+        replaceTrack(track)
+      } else {
+        try {
+          const [fresh] = await vk.getByIds([t])
+          if (token !== loadToken) return
+          if (fresh) {
+            track = { ...t, url: fresh.url, urlFetchedAt: fresh.urlFetchedAt, playable: fresh.playable, liked: fresh.liked || t.liked }
+            replaceTrack(track)
+          }
+        } catch {
+          if (token !== loadToken) return
         }
-      } catch {
-        if (token !== loadToken) return
       }
     }
     pendingLoad = null
@@ -293,6 +335,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
   /** `autoplay`: false when the person paused while it loaded — the next track waits too. */
   const onFailure = (t: Track, reason?: string, autoplay = true) => {
+    currentFullyLoaded = false
+    clearPreload()
     consecutiveFailures++
     if (consecutiveFailures >= 5) {
       journal('player', 'five tracks in a row failed, stopping')
@@ -300,7 +344,14 @@ export const usePlayer = create<PlayerState>((set, get) => {
       engine.stop()
       loadedKey = null
       set({ isPlaying: false, isLoading: false })
-      toast(serviceOf(t) === 'sc' ? 'SoundCloud не отдаёт звук — без VPN он в России не играет' : 'VK не отдаёт треки. Проверьте интернет и подписку', 'error')
+      toast(
+        serviceOf(t) === 'sc'
+          ? 'SoundCloud не отдаёт звук — без VPN он в России не играет'
+          : serviceOf(t) === 'spotify'
+            ? 'Spotify не отдаёт треки — проверьте вход в аккаунт и VPN'
+            : 'VK не отдаёт треки. Проверьте интернет и подписку',
+        'error',
+      )
       return
     }
     toast(reason ?? `Не получилось включить «${t.title}»`, 'error')
@@ -341,6 +392,11 @@ export const usePlayer = create<PlayerState>((set, get) => {
       stopScWatch()
     }
   })
+  engine.on('buffered', () => {
+    if (remote) return
+    currentFullyLoaded = true
+    syncPreload()
+  })
   engine.on('ended', () => !remote && get().next(false))
   engine.on('error', () => {
     if (remote) return
@@ -349,6 +405,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
     journal('player', `playback error: ${engine.lastError || 'unknown'}${retried.has(t.key) ? ', skipping track' : ', retrying with a fresh link'}`)
     if (!retried.has(t.key)) {
       retried.add(t.key)
+      currentFullyLoaded = false
+      clearPreload()
       replaceTrack({ ...t, urlFetchedAt: 0 })
       void loadCurrent(true, engine.position)
       return
@@ -393,14 +451,48 @@ export const usePlayer = create<PlayerState>((set, get) => {
       void loadCurrent(!opts?.paused, opts?.startAt ?? 0)
     },
 
-    async playMix() {
+    async playMix(service: 'vk' | 'spotify' = 'vk') {
       if (remote) return remote.playMix()
+      if (service === 'spotify') {
+        try {
+          const sp = await import('../spotify/api')
+          const tracks = await sp.getSpotifyMix()
+          if (!tracks.length) {
+            toast('Не удалось подобрать треки для Spotify Микс', 'error')
+            return
+          }
+          get().playList(tracks, 0, { shuffle: false, source: { kind: 'mix', label: 'Spotify Микс', service: 'spotify' } })
+        } catch (e) {
+          toast(e instanceof Error ? e.message : 'Не удалось запустить Spotify Микс', 'error')
+        }
+        return
+      }
       try {
         const tracks = await vk.getStreamMix(20)
-        get().playList(tracks, 0, { shuffle: false, source: { kind: 'mix', label: 'VK Микс' } })
+        get().playList(tracks, 0, { shuffle: false, source: { kind: 'mix', label: 'VK Микс', service: 'vk' } })
       } catch (e) {
         const { describeError } = await import('../vk/errors')
         toast(describeError(e), 'error')
+      }
+    },
+
+    async playRadio(track) {
+      if (remote) return
+      const id = track.spotifyId
+      if (!id) {
+        await get().playMix('vk')
+        return
+      }
+      try {
+        const sp = await import('../spotify/api')
+        const radio = await sp.getTrackRadio(`spotify:track:${id}`)
+        const list = dedupeAppend([track], radio)
+        get().playList([track, ...list], 0, {
+          shuffle: false,
+          source: { kind: 'mix', label: `Радио · ${track.title}`, service: 'spotify', seed: `spotify:track:${id}` },
+        })
+      } catch (e) {
+        toast(e instanceof Error ? e.message : 'Не удалось запустить радио по треку', 'error')
       }
     },
 
@@ -544,6 +636,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const shuffle = !get().shuffle
       const q = get().queue
       set({ shuffle, queue: q ? Q.setShuffle(q, shuffle) : q })
+      syncPreload()
     },
 
     cycleRepeat() {
@@ -553,6 +646,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const repeat = order[(order.indexOf(get().repeat) + 1) % order.length]
       const q = get().queue
       set({ repeat, queue: q ? { ...q, repeat } : q })
+      syncPreload()
     },
 
     playNext(tracks) {
@@ -560,6 +654,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const q = get().queue
       if (!q) return get().playList(tracks, 0)
       set({ queue: Q.insertNext(q, tracks) })
+      syncPreload()
       toast(tracks.length > 1 ? `${tracks.length} треков будут следующими` : 'Будет следующим', 'queue')
     },
 
@@ -568,6 +663,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const q = get().queue
       if (!q) return get().playList(tracks, 0)
       set({ queue: Q.append(q, tracks) })
+      syncPreload()
       toast('Добавлено в очередь', 'queue')
     },
 
@@ -579,12 +675,16 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const n = Q.removeAt(q, orderPos)
       set({ queue: n })
       if (wasCurrent) void loadCurrent(engine.playing)
+      else syncPreload()
     },
 
     moveInQueue(from, to) {
       if (remote) return
       const q = get().queue
-      if (q) set({ queue: Q.move(q, from, to) })
+      if (q) {
+        set({ queue: Q.move(q, from, to) })
+        syncPreload()
+      }
     },
 
     playNextFromQueue(orderPos) {
@@ -592,6 +692,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const q = get().queue
       if (!q || orderPos === q.pos) return
       set({ queue: Q.moveNext(q, orderPos) })
+      syncPreload()
       toast('Будет следующим', 'queue')
     },
 

@@ -161,13 +161,41 @@
   display: grid;
   place-items: center;
   align-content: center;
-  gap: 10px;
+  gap: 8px;
   height: 100%;
   min-height: 240px;
-  padding: 24px;
+  padding: 28px 24px;
   text-align: center;
   /* readable over a light cover too */
-  color: rgba(255, 255, 255, 0.78);
+  color: rgba(255, 255, 255, 0.84);
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
   font: 500 14px/20px var(--font);
+}
+
+.emptyBadge {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 4px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px);
+}
+
+.emptyTitle {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.emptySub {
+  max-width: 240px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.56);
 }

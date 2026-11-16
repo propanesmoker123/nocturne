@@ -2,6 +2,8 @@ mod clipboard;
 mod http;
 mod island;
 mod journal;
+mod lyrics;
+mod whisper;
 #[cfg(windows)]
 mod media;
 mod tray;
@@ -9,6 +11,7 @@ mod wallpaper;
 mod proxy;
 mod quicksearch;
 mod sc;
+mod spotify;
 mod session;
 mod vk;
 
@@ -16,6 +19,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 #[tauri::command]
 fn app_quit(app: tauri::AppHandle) {
+    spotify::shutdown(&app);
     app.exit(0);
 }
 
@@ -39,7 +43,7 @@ fn media_update() {}
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
+            if let Some(w) = app.get_window("main") {
                 let _ = w.unminimize();
                 let _ = w.show();
                 let _ = w.set_focus();
@@ -55,11 +59,18 @@ pub fn run() {
         .manage(vk::Limiter::new())
         .manage(session::SessionState::new())
         .manage(sc::ScState::new())
+        .manage(spotify::SpotifyState::new())
         .manage(island::IslandState::new())
         .manage(media_state())
         .invoke_handler(tauri::generate_handler![
             vk::vk_api,
             proxy::proxy_fetch,
+            lyrics::lyrics_fetch,
+            lyrics::lyrics_ai,
+            whisper::whisper_probe_asset,
+            whisper::whisper_fetch_asset,
+            whisper::whisper_model_status,
+            whisper::whisper_model_clear,
             session::session_status,
             session::session_login,
             session::session_logout,
@@ -68,6 +79,15 @@ pub fn run() {
             sc::login::sc_logout,
             sc::api::sc_api,
             sc::stream::sc_stream,
+            spotify::spotify_open,
+            spotify::spotify_bounds,
+            spotify::spotify_filter,
+            spotify::spotify_close,
+            spotify::spotify_control,
+            spotify::spotify_status,
+            spotify::spotify_login_start,
+            spotify::spotify_login_finish,
+            spotify::spotify_login_cancel,
             http::set_user_agent,
             island::island_set_hit_rect,
             island::island_configure,
@@ -97,6 +117,7 @@ pub fn run() {
                             let _ = window.emit_to("main", "window:visibility", false);
                         }
                     } else {
+                        spotify::shutdown(window.app_handle());
                         window.app_handle().exit(0);
                     }
                 }
@@ -115,6 +136,7 @@ pub fn run() {
         })
         .setup(|app| {
             journal::init(app.handle());
+            spotify::cleanup_login_profiles(app.handle());
             session::create_window(app.handle())?;
             sc::init(app.handle());
             island::create_window(app.handle())?;
@@ -123,9 +145,10 @@ pub fn run() {
             tray::create(app.handle())?;
             #[cfg(windows)]
             media::init(app.handle());
-            if let Some(w) = app.get_webview_window("main") {
+            if let Some(w) = app.get_window("main") {
                 w.show()?;
             }
+            spotify::prewarm_if_active(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

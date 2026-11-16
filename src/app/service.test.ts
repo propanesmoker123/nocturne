@@ -16,6 +16,17 @@ beforeEach(async () => {
 const route = () => router.useRouter.getState().route
 
 describe('routes and services', () => {
+  test('Spotify has its own rail entry and returns to its last Spotify page', () => {
+    service.useService.getState().select('spotify')
+    expect(route()).toEqual({ name: 'spotify' })
+    expect(router.routeService(route())).toBe('spotify')
+    router.useRouter.getState().push({ name: 'spotify', page: 'library' })
+    service.useService.getState().select('vk')
+    service.useService.getState().select('spotify')
+    expect(route()).toEqual({ name: 'spotify', page: 'library' })
+    expect(service.SERVICES.find(item => item.id === 'spotify')?.name).toBe('Spotify')
+    expect(service.accountFor('spotify', null, null)?.name).toBe('Spotify')
+  })
   test('routeService', () => {
     expect(router.routeService({ name: 'sc-likes' })).toBe('sc')
     expect(router.routeService({ name: 'home' })).toBe('vk')

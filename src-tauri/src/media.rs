@@ -51,7 +51,7 @@ fn command_for(event: MediaControlEvent) -> Option<serde_json::Value> {
 
 /// Attaches SMTC to the main window. Failure is non-fatal (no flyout, keys still work in-app).
 pub fn init(app: &AppHandle) {
-    let Some(win) = app.get_webview_window("main") else { return };
+    let Some(win) = app.get_window("main") else { return };
     let Ok(hwnd) = win.hwnd() else { return };
     let config = PlatformConfig { display_name: "Nocturne", dbus_name: "nocturne", hwnd: Some(hwnd.0 as *mut std::ffi::c_void) };
     let Ok(mut controls) = MediaControls::new(config) else { return };

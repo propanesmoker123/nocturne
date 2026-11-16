@@ -1,5 +1,6 @@
 import appIcon from '../assets/app-icon.png'
 import { useScSession } from '../sc/session'
+import { useSpotifySession } from '../spotify/session'
 import { ServiceLogo } from '../components/ServiceLogo'
 import { routeSection, useRouter } from './router'
 import { SERVICES, useService } from './service'
@@ -10,6 +11,7 @@ export function ServiceRail() {
   const current = useService((x) => x.current)
   const select = useService((x) => x.select)
   const scPhase = useScSession((x) => x.phase)
+  const spPhase = useSpotifySession((x) => x.phase)
   const section = useRouter((r) => routeSection(r.route))
   const push = useRouter((r) => r.push)
   const mine = section === 'mine'
@@ -19,7 +21,9 @@ export function ServiceRail() {
       <div className={s.list} role="tablist" aria-orientation="vertical" aria-label="Сервисы">
         {SERVICES.map((info) => {
           const on = !mine && info.id === current
-          const out = info.id === 'sc' && scPhase === 'signed-out'
+          const out =
+            (info.id === 'sc' && scPhase === 'signed-out') ||
+            (info.id === 'spotify' && spPhase === 'signed-out')
           return (
             <button
               key={info.id}

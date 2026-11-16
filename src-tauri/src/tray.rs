@@ -13,7 +13,7 @@ const TRAY_ID: &str = "nocturne-tray";
 pub static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
 
 pub fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+    if let Some(w) = app.get_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
@@ -45,7 +45,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
             "prev" => command(app, "prev"),
             "like" => command(app, "toggleLike"),
             "show" => show_main(app),
-            "quit" => app.exit(0),
+            "quit" => { crate::spotify::shutdown(app); app.exit(0); },
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

@@ -116,7 +116,11 @@ export function QuickSearchApp() {
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
 
-  const rows = useMemo(() => (res ? buildRows(res.own, res.others) : []), [res])
+  const rows = useMemo(() => {
+    if (!res) return []
+    const label = res.service === 'spotify' ? 'Spotify' : res.service === 'sc' ? 'SoundCloud' : 'VK Музыка'
+    return buildRows(res.own, res.others, label)
+  }, [res])
   const at = indexOfKey(rows, selKey)
   const sel = at >= 0 ? at : firstTrack(rows)
 

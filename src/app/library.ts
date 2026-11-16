@@ -4,6 +4,8 @@ import { usePlayer } from '../player/store'
 import * as sc from '../sc/api'
 import { describeScError } from '../sc/errors'
 import { scKeys } from '../sc/queries'
+import * as spotify from '../spotify/api'
+import { spKeys } from '../spotify/queries'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
 import { serviceOf, type Track } from '../vk/models'
@@ -13,13 +15,13 @@ import { toast } from './toast'
 export const myTracksKey = () => ['tracks', vk.getMeId()] as const
 
 export function isInLibrary(t: Track): boolean {
-  if (serviceOf(t) === 'sc') return t.liked
+  if (serviceOf(t) === 'sc' || serviceOf(t) === 'spotify') return t.liked
   return t.liked || t.ownerId === vk.getMeId()
 }
 
-/** What the heart button says: VK's «Моя музыка», or SoundCloud's likes. */
+/** What the heart button says: VK's «Моя музыка», or SoundCloud/Spotify likes. */
 export function likeLabel(t: Track, liked: boolean): string {
-  if (serviceOf(t) === 'sc') return liked ? 'Убрать из лайков' : 'Нравится'
+  if (serviceOf(t) === 'sc' || serviceOf(t) === 'spotify') return liked ? 'Убрать из лайков' : 'Нравится'
   return liked ? 'Удалить из Моей музыки' : 'Добавить в Мою музыку'
 }
 
@@ -88,10 +90,29 @@ async function likeOnSoundCloud(t: Track) {
   }
 }
 
-/** Adds the track to "Моя музыка" or removes it (with an undo action); for SoundCloud, its like. */
+async function likeOnSpotify(t: Track) {
+  if (!t.spotifyId || scPending.has(t.key)) return
+  scPending.add(t.key)
+  const liked = !t.liked
+  markLiked(t.key, liked)
+  try {
+    await spotify.setTrackLiked(t.spotifyId, liked)
+    void queryClient.invalidateQueries({ queryKey: spKeys.likes() })
+    void queryClient.invalidateQueries({ queryKey: ['sp-quick-likes'] })
+    toast(liked ? 'Добавлено в Любимые треки Spotify' : 'Убрано из Любимых треков Spotify', liked ? 'added' : 'removed')
+  } catch (e) {
+    markLiked(t.key, !liked)
+    toast(typeof e === 'string' ? e : 'Не удалось обновить лайк в Spotify', 'error')
+  } finally {
+    scPending.delete(t.key)
+  }
+}
+
+/** Adds the track to "Моя музыка" or removes it (with an undo action); for SoundCloud/Spotify, its like. */
 export async function toggleLibrary(t: Track | null | undefined): Promise<void> {
   if (!t) return
   if (serviceOf(t) === 'sc') return likeOnSoundCloud(t)
+  if (serviceOf(t) === 'spotify') return likeOnSpotify(t)
   try {
     if (!isInLibrary(t)) {
       await vk.addTrack(t)

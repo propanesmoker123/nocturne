@@ -1,7 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Artwork } from '../components/Artwork'
+import { AnimatedLyrics } from '../lyrics/AnimatedLyrics'
+import { queryClient } from './queryClient'
 import { findLyrics } from './lyrics'
+import lyCss from '../lyrics/AnimatedLyrics.module.css'
+import { RefreshCw, X } from 'lucide-react'
 import { ServiceLogo } from '../components/ServiceLogo'
 import { EqualizerBars, IconButton, Spinner } from '../components/controls'
 import { IconLyrics } from '../components/Icons'
@@ -14,7 +18,6 @@ import { serviceOf, type Track } from '../vk/models'
 import { describeError } from '../vk/errors'
 import s from './SidePanels.module.css'
 import { openTrackMenu } from './trackActions'
-import { X } from 'lucide-react'
 
 function minutesLabel(sec: number): string {
   const m = Math.round(sec / 60)
@@ -136,7 +139,7 @@ export function QueuePanel() {
                 <Artwork src={t.cover?.s} size={40} radius={6} seed={t.key} />
                 <div className={s.rowText}>
                   <div className={`${s.rowTitle} truncate`}>
-                    {serviceOf(t) === 'sc' && <ServiceLogo id="sc" size={13} className={s.rowMark} />}
+                    {serviceOf(t) !== 'vk' && <ServiceLogo id={serviceOf(t)} size={13} className={s.rowMark} />}
                     {t.title}
                   </div>
                   <div className={`${s.rowArtist} truncate`}>{t.artist}</div>
@@ -166,54 +169,38 @@ export function QueuePanel() {
           )
         })}
         {upcomingCount === 0 && (
-          <li className={s.endNote}>{source?.kind === 'mix' ? 'VK Микс подбирает следующие треки…' : 'Дальше в очереди ничего нет'}</li>
+          <li className={s.endNote}>{source?.kind === 'mix' ? `${source.label || 'VK Микс'} подбирает следующие треки…` : 'Дальше в очереди ничего нет'}</li>
         )}
       </ol>
     </>
   )
 }
 
-export function LyricsPanel() {
+export function LyricsPanel({ theater }: { theater?: boolean } = {}) {
   const track = usePlayer((p) => p.current)
-  const position = usePlayer((p) => p.position)
-  const seek = usePlayer((p) => p.seek)
-  const box = useRef<HTMLDivElement>(null)
-  // a SoundCloud track has none of its own: the same song's lyrics are looked up in VK
-  const fromVk = !!track && serviceOf(track) === 'sc'
+  const fromVk = !!track && serviceOf(track) !== 'vk'
+  const [refreshing, setRefreshing] = useState(false)
+
   const q = useQuery({
     queryKey: ['lyrics', track?.key],
     queryFn: () => findLyrics(track!),
-    enabled: !!track && (fromVk || track.hasLyrics),
+    enabled: !!track,
     staleTime: Infinity,
   })
   const lyrics = q.data
 
-  const activeIndex = useMemo(() => {
-    if (!lyrics?.synced) return -1
-    const ms = position * 1000
-    let idx = -1
-    for (let i = 0; i < lyrics.lines.length; i++) {
-      if ((lyrics.lines[i].begin ?? Infinity) <= ms) idx = i
-      else break
+  const forceRefresh = async () => {
+    if (!track || refreshing) return
+    setRefreshing(true)
+    try {
+      const fresh = await findLyrics(track, { force: true })
+      queryClient.setQueryData(['lyrics', track.key], fresh)
+    } finally {
+      setRefreshing(false)
     }
-    return idx
-  }, [lyrics, position])
-
-  useEffect(() => {
-    if (activeIndex < 0 || !box.current) return
-    const el = box.current.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`)
-    scrollWithin(el, 'center', true)
-  }, [activeIndex])
+  }
 
   if (!track) return null
-  if (!track.hasLyrics && !fromVk) {
-    return (
-      <div className={s.empty}>
-        <IconLyrics size={28} />
-        <span>Для этого трека в VK нет текста</span>
-      </div>
-    )
-  }
   if (q.isLoading) {
     return (
       <div className={s.empty}>
@@ -221,34 +208,55 @@ export function LyricsPanel() {
       </div>
     )
   }
-  if (q.isError || !lyrics) {
-    if (fromVk && !q.isError) {
-      return (
-        <div className={s.empty}>
-          <IconLyrics size={28} />
-          <span>Текст этой песни не нашёлся в VK</span>
+  if (lyrics?.instrumental) {
+    return (
+      <div className={s.empty}>
+        <div className={s.emptyBadge}>
+          <IconLyrics size={24} />
         </div>
-      )
-    }
-    return <div className={s.empty}>{q.isError ? describeError(q.error) : 'Текст не найден'}</div>
+        <span className={s.emptyTitle}>Инструментальный трек</span>
+        <span className={s.emptySub}>В этой композиции нет вокала</span>
+        {lyrics.credits && <div className={s.credits}>{lyrics.credits}</div>}
+      </div>
+    )
   }
-  return (
-    <div ref={box} className={`${s.lyrics} ${lyrics.synced ? '' : s.plain}`}>
-      {lyrics.lines.map((l, i) => (
-        <button
-          type="button"
-          key={i}
-          data-index={i}
-          className={s.line}
-          data-active={i === activeIndex || undefined}
-          data-past={lyrics.synced && i < activeIndex ? true : undefined}
-          onClick={() => lyrics.synced && l.begin !== undefined && seek(l.begin / 1000)}
-        >
-          {l.text || '♪'}
-        </button>
-      ))}
-      {lyrics.credits && <div className={s.credits}>{lyrics.credits}</div>}
-      {fromVk && <div className={s.credits}>Текст того же трека из VK</div>}
+
+  if (q.isError || !lyrics?.lines.length) {
+    return (
+      <div className={s.empty}>
+        <div className={s.emptyBadge}>
+          <IconLyrics size={24} />
+        </div>
+        <span className={s.emptyTitle}>{q.isError ? describeError(q.error) : 'Текст для этого трека не найден'}</span>
+        {!q.isError && <span className={s.emptySub}>Слова к этой композиции пока не добавлены</span>}
+        <div className={lyCss.actionRow}>
+          <button
+            type="button"
+            className={lyCss.actionPill}
+            disabled={refreshing}
+            onClick={() => void forceRefresh()}
+          >
+            <RefreshCw size={12} />
+            Проверить снова
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const footer = (
+    <div className={lyCss.metaBarActions}>
+      <button
+        type="button"
+        className={lyCss.actionPill}
+        disabled={refreshing}
+        onClick={() => void forceRefresh()}
+      >
+        <RefreshCw size={12} />
+        Обновить
+      </button>
     </div>
   )
+
+  return <AnimatedLyrics track={track} lyrics={lyrics} fromVk={fromVk} theater={theater} footer={footer} />
 }

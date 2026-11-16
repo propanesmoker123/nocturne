@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-spotify-login-finish"
+description = "Enables the spotify_login_finish command without any pre-configured scope."
+commands.allow = ["spotify_login_finish"]
+
+[[permission]]
+identifier = "deny-spotify-login-finish"
+description = "Denies the spotify_login_finish command without any pre-configured scope."
+commands.deny = ["spotify_login_finish"]

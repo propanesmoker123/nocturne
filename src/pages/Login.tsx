@@ -8,6 +8,7 @@ import { useState } from 'react'
 import { copyJournal } from '../lib/journal'
 import { useUpdates } from '../lib/updates'
 import s from './Login.module.css'
+import { useService } from '../app/service'
 
 /** Lets someone stuck on login send what happened to whoever helps them. */
 export function CopyJournalLink() {
@@ -90,6 +91,7 @@ export function Login() {
             </Button>
           )}
           <p className={s.note}>Вход идёт на странице VK в отдельном окне — пароль Nocturne не видит. Доступ хранится только в памяти, пока приложение открыто.</p>
+          <Button onClick={() => useService.getState().select('spotify')}>Открыть Spotify</Button>
         </div>
       </motion.div>
       <div className={s.disclaimer}>Неофициальный клиент. Nocturne не связан с VK.</div>

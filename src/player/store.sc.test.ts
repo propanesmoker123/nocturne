@@ -195,4 +195,49 @@ describe('SoundCloud tracks in the player', () => {
     expect(h.toasts.at(-1)).toBe('SoundCloud не отдаёт звук — без VPN он в России не играет')
     expect(usePlayer.getState().isPlaying).toBe(false)
   })
+
+  test('preloads only the single next track after the current track finishes loading, and reuses it on transition', async () => {
+    usePlayer.getState().playList([sc(1), sc(2), sc(3)], 0)
+    await flush()
+    expect(h.calls.stream).toEqual([1])
+
+    // Current track finishes buffering -> only track 2 is preloaded (not track 3).
+    h.fire('buffered')
+    await flush()
+    expect(h.calls.stream).toEqual([1, 2])
+
+    // Re-emitting buffered or changing nothing does not re-fetch.
+    h.fire('buffered')
+    await flush()
+    expect(h.calls.stream).toEqual([1, 2])
+
+    // Moving to track 2 reuses the preloaded stream source without calling streamSource again.
+    usePlayer.getState().next(true)
+    await flush()
+    expect(h.calls.stream).toEqual([1, 2])
+    expect(h.calls.load).toEqual([LINK, LINK])
+  })
+
+  test('updates the single preloaded next track on queue edits and stops preloading under repeat-one', async () => {
+    usePlayer.getState().playList([sc(1), sc(2), sc(3)], 0)
+    await flush()
+    h.fire('buffered')
+    await flush()
+    expect(h.calls.stream).toEqual([1, 2])
+
+    // Inserting a track as "play next" evicts sc_2 preload and preloads sc_9 instead.
+    usePlayer.getState().playNext([sc(9)])
+    await flush()
+    expect(h.calls.stream).toEqual([1, 2, 9])
+
+    // Switching repeat off -> all -> one disables next preload and avoids re-using invalidated slots.
+    usePlayer.getState().cycleRepeat()
+    usePlayer.getState().cycleRepeat()
+    await flush()
+    expect(usePlayer.getState().repeat).toBe('one')
+    // Advancing manually still resolves sc_9 fresh since preload was cleared under repeat-one.
+    usePlayer.getState().next(true)
+    await flush()
+    expect(h.calls.stream).toEqual([1, 2, 9, 9])
+  })
 })

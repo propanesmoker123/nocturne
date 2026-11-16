@@ -17,4 +17,9 @@ describe('the release content policy', () => {
     expect(media).not.toContain('https:')
     expect(media).not.toContain('*')
   })
+
+  test('connect-src allows blob URLs so preloaded audio files can be decoded into waveforms', () => {
+    const connect = directive('connect-src')
+    expect(connect).toContain('blob:')
+  })
 })

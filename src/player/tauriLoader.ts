@@ -1,5 +1,6 @@
 import { LoadStats, type Loader, type LoaderCallbacks, type LoaderConfiguration, type LoaderContext } from 'hls.js'
 import { invoke } from '../lib/tauri'
+import { getPreloadedResource } from './preload'
 
 /** hls.js loader that fetches playlists, segments and AES keys through the Rust proxy
  *  (no CORS, vk.ru headers). One instance per request, as hls.js expects. */
@@ -35,7 +36,9 @@ export class TauriLoader implements Loader<LoaderContext> {
       callbacks.onTimeout(stats, context, null)
     }, limit)
 
-    invoke<ArrayBuffer>('proxy_fetch', { url: context.url })
+    const pre = getPreloadedResource(context.url)
+    const req = pre ? Promise.resolve(pre) : invoke<ArrayBuffer>('proxy_fetch', { url: context.url })
+    req
       .then((buf) => {
         if (this.done) return
         this.done = true

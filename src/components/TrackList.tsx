@@ -112,7 +112,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
             <span className="truncate">{track.title}</span>
             {track.subtitle && <span className="truncate" style={{ color: 'var(--label-3)', flexShrink: 2 }}>{track.subtitle}</span>}
             {track.explicit && <span className={s.explicit} aria-label="Нецензурное">E</span>}
-            {markService && serviceOf(track) === 'sc' && <ServiceLogo id="sc" size={14} />}
+            {markService && serviceOf(track) !== 'vk' && <ServiceLogo id={serviceOf(track)} size={14} />}
           </div>
           <div className={s.artists}>
             <ArtistLinks track={track} />
@@ -124,7 +124,16 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
       ) : showAlbum && (
         <div className={`${s.album} truncate`}>
           {track.album && (
-            <button type="button" onClick={() => push({ name: 'playlist', ownerId: track.album!.ownerId, id: track.album!.id, accessKey: track.album!.accessKey })}>
+            <button
+              type="button"
+              onClick={() =>
+                push(
+                  track.album!.spotifyId
+                    ? { name: 'spotify-playlist', id: track.album!.spotifyId, kind: 'album', title: track.album!.title }
+                    : { name: 'playlist', ownerId: track.album!.ownerId, id: track.album!.id, accessKey: track.album!.accessKey },
+                )
+              }
+            >
               {track.album.title}
             </button>
           )}

@@ -30,7 +30,7 @@ import { useChrome } from './chrome'
 import { ContextMenu } from './ContextMenu'
 import { MiniPlayer } from './MiniPlayer'
 import { NowPlaying } from './NowPlaying'
-import { useRouter, type Route } from './router'
+import { routeService, useRouter, type Route } from './router'
 import { ScrollerContext } from './scroller'
 import { ServiceRail } from './ServiceRail'
 import { useSession } from './session'
@@ -38,6 +38,9 @@ import { Sheets } from './Sheets'
 import { Sidebar } from './Sidebar'
 import { Titlebar, WindowControls } from './Titlebar'
 import { Toasts } from './Toasts'
+import { SpotifyArtistPage, SpotifyPage, SpotifyPlaylistPage, SpotifySearchPage } from '../spotify/SpotifyPage'
+import { SpotifyMiniPlayer } from '../spotify/SpotifyMiniPlayer'
+import { useSpotify } from '../spotify/runtime'
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
@@ -65,6 +68,14 @@ function Page({ route }: { route: Route }) {
       return <SectionPage title={route.title} id={route.id} block={route.block} cards={route.cards} />
     case 'settings':
       return <SettingsPage />
+    case 'spotify':
+      return <SpotifyPage />
+    case 'spotify-playlist':
+      return <SpotifyPlaylistPage id={route.id} kind={route.kind} title={route.title} />
+    case 'spotify-artist':
+      return <SpotifyArtistPage id={route.id} title={route.title} />
+    case 'spotify-search':
+      return <SpotifySearchPage q={route.q ?? ''} uri={route.uri} />
     case 'sc-home':
       return <ScHome />
     case 'sc-stream':
@@ -89,7 +100,7 @@ function Page({ route }: { route: Route }) {
 }
 
 /** Search keeps one page instance while the query changes. */
-const routeKey = (r: Route) => (r.name === 'search' || r.name === 'sc-search' ? r.name : JSON.stringify(r))
+const routeKey = (r: Route) => (r.name === 'search' || r.name === 'sc-search' || r.name === 'spotify-search' ? r.name : JSON.stringify(r))
 
 function Shell() {
   const route = useRouter((r) => r.route)
@@ -99,6 +110,7 @@ function Shell() {
   const blur = useSettings((x) => x.wallpaperBlur)
   const dim = useSettings((x) => x.wallpaperDim)
   const key = routeKey(route)
+  const spotifyPlaying = useSpotify((x) => x.owner && x.track !== null)
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: 0 })
@@ -119,7 +131,7 @@ function Shell() {
           </div>
           <Titlebar />
           <Toasts />
-          <MiniPlayer />
+          {spotifyPlaying ? <SpotifyMiniPlayer /> : <MiniPlayer />}
         </main>
         <NowPlaying />
         <ContextMenu />
@@ -130,9 +142,10 @@ function Shell() {
 }
 
 export function App() {
+  const spotify = useRouter(state => routeService(state.route) === 'spotify')
   const phase = useSession((x) => x.phase)
   const busy = useSession((x) => x.busy)
-  if (phase === 'pending') {
+  if (phase === 'pending' && !spotify) {
     return (
       <div className={s.splash} data-tauri-drag-region>
         <div className={s.splashChrome}>
@@ -152,6 +165,6 @@ export function App() {
       </div>
     )
   }
-  if (phase === 'none') return <Login />
+  if (phase === 'none' && !spotify) return <Login />
   return <Shell />
 }

@@ -64,6 +64,44 @@ export function pickAccent(data: Uint8ClampedArray): RGB | null {
 
 export const toCss = ({ r, g, b }: RGB): string => `rgb(${Math.round(r)} ${Math.round(g)} ${Math.round(b)})`
 
+const HEX6_RE = /^#?([0-9a-f]{6})$/i
+const HEX3_RE = /^#?([0-9a-f]{3})$/i
+const RGB_FN_RE = /^rgba?\(\s*(\d+(?:\.\d+)?)\s*(?:,|\s)\s*(\d+(?:\.\d+)?)\s*(?:,|\s)\s*(\d+(?:\.\d+)?)/i
+
+/** Parses CSS hex (`#rgb` / `#rrggbb`) or `rgb(...)` / `rgba(...)` into `[0..255]` RGB. */
+export function parseCssRgb(value: string): RGB | null {
+  const s = value.trim()
+  if (!s) return null
+  const m6 = s.match(HEX6_RE)
+  if (m6) {
+    const h = m6[1]!
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+    }
+  }
+  const m3 = s.match(HEX3_RE)
+  if (m3) {
+    const h = m3[1]!
+    return {
+      r: parseInt(h[0]! + h[0]!, 16),
+      g: parseInt(h[1]! + h[1]!, 16),
+      b: parseInt(h[2]! + h[2]!, 16),
+    }
+  }
+  const mRgb = s.match(RGB_FN_RE)
+  if (mRgb) {
+    const clamp255 = (n: number) => Math.max(0, Math.min(255, Math.round(n)))
+    return {
+      r: clamp255(Number(mRgb[1])),
+      g: clamp255(Number(mRgb[2])),
+      b: clamp255(Number(mRgb[3])),
+    }
+  }
+  return null
+}
+
 const cache = new Map<string, Promise<RGB | null>>()
 
 async function loadBitmap(url: string): Promise<ImageBitmap | HTMLImageElement> {

@@ -61,7 +61,7 @@ export function trackKeyWithAccess(t: Pick<Track, 'ownerId' | 'id' | 'accessKey'
 }
 
 export function normalizePlaylist(raw: RawPlaylist, meId: number, ownerNames?: Map<number, string>): Playlist {
-  const isFollowed = !!raw.original || !!raw.is_following
+  const isFollowed = !!raw.is_following || (meId !== 0 && raw.owner_id === meId && !!raw.original)
   const covers = (raw.thumbs ?? []).map((t) => pick(t, MEDIUM)).filter((x): x is string => !!x).slice(0, 4)
   const isAlbum = raw.type === 1 || raw.type === 'album' || !!raw.album_type
   return {
@@ -98,16 +98,22 @@ export function normalizeUser(raw: RawUser): User {
 }
 
 export function normalizeLyrics(raw: RawLyrics): Lyrics | null {
+  const credits = raw.credits ? decodeEntities(raw.credits) : undefined
   const ts = raw.lyrics?.timestamps
   if (ts && ts.length) {
-    return {
-      synced: true,
-      lines: ts.filter((l) => !l.interlude).map((l) => ({ text: l.line ?? '', begin: l.begin })),
-      credits: raw.credits,
-    }
+    const lines = ts
+      .filter((l) => !l.interlude)
+      .map((l) => ({
+        text: decodeEntities(l.line ?? ''),
+        begin: l.begin,
+        ...(l.begin !== undefined && l.end !== undefined && Number.isFinite(l.end) && l.end > l.begin ? { end: l.end } : {}),
+      }))
+    if (lines.length) return { synced: true, lines, credits }
   }
   const text = raw.lyrics?.text
-  if (text && text.length) return { synced: false, lines: text.map((t) => ({ text: t })), credits: raw.credits }
+  if (text && text.length) {
+    return { synced: false, lines: text.map((t) => ({ text: decodeEntities(t) })), credits }
+  }
   return null
 }
 

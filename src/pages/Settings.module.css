@@ -141,10 +141,14 @@
 .swatchLabel {
   position: absolute;
   inset: auto 0 0 0;
-  padding: 3px 6px;
-  font: 600 10px/13px var(--font);
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.6));
+  padding: 4px 6px;
+  font: 600 11.5px/13px var(--font);
+  color: #fff;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .kbd {
   display: inline-flex;

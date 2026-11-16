@@ -81,8 +81,8 @@
   background: var(--fill-2);
 }
 .button[data-variant='danger'] {
-  background: color-mix(in oklab, var(--sys-red) 18%, transparent);
-  color: var(--sys-red);
+  background: color-mix(in oklab, var(--sys-red) 20%, transparent);
+  color: color-mix(in oklab, var(--sys-red) 72%, #fff);
 }
 .button[data-size='lg'] {
   height: 44px;

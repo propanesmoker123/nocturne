@@ -154,7 +154,7 @@ impl Limiter {
     }
 }
 
-async fn send(http: &Http, method: &str, form: &[(String, String)], token: &str) -> Result<Value, VkError> {
+pub(crate) async fn send(http: &Http, method: &str, form: &[(String, String)], token: &str) -> Result<Value, VkError> {
     let url = format!("{API_BASE}{method}?v={API_VERSION}&client_id={CLIENT_ID}");
     let mut body: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     body.push(("access_token", token));

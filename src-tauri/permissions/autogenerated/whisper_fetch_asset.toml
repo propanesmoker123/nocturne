@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-whisper-fetch-asset"
+description = "Enables the whisper_fetch_asset command without any pre-configured scope."
+commands.allow = ["whisper_fetch_asset"]
+
+[[permission]]
+identifier = "deny-whisper-fetch-asset"
+description = "Denies the whisper_fetch_asset command without any pre-configured scope."
+commands.deny = ["whisper_fetch_asset"]

@@ -15,6 +15,10 @@ export type Route =
   /** Everything behind a strip: a VK catalog section (`id`) or a block's own list (`block`); `cards` — playlists rather than tracks. */
   | { name: 'section'; title: string; id?: string; block?: string; cards?: boolean }
   | { name: 'settings' }
+  | { name: 'spotify'; page?: 'home' | 'browse' | 'library' | 'liked' | 'albums' | 'artists' | 'recent'; q?: string; link?: string }
+  | { name: 'spotify-playlist'; id: string; kind?: 'playlist' | 'album'; title?: string }
+  | { name: 'spotify-artist'; id: string; title?: string }
+  | { name: 'spotify-search'; q?: string; uri?: string }
   | { name: 'sc-home' }
   | { name: 'sc-stream' }
   | { name: 'sc-likes' }
@@ -30,6 +34,7 @@ export type Route =
 
 /** Which service a page belongs to; null for the shared ones («Моё», settings). */
 export function routeService(r: Route): ServiceId | null {
+  if (r.name === 'spotify' || r.name.startsWith('spotify-')) return 'spotify'
   if (r.name.startsWith('sc-')) return 'sc'
   if (r.name === 'recent' || r.name === 'settings' || r.name === 'albums' || r.name === 'album') return null
   return 'vk'
@@ -41,8 +46,12 @@ export function routeSection(r: Route): 'mine' | ServiceId | null {
   return routeService(r)
 }
 
-/** Where a tap on a track's artist goes: their SoundCloud profile, or the VK artist page. */
+/** Where a tap on a track's artist goes: their Spotify/SoundCloud profile, or the VK artist page. */
 export function artistRoute(t: Track, a: { id?: string; name: string } | undefined = t.artists[0]): Route {
+  if (serviceOf(t) === 'spotify') {
+    if (a?.id) return { name: 'spotify-artist', id: a.id, title: a.name }
+    return { name: 'spotify-search', q: a?.name ?? t.artist }
+  }
   if (serviceOf(t) === 'sc' && a?.id && /^\d+$/.test(a.id)) return { name: 'sc-user', id: Number(a.id), title: a.name }
   return { name: 'artist', id: a?.id, artist: a?.name ?? t.artist }
 }

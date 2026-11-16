@@ -11,9 +11,9 @@
 
   /* Labels */
   --label: #fff;
-  --label-2: rgba(235, 235, 245, 0.62);
-  --label-3: rgba(235, 235, 245, 0.34);
-  --label-4: rgba(235, 235, 245, 0.18);
+  --label-2: rgba(235, 235, 245, 0.68);
+  --label-3: rgba(235, 235, 245, 0.56);
+  --label-4: rgba(235, 235, 245, 0.24);
 
   /* Fills & separators */
   --fill-1: rgba(120, 120, 128, 0.36);
@@ -51,6 +51,7 @@
 
   /* Type */
   --font: 'Inter Variable', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-lyrics: 'Onest Variable', 'Inter Variable', 'Segoe UI Variable Text', sans-serif;
   --t-large: 700 34px/41px var(--font);
   --t-title1: 700 28px/34px var(--font);
   --t-title2: 700 22px/28px var(--font);

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { normalizeFriend, normalizePlaylist, normalizeTrack, normalizeUser, trackKeyWithAccess } from './normalize'
+import { normalizeFriend, normalizeLyrics, normalizePlaylist, normalizeTrack, normalizeUser, trackKeyWithAccess } from './normalize'
 import type { RawAudio, RawPlaylist } from './types'
 
 const thumb = {
@@ -141,12 +141,20 @@ describe('normalizePlaylist', () => {
     expect(p.canEdit).toBe(false)
   })
 
-  test('recognises followed copies via original or is_following', () => {
+  test('recognises followed copies via owned original or is_following, ignoring foreign playlists with original metadata', () => {
     const viaOriginal = normalizePlaylist(rawPlaylist({ original: { playlist_id: 1, owner_id: -9, access_key: 'o' } }), 100)
     expect(viaOriginal.isFollowed).toBe(true)
     expect(viaOriginal.isOwn).toBe(false)
     expect(viaOriginal.original).toEqual({ id: 1, ownerId: -9, accessKey: 'o' })
     expect(normalizePlaylist(rawPlaylist({ owner_id: -9, is_following: true }), 100).isFollowed).toBe(true)
+
+    const foreignWithOriginal = normalizePlaylist(
+      rawPlaylist({ owner_id: -2000123456, original: { playlist_id: 44, owner_id: -77, access_key: 'x' } }),
+      100,
+    )
+    expect(foreignWithOriginal.isFollowed).toBe(false)
+    expect(foreignWithOriginal.isOwn).toBe(false)
+    expect(foreignWithOriginal.canEdit).toBe(false)
   })
 
   test('detects albums from numeric or string type', () => {
@@ -182,5 +190,28 @@ describe('normalizeFriend / normalizeUser', () => {
 
   test('user prefers the larger photo', () => {
     expect(normalizeUser({ id: 1, first_name: 'A', last_name: 'B', photo_100: 'https://s', photo_200: 'https://l' })).toEqual({ id: 1, name: 'A B', photo: 'https://l' })
+  })
+})
+
+describe('normalizeLyrics', () => {
+  test('preserves valid end timestamps, skips interludes and decodes entities', () => {
+    const res = normalizeLyrics({
+      credits: 'Label &amp; Co',
+      lyrics: {
+        timestamps: [
+          { line: 'Intro', begin: 0, end: 500, interlude: true },
+          { line: 'Line &quot;One&quot;', begin: 1200, end: 3100 },
+          { line: 'Line Two', begin: 3400, end: 3000 },
+        ],
+      },
+    })
+    expect(res).toEqual({
+      synced: true,
+      credits: 'Label & Co',
+      lines: [
+        { text: 'Line "One"', begin: 1200, end: 3100 },
+        { text: 'Line Two', begin: 3400 },
+      ],
+    })
   })
 })

@@ -16,6 +16,10 @@ const TILE = '#1f1f23'
  * dark tile (the rail, the sidebar) — calmer next to the dark interface.
  */
 export function ServiceLogo({ id, size, className, tone = 'brand' }: { id: ServiceId; size: number; className?: string; tone?: 'brand' | 'dark' }) {
+  if (id === 'spotify') return <svg className={className} role="img" aria-label="Spotify" viewBox="0 0 24 24" width={size} height={size} style={{ flex: 'none' }}>
+    <circle cx="12" cy="12" r="11" fill={tone === 'dark' ? TILE : '#1ed760'} />
+    <g fill="none" stroke={tone === 'dark' ? '#1ed760' : '#101012'} strokeLinecap="round"><path d="M6 9c4-1.4 8.2-1.1 12 1" strokeWidth="1.8" /><path d="M6.8 12.2c3.4-1 6.7-.7 10 1" strokeWidth="1.6" /><path d="M7.5 15.2c2.8-.7 5.6-.4 8.2 1" strokeWidth="1.4" /></g>
+  </svg>
   const label = id === 'sc' ? 'SoundCloud' : 'VK'
   const dark = tone === 'dark'
   if (id === 'sc') {
