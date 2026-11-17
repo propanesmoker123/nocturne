@@ -18,6 +18,7 @@ export interface QueueSource {
   label?: string
   service?: 'vk' | 'spotify'
   seed?: string
+  contextUri?: string
 }
 
 interface SavedSession {
@@ -328,7 +329,16 @@ export const usePlayer = create<PlayerState>((set, get) => {
     if (remote) return
     loadedKey = track.key
     beginWaveform(track.key, track.duration)
-    engine.load(track.url, startAt, intent.autoplay, scSource ? { drm: scSource.drm, waveformUrl: scSource.waveformUrl } : undefined)
+    const src = get().source
+    const spotifyOptions =
+      serviceOf(track) === 'spotify'
+        ? {
+            spotifyContextUri: src?.service === 'spotify' ? src.contextUri : undefined,
+            spotifyAlbumId: track.album?.spotifyId,
+            spotifyUid: track.spotifyUid,
+          }
+        : undefined
+    engine.load(track.url, startAt, intent.autoplay, scSource ? { drm: scSource.drm, waveformUrl: scSource.waveformUrl } : spotifyOptions)
     if (intent.autoplay && serviceOf(track) === 'sc') watchScStart(token, track)
     void extendMixIfNeeded()
   }
@@ -360,6 +370,14 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
   // Engine → store
   engine.onSource = captureSource
+  let lastSpotifyMismatchToast = 0
+  engine.onSpotifyMismatch = () => {
+    if (remote) return
+    const now = Date.now()
+    if (now - lastSpotifyMismatchToast < 30_000) return
+    lastSpotifyMismatchToast = now
+    toast('Spotify включил другой трек — похоже, на бесплатном аккаунте действует лимит выбора треков', 'info')
+  }
   const addToHistory = (t: Track) => {
     if (get().history[0]?.key === t.key) return
     const history = [t, ...get().history.filter((h) => h.key !== t.key)].slice(0, 200)

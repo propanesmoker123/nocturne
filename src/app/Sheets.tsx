@@ -1,8 +1,11 @@
 import { AnimatePresence, motion, useIsPresent } from 'motion/react'
+import { Bell, Megaphone, MessageCircle, RefreshCw, Sparkles } from 'lucide-react'
 import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from 'react'
-import { Button, Segmented, Spinner, Switch } from '../components/controls'
+import { Button, IconButton, Segmented, Spinner, Switch } from '../components/controls'
 import { sendFeedback, type FeedbackKind } from '../lib/feedback'
 import { journalTail } from '../lib/journal'
+import { compareSemver, formatNotificationDate, useNotifications } from '../lib/notifications'
+import { useUpdates } from '../lib/updates'
 import * as vk from '../vk/api'
 import { LinkDevice } from '../connect/DevicesPanel'
 import { describeError, VkError } from '../vk/errors'
@@ -353,6 +356,205 @@ function FeedbackBody({ req }: { req: Extract<SheetRequest, { kind: 'feedback' }
   )
 }
 
+function NotificationsBody() {
+  const [tab, setTab] = useState<'all' | 'replies' | 'updates'>('all')
+  const items = useNotifications((n) => n.items)
+  const sentReports = useNotifications((n) => n.sentReports)
+  const highlightedIds = useNotifications((n) => n.highlightedIds)
+  const loading = useNotifications((n) => n.loading)
+  const error = useNotifications((n) => n.error)
+  const refresh = useNotifications((n) => n.refresh)
+  const updater = useUpdates()
+  const close = useSheet((x) => x.close)
+  const openFeedback = () => useSheet.getState().open({ kind: 'feedback', defaultKind: 'bug' })
+
+  const highlighted = new Set(highlightedIds)
+  const repliedIds = new Set(
+    items.filter((x): x is Extract<(typeof items)[number], { kind: 'reply' }> => x.kind === 'reply').map((x) => x.reply.reportId),
+  )
+  const waitingReports = sentReports.filter((r) => !repliedIds.has(r.id))
+  const visible = items.filter((item) => {
+    if (tab === 'replies') return item.kind === 'reply'
+    if (tab === 'updates') return item.kind === 'release' || item.kind === 'announcement'
+    return true
+  })
+
+  return (
+    <>
+      <div className={s.notifHeader}>
+        <h2 className={s.sheetTitle} style={{ margin: 0 }}>
+          Уведомления
+        </h2>
+        <IconButton
+          size={30}
+          label="Проверить ответы и обновления"
+          disabled={loading}
+          onClick={() => void refresh(false)}
+        >
+          <RefreshCw size={15} className={loading ? s.notifSpin : undefined} />
+        </IconButton>
+      </div>
+
+      <div className={s.notifFilter}>
+        <Segmented
+          id="notifications-filter"
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'all', label: 'Все' },
+            { value: 'replies', label: 'Ответы' },
+            { value: 'updates', label: 'Обновления' },
+          ]}
+        />
+      </div>
+
+      <div className={s.notifList}>
+        {loading && !visible.length && !(tab === 'replies' && waitingReports.length) ? (
+          <div className={s.notifEmpty}>
+            <Spinner />
+          </div>
+        ) : error && !visible.length && !(tab === 'replies' && waitingReports.length) ? (
+          <div className={s.notifEmpty}>
+            <p className={s.notifEmptyTitle}>{error}</p>
+            <Button onClick={() => void refresh(false)}>Повторить</Button>
+          </div>
+        ) : !visible.length && !(tab === 'replies' && waitingReports.length) ? (
+          <div className={s.notifEmpty}>
+            <Bell size={22} strokeWidth={1.7} className={s.notifEmptyIcon} />
+            <p className={s.notifEmptyTitle}>
+              {tab === 'replies' ? 'Ответов от разработчика пока нет' : tab === 'updates' ? 'Список обновлений пуст' : 'Новых уведомлений нет'}
+            </p>
+            <p className={s.notifEmptySub}>
+              {tab === 'replies'
+                ? 'Когда вы отправите баг через форму обратной связи, ответ придёт прямо сюда.'
+                : 'Здесь появляются релизы Nocturne и личные ответы на ваши обращения.'}
+            </p>
+          </div>
+        ) : (
+          <>
+            {visible.map((item) => {
+              const isNew = highlighted.has(item.itemId)
+              if (item.kind === 'reply') {
+                const r = item.reply
+                return (
+                  <div key={item.itemId} className={s.notifItem} data-new={isNew ? 'true' : undefined}>
+                    <div className={s.notifMeta}>
+                      <span className={s.notifAuthor}>
+                        <MessageCircle size={14} />
+                        Ответ разработчика
+                      </span>
+                      <span className={s.notifMetaRight}>
+                        {isNew && <span className={s.notifPillNew}>Новое</span>}
+                        {r.createdAt > 0 && <span className={s.notifDate}>{formatNotificationDate(r.createdAt)}</span>}
+                      </span>
+                    </div>
+                    {r.reportMessage && <div className={s.notifQuote}>Ваш отчёт: «{r.reportMessage}»</div>}
+                    <p className={s.notifBody}>{r.message}</p>
+                    <div className={s.notifItemActions}>
+                      <button type="button" className={s.feedbackPreviewBtn} onClick={openFeedback}>
+                        Написать ещё
+                      </button>
+                    </div>
+                  </div>
+                )
+              }
+
+              if (item.kind === 'announcement') {
+                const a = item.announcement
+                return (
+                  <div key={item.itemId} className={s.notifItem} data-new={isNew ? 'true' : undefined}>
+                    <div className={s.notifMeta}>
+                      <span className={s.notifAuthor}>
+                        <Megaphone size={14} />
+                        {a.title || 'Объявление'}
+                      </span>
+                      <span className={s.notifMetaRight}>
+                        {isNew && <span className={s.notifPillNew}>Новое</span>}
+                        {a.createdAt > 0 && <span className={s.notifDate}>{formatNotificationDate(a.createdAt)}</span>}
+                      </span>
+                    </div>
+                    <p className={s.notifBody}>{a.message}</p>
+                  </div>
+                )
+              }
+
+              const rel = item.release
+              const points = rel.notes ? splitNotes(rel.notes) : []
+              const canInstall =
+                item.isAvailable &&
+                updater.phase === 'available' &&
+                Boolean(updater.version) &&
+                compareSemver(updater.version!, rel.version) === 0
+              const isDownloading = updater.phase === 'downloading' && Boolean(updater.version) && compareSemver(updater.version!, rel.version) === 0
+
+              return (
+                <div key={item.itemId} className={s.notifItem} data-new={isNew ? 'true' : undefined}>
+                  <div className={s.notifMeta}>
+                    <span className={s.notifAuthor}>
+                      <Sparkles size={14} />
+                      Nocturne {rel.version}
+                    </span>
+                    <span className={s.notifMetaRight}>
+                      {item.isAvailable && <span className={s.notifPillAvail}>Доступно</span>}
+                      {item.isCurrent && !item.isAvailable && <span className={s.notifPillCurrent}>Установлено</span>}
+                      {isNew && !item.isAvailable && <span className={s.notifPillNew}>Новое</span>}
+                      {rel.publishedAt && <span className={s.notifDate}>{formatNotificationDate(rel.publishedAt)}</span>}
+                    </span>
+                  </div>
+                  {points.length > 0 ? (
+                    <ul className={`${s.notes} ${s.notifNotes}`}>
+                      {points.map((p, idx) => (
+                        <li key={idx}>{p}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className={s.notifBody}>Вышла новая версия Nocturne.</p>
+                  )}
+                  {(canInstall || isDownloading) && (
+                    <div className={s.notifItemActions}>
+                      <Button
+                        variant="primary"
+                        disabled={isDownloading}
+                        onClick={() => {
+                          void updater.install()
+                          close()
+                        }}
+                      >
+                        {isDownloading ? `Загрузка ${Math.round(updater.progress * 100)}%` : 'Установить обновление'}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+
+            {tab === 'replies' &&
+              waitingReports.map((rep) => (
+                <div key={`wait:${rep.id}`} className={s.notifItem}>
+                  <div className={s.notifMeta}>
+                    <span className={s.notifAuthorMuted}>Отправленное обращение</span>
+                    <span className={s.notifMetaRight}>
+                      <span className={s.notifPillCurrent}>Ожидает ответа</span>
+                      {rep.createdAt > 0 && <span className={s.notifDate}>{formatNotificationDate(rep.createdAt)}</span>}
+                    </span>
+                  </div>
+                  <p className={s.notifBodyMuted}>«{rep.preview}»</p>
+                </div>
+              ))}
+          </>
+        )}
+      </div>
+
+      <div className={s.notifFooter}>
+        <Button variant="tinted" onClick={openFeedback}>
+          Сообщить о баге
+        </Button>
+        <Button onClick={close}>Закрыть</Button>
+      </div>
+    </>
+  )
+}
+
 /** The dimming layer stops catching clicks as soon as it starts leaving. */
 function Layer({ children, onDismiss }: { children: ReactNode; onDismiss(): void }) {
   const present = useIsPresent()
@@ -390,7 +592,7 @@ export function Sheets() {
           <motion.div
             role="dialog"
             aria-modal="true"
-            className={s.sheet}
+            className={sheet.kind === 'notifications' ? `${s.sheet} ${s.sheetWide}` : s.sheet}
             initial={{ y: 24, scale: 0.97, opacity: 0 }}
             animate={{ y: 0, scale: 1, opacity: 1 }}
             exit={{ y: 12, scale: 0.98, opacity: 0 }}
@@ -416,6 +618,8 @@ export function Sheets() {
                 <AlbumJoinBody />
               ) : sheet.kind === 'feedback' ? (
                 <FeedbackBody req={sheet} />
+              ) : sheet.kind === 'notifications' ? (
+                <NotificationsBody />
               ) : (
                 <PlaylistForm req={sheet} />
               )}

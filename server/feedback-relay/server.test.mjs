@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createRateLimiter, createRelayHandler, escapeHtml, formatTelegramHtml, validatePayload } from './server.mjs'
+import {
+  clientIp,
+  createRateLimiter,
+  createRelayHandler,
+  createRelayStore,
+  escapeHtml,
+  formatTelegramHtml,
+  processTelegramUpdate,
+  validatePayload,
+} from './server.mjs'
 
 describe('feedback relay server', () => {
   it('validates feedback payloads strictly and strips unsafe characters from metadata', () => {
     expect(validatePayload(null).ok).toBe(false)
     expect(validatePayload({ kind: 'bug', message: '   ' }).ok).toBe(false)
+    expect(validatePayload({ kind: 'bug', message: 'hi', clientId: 'short' }).ok).toBe(false)
 
     const valid = validatePayload({
       kind: 'idea',
@@ -14,11 +24,14 @@ describe('feedback relay server', () => {
       platform: 'windows',
       arch: 'x86_64',
       log: '2026-11-16 line 1\n',
+      clientId: 'client_1234567890abcdef',
+      clientToken: 'tok_1234567890abcdef1234567890',
     })
     expect(valid.ok).toBe(true)
     if (valid.ok) {
       expect(valid.data.contact).toBe('@tester spam')
       expect(formatTelegramHtml(valid.data)).toContain('&lt;3&gt;')
+      expect(formatTelegramHtml(valid.data)).toContain('Ответьте (Reply) сюда')
       expect(escapeHtml('a & b < c > d')).toBe('a &amp; b &lt; c &gt; d')
     }
   })
@@ -36,7 +49,7 @@ describe('feedback relay server', () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ ok: true, result: { message_id: 42 } }),
+      json: async () => ({ ok: true, result: { message_id: 42, chat: { id: 999 } } }),
     }))
     const handler = createRelayHandler({
       token: 'BOT_TOKEN',
@@ -66,8 +79,162 @@ describe('feedback relay server', () => {
 
     await handler(req, res)
     expect(statusCode).toBe(200)
-    expect(JSON.parse(bodyText)).toEqual({ ok: true })
+    expect(JSON.parse(bodyText)).toMatchObject({ ok: true })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://api.telegram.org/botBOT_TOKEN/sendDocument')
+    const sentForm = fetchMock.mock.calls[0]?.[1]?.body
+    expect(sentForm).toBeInstanceOf(FormData)
+    expect(String(sentForm.get('caption'))).toContain('<b>IP:</b> <code>9.8.7.6</code>')
+  })
+
+  it('extracts client IP safely from proxy headers and strips IPv4-mapped prefix', () => {
+    expect(clientIp({ headers: { 'x-forwarded-for': '1.1.1.1, 95.24.10.2' }, socket: {} })).toBe('95.24.10.2')
+    expect(clientIp({ headers: { 'x-real-ip': '::ffff:192.0.2.55' }, socket: {} })).toBe('192.0.2.55')
+    expect(clientIp({ headers: {}, socket: { remoteAddress: '::ffff:203.0.113.9' } })).toBe('203.0.113.9')
+  })
+
+  it('stores Telegram Reply answers per clientId and enforces token authentication on /inbox', async () => {
+    const store = createRelayStore()
+    const clientId = 'user-device-12345678'
+    const clientToken = 'secret-token-0123456789abcdef'
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: { message_id: 700, chat: { id: 555123 } } }),
+    }))
+
+    const handler = createRelayHandler({
+      token: 'BOT_TOKEN',
+      chatId: '@propsmanxr',
+      fetchImpl: fetchMock,
+      store,
+      readBody: async () => ({
+        kind: 'bug',
+        message: 'В Spotify не работает трек',
+        version: '0.3.7',
+        platform: 'windows',
+        arch: 'x86_64',
+        clientId,
+        clientToken,
+      }),
+    })
+
+    const runReq = async (req) => {
+      let code = 0
+      let body = ''
+      await handler(req, {
+        writeHead(c) {
+          code = c
+        },
+        end(chunk) {
+          body = String(chunk)
+        },
+      })
+      return { code, json: JSON.parse(body) }
+    }
+
+    const postRes = await runReq({ method: 'POST', url: '/nocturne-feedback', headers: {}, socket: {} })
+    expect(postRes.code).toBe(200)
+    expect(postRes.json.reportId).toMatch(/^r_/)
+
+    // Stranger cannot reply from another Telegram chat
+    const spoofRes = await processTelegramUpdate(
+      {
+        update_id: 1,
+        message: {
+          message_id: 701,
+          chat: { id: 999999, type: 'private', username: 'attacker' },
+          from: { id: 999999, is_bot: false, username: 'attacker' },
+          reply_to_message: { message_id: 700, from: { is_bot: true } },
+          text: 'Взломал',
+        },
+      },
+      { store, token: 'BOT_TOKEN', chatId: '@propsmanxr', fetchImpl: fetchMock },
+    )
+    expect(spoofRes.handled).toBe(false)
+
+    // Owner replies in Telegram -> routed directly to that client's inbox
+    const replyRes = await processTelegramUpdate(
+      {
+        update_id: 2,
+        message: {
+          message_id: 702,
+          chat: { id: 555123, type: 'private', username: 'propsmanxr' },
+          from: { id: 555123, is_bot: false, username: 'propsmanxr' },
+          reply_to_message: { message_id: 700, from: { is_bot: true } },
+          text: 'Исправлено в 0.3.7, проверь пожалуйста!',
+        },
+      },
+      { store, token: 'BOT_TOKEN', chatId: '@propsmanxr', fetchImpl: fetchMock },
+    )
+    expect(replyRes).toMatchObject({ handled: true, action: 'reply_saved', clientId })
+
+    // Owner also posts an announcement via /announce
+    const annRes = await processTelegramUpdate(
+      {
+        update_id: 3,
+        message: {
+          message_id: 703,
+          chat: { id: 555123, type: 'private', username: 'propsmanxr' },
+          from: { id: 555123, is_bot: false, username: 'propsmanxr' },
+          text: '/announce Важно\nВышло обновление 0.3.7',
+        },
+      },
+      { store, token: 'BOT_TOKEN', chatId: '@propsmanxr', fetchImpl: fetchMock },
+    )
+    expect(annRes).toMatchObject({ handled: true, action: 'announce' })
+
+    // Wrong client token cannot read replies for that clientId
+    const badInbox = await runReq({
+      method: 'GET',
+      url: '/nocturne-feedback/inbox',
+      headers: { 'x-nocturne-client': clientId, 'x-nocturne-token': 'wrong-token-0123456789abcdefgh' },
+      socket: {},
+    })
+    expect(badInbox.code).toBe(403)
+
+    // Matching device receives both its targeted reply and global announcement
+    const okInbox = await runReq({
+      method: 'GET',
+      url: '/nocturne-feedback/inbox',
+      headers: { 'x-nocturne-client': clientId, 'x-nocturne-token': clientToken },
+      socket: {},
+    })
+    expect(okInbox.code).toBe(200)
+    expect(okInbox.json.replies).toHaveLength(1)
+    expect(okInbox.json.replies[0]).toMatchObject({
+      reportId: postRes.json.reportId,
+      reportMessage: 'В Spotify не работает трек',
+      message: 'Исправлено в 0.3.7, проверь пожалуйста!',
+    })
+    expect(okInbox.json.announcements).toHaveLength(1)
+    expect(okInbox.json.announcements[0]).toMatchObject({
+      title: 'Важно',
+      message: 'Вышло обновление 0.3.7',
+    })
+  })
+
+  it('does not disclose replies left by an expired client registration', async () => {
+    const store = createRelayStore()
+    const clientId = 'expired-device-12345678'
+    const clientToken = 'new-token-0123456789abcdef'
+    store.recordReport({ reportId: 'previous', clientId, kind: 'bug', message: 'Prior report', messageIds: [808] })
+    store.addOrUpdateReply({ clientId, reportId: 'previous', tgMessageId: 809, message: 'Private reply' })
+
+    const handler = createRelayHandler({ store })
+    const req = {
+      method: 'GET',
+      url: '/nocturne-feedback/inbox',
+      headers: { 'x-nocturne-client': clientId, 'x-nocturne-token': clientToken },
+      socket: {},
+    }
+    const response = { writeHead: vi.fn(), end: vi.fn() }
+    await handler(req, response)
+    expect(response.writeHead).toHaveBeenCalledWith(200, expect.any(Object))
+    expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({ replies: [] })
+
+    expect(store.verifyOrRegisterClient(clientId, clientToken).ok).toBe(true)
+    expect(store.getInbox(clientId).replies).toEqual([])
+    expect(store.findReportByMessageId(808)).toBeNull()
   })
 })

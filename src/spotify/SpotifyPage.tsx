@@ -266,7 +266,7 @@ function SpGate({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-function playSpotifyTracks(tracks: Track[], index = 0, shuffle = false, label?: string) {
+function playSpotifyTracks(tracks: Track[], index = 0, shuffle = false, label?: string, contextUri?: string) {
   const playable = tracks.filter((t) => t.playable)
   if (!playable.length) {
     toast('В этом списке пока нет доступных треков', 'info')
@@ -276,7 +276,7 @@ function playSpotifyTracks(tracks: Track[], index = 0, shuffle = false, label?: 
   const mappedIndex = targetKey ? Math.max(0, playable.findIndex((t) => t.key === targetKey)) : 0
   usePlayer.getState().playList(playable, mappedIndex, {
     shuffle,
-    source: { kind: 'list', service: 'spotify', label },
+    source: { kind: 'list', service: 'spotify', label, ...(contextUri ? { contextUri } : {}) },
   })
 }
 
@@ -511,10 +511,10 @@ function SpotifyLikesBody() {
         actions={
           allTracks.length > 0 && (
             <>
-              <Button variant="primary" onClick={() => playSpotifyTracks(shown, 0, false, 'Любимые треки')}>
+              <Button variant="primary" onClick={() => playSpotifyTracks(shown, 0, false, 'Любимые треки', 'spotify:collection:tracks')}>
                 <IconPlay size={15} /> Слушать
               </Button>
-              <Button variant="tinted" onClick={() => playSpotifyTracks(shown, 0, true, 'Любимые треки')}>
+              <Button variant="tinted" onClick={() => playSpotifyTracks(shown, 0, true, 'Любимые треки', 'spotify:collection:tracks')}>
                 <Shuffle size={15} strokeWidth={2.2} /> Перемешать
               </Button>
             </>
@@ -569,7 +569,7 @@ function SpotifyLikesBody() {
           {shown.length === 0 ? (
             <EmptyState icon={<Search size={24} />} title="Ничего не найдено" text="Попробуйте изменить запрос фильтра." />
           ) : (
-            <TrackList tracks={shown} />
+            <TrackList tracks={shown} queueMeta={{ kind: 'list', service: 'spotify', label: 'Любимые треки', contextUri: 'spotify:collection:tracks' }} />
           )}
 
           {q.hasNextPage && (
@@ -880,14 +880,14 @@ export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle
                 <Button
                   variant="primary"
                   disabled={!tracks.length}
-                  onClick={() => playSpotifyTracks(tracks, 0, false, pl?.title)}
+                  onClick={() => playSpotifyTracks(tracks, 0, false, pl?.title, `spotify:${kind}:${id}`)}
                 >
                   <IconPlay size={15} /> Слушать
                 </Button>
                 <Button
                   variant="tinted"
                   disabled={!tracks.length}
-                  onClick={() => playSpotifyTracks(tracks, 0, true, pl?.title)}
+                  onClick={() => playSpotifyTracks(tracks, 0, true, pl?.title, `spotify:${kind}:${id}`)}
                 >
                   <Shuffle size={15} strokeWidth={2.2} /> Перемешать
                 </Button>
@@ -915,7 +915,7 @@ export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle
           {!q.isLoading && tracks.length === 0 && (
             <EmptyState icon={<ListMusic size={26} />} title="Треков пока нет" text="В этом списке пока нет доступных композиций." />
           )}
-          {tracks.length > 0 && <TrackList tracks={tracks} menuExtra={menuExtra} />}
+          {tracks.length > 0 && <TrackList tracks={tracks} playlist={pl} queueMeta={{ kind: 'list', service: 'spotify', label: pl?.title, contextUri: `spotify:${kind}:${id}` }} menuExtra={menuExtra} />}
 
           {!q.isLoading && totalCount > tracks.length && (
             <div className={sp.moreRow}>
@@ -1006,10 +1006,10 @@ export function SpotifyArtistPage({ id, title: initialTitle }: { id: string; tit
               <h1 className={p.heroTitle}>{artist?.name ?? initialTitle ?? '…'}</h1>
               <div className={p.heroMeta}>{artistSubtitle}</div>
               <div className={p.heroActions}>
-                <Button variant="primary" disabled={!tracks.length} onClick={() => playSpotifyTracks(tracks, 0, false, artist?.name)}>
+                <Button variant="primary" disabled={!tracks.length} onClick={() => playSpotifyTracks(tracks, 0, false, artist?.name, `spotify:artist:${id}`)}>
                   <IconPlay size={15} /> Слушать
                 </Button>
-                <Button variant="tinted" disabled={!tracks.length} onClick={() => playSpotifyTracks(tracks, 0, true, artist?.name)}>
+                <Button variant="tinted" disabled={!tracks.length} onClick={() => playSpotifyTracks(tracks, 0, true, artist?.name, `spotify:artist:${id}`)}>
                   <Shuffle size={15} strokeWidth={2.2} /> Перемешать
                 </Button>
                 <Button variant="gray" disabled={radioBusy} onClick={() => void startArtistRadio()}>
@@ -1044,7 +1044,7 @@ export function SpotifyArtistPage({ id, title: initialTitle }: { id: string; tit
 
           {!q.isLoading && tracks.length > 0 && (
             <Section title="Популярные треки">
-              <TrackList tracks={tracks} />
+              <TrackList tracks={tracks} queueMeta={{ kind: 'list', service: 'spotify', label: artist?.name, contextUri: `spotify:artist:${id}` }} />
             </Section>
           )}
 

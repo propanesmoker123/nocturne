@@ -58,6 +58,26 @@ pub fn valid_spotify_id(id: &str) -> bool {
     id.len() == 22 && id.bytes().all(|c| c.is_ascii_alphanumeric())
 }
 
+pub fn valid_context_uri(uri: &str) -> bool {
+    if uri == "spotify:collection:tracks" {
+        return true;
+    }
+    if let Some(id) = uri.strip_prefix("spotify:playlist:") {
+        return valid_spotify_id(id);
+    }
+    if let Some(id) = uri.strip_prefix("spotify:album:") {
+        return valid_spotify_id(id);
+    }
+    if let Some(id) = uri.strip_prefix("spotify:artist:") {
+        return valid_spotify_id(id);
+    }
+    false
+}
+
+pub fn valid_track_uid(uid: &str) -> bool {
+    !uid.is_empty() && uid.len() <= 64 && uid.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
 fn split_entity_route<'a>(route: &'a str, prefix: &str) -> Option<(&'a str, Option<&'a str>)> {
     let rest = route.strip_prefix(prefix)?;
     let (id, sub) = match rest.split_once('/') {
@@ -196,5 +216,25 @@ mod tests {
         ] {
             assert!(!valid_api_path(method, path), "{method} {path}");
         }
+    }
+
+    #[test]
+    fn context_uris_and_uids_accept_expected_shapes_only() {
+        let id = "4uLU6hMCjMI75M1A2tKUQC";
+        for uri in [
+            format!("spotify:playlist:{id}"),
+            format!("spotify:album:{id}"),
+            format!("spotify:artist:{id}"),
+            "spotify:collection:tracks".to_string(),
+        ] {
+            assert!(valid_context_uri(&uri), "{uri}");
+        }
+        for bad in ["spotify:track:4uLU6hMCjMI75M1A2tKUQC", "spotify:playlist:bad", "javascript:alert(1)", "spotify:user:x:collection"] {
+            assert!(!valid_context_uri(bad), "{bad}");
+        }
+        assert!(valid_track_uid("abc_123-XYZ"));
+        assert!(!valid_track_uid(""));
+        assert!(!valid_track_uid("bad uid"));
+        assert!(!valid_track_uid(&"a".repeat(65)));
     }
 }

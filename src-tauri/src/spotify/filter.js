@@ -9,7 +9,31 @@
       Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
     }
   } catch {}
-  const counters = { enabled: true, removed: 0, intercepted: 0, unsupported: 0, startPending: false, lastPlayMethod: '', lastPlayError: '' };
+  const counters = {
+    enabled: true,
+    removed: 0,
+    intercepted: 0,
+    unsupported: 0,
+    startPending: false,
+    lastPlayMethod: '',
+    lastPlayError: '',
+    lastPlaybackError: '',
+    capped: false,
+    expectedTrackId: '',
+    actualTrackId: '',
+    lastShuffle: null,
+    disallowNext: false,
+  };
+  const diagnostics = [];
+  let lastDiag = '';
+  function pushDiag(msg) {
+    if (typeof msg !== 'string') return;
+    const clean = msg.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 180);
+    if (!clean || clean === lastDiag) return;
+    lastDiag = clean;
+    diagnostics.push(clean);
+    if (diagnostics.length > 24) diagnostics.shift();
+  }
   const auth = {
     token: '',
     tokenExpiresAt: 0,
@@ -100,6 +124,47 @@
   let harmonyPlayer = null;
   let harmonyController = null;
   let spotifyPlayerApi = null;
+  let lastHarmonyClock = null;
+  const hookedHarmony = typeof WeakSet === 'function' ? new WeakSet() : null;
+  function hookHarmony(player) {
+    if (!player || typeof player.addListener !== 'function') return;
+    if (hookedHarmony) {
+      if (hookedHarmony.has(player)) return;
+      hookedHarmony.add(player);
+    }
+    try {
+      player.addListener('playback_capped', () => {
+        counters.capped = true;
+        pushDiag('harmony event: playback_capped');
+      });
+      player.addListener('local_player_disabled', () => {
+        pushDiag('harmony event: local_player_disabled');
+      });
+      player.addListener('error', ev => {
+        const err = ev?.data?.error ?? ev?.error ?? ev?.data ?? ev;
+        const code = err?.code || err?.name || '';
+        const msg = err?.message || '';
+        const text = [code, msg].filter(Boolean).join(': ').slice(0, 140) || 'unknown_error';
+        counters.lastPlaybackError = text;
+        pushDiag(`harmony error: ${text}`);
+      });
+      player.addListener('state_changed', ev => {
+        const st = ev?.data?.state ?? null;
+        if (!st) return;
+        const sh = st.shuffle_mode !== undefined ? Boolean(st.shuffle_mode) : (st.options?.shuffling_context !== undefined ? Boolean(st.options.shuffling_context) : null);
+        if (sh !== null) counters.lastShuffle = sh;
+        counters.disallowNext = Boolean(st.disallows?.skipping_next);
+        const curUri = st.track_window?.current_track?.uri || '';
+        const m = typeof curUri === 'string' ? curUri.match(/^spotify:track:([A-Za-z0-9]{22})$/) : null;
+        if (m) counters.actualTrackId = m[1];
+        if (!st.paused && !st.isPaused && !st.loading && Number(st.timestamp) > 0) {
+          lastHarmonyClock = { ts: Number(st.timestamp), localAt: Date.now() };
+        } else {
+          lastHarmonyClock = null;
+        }
+      });
+    } catch {}
+  }
   try {
     Object.defineProperty(Object.prototype, '_harmony', {
       configurable: true,
@@ -108,6 +173,7 @@
         Object.defineProperty(this, '_harmony', { value: val, writable: true, enumerable: true, configurable: true });
         if (val && typeof val.playTracks === 'function') {
           harmonyPlayer = val;
+          hookHarmony(val);
           if (val._controller && !harmonyController) harmonyController = val._controller;
         }
         if (val && typeof this.play === 'function' && typeof this.skipToNext === 'function') spotifyPlayerApi = this;
@@ -127,7 +193,10 @@
       set(val) {
         Object.defineProperty(this, '_controller', { value: val, writable: true, enumerable: true, configurable: true });
         if (val && typeof val.playURI === 'function' && !harmonyController) harmonyController = val;
-        if (val && typeof this.playTracks === 'function' && !this._hidden && !this._disableProgress && !this._observerMode && !harmonyPlayer) harmonyPlayer = this;
+        if (val && typeof this.playTracks === 'function' && !this._hidden && !this._disableProgress && !this._observerMode && !harmonyPlayer) {
+          harmonyPlayer = this;
+          hookHarmony(this);
+        }
       },
     });
   } catch {}
@@ -136,6 +205,7 @@
   let desiredMuted = false;
   let desiredTrackId = '';
   let playTimer = 0;
+  let seekTimer = 0;
   let playSeq = 0;
   let lastSeekTargetSec = null;
   let lastSeekFromSec = null;
@@ -292,14 +362,24 @@
     return false;
   }
   function skipActiveAd() {
+    if (counters.startPending) return;
     const now = Date.now();
-    if (now - lastAdSkipAt < 900) return;
+    if (now - lastAdSkipAt < 1500) return;
     lastAdSkipAt = now;
-    try { (harmonyPlayer || harmonyController)?.nextTrack?.(); } catch {}
-    const nextBtn = typeof document !== 'undefined' ? document.querySelector?.('[data-testid="control-button-skip-forward"]') : null;
-    if (nextBtn && !nextBtn.disabled) {
-      try { nextBtn.click(); } catch {}
+    const player = harmonyPlayer || harmonyController;
+    const clickNextDom = () => {
+      const nextBtn = typeof document !== 'undefined' ? document.querySelector?.('[data-testid="control-button-skip-forward"]') : null;
+      if (nextBtn && !nextBtn.disabled) {
+        try { nextBtn.click(); } catch {}
+      }
+    };
+    if (player && typeof player.nextTrack === 'function') {
+      try {
+        void Promise.resolve(player.nextTrack()).catch(() => clickNextDom());
+        return;
+      } catch {}
     }
+    clickNextDom();
   }
   function applyMediaSettings(el) {
     if (!el || isCanvasVideo(el)) return;
@@ -629,7 +709,7 @@
   };
 
   // What the web player shows in its bottom bar: read-only, display fields only.
-  const testid = id => document.querySelector?.('[data-testid="' + id + '"]') ?? null;
+  const testid = id => (typeof document !== 'undefined' ? (document.querySelector?.('[data-testid="' + id + '"]') ?? null) : null);
   const clip = value => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 300) : '';
   const clock = value => {
     const parts = clip(value).replace(/^-/, '').split(':');
@@ -668,6 +748,24 @@
     } catch {}
     return 0;
   }
+  function harmonyServerNowMs(rawTs) {
+    // Spotify stores _state.timestamp in server epoch (_serverTime.getApproximate()), not Date.now();
+    // mixing them injects the user's PC clock skew directly into playback position and lyrics sync.
+    for (const host of [harmonyController, harmonyPlayer?._controller, harmonyPlayer]) {
+      const srv = host?._serverTime;
+      if (!srv || typeof srv.getApproximate !== 'function') continue;
+      if ('_serverTimeFetchedAt' in srv && (srv._serverTimeFetchedAt === null || srv._serverTimeFetchedAt === undefined)) continue;
+      if ('_serverTime' in srv && !Number.isFinite(Number(srv._serverTime))) continue;
+      try {
+        const now = Number(srv.getApproximate());
+        if (Number.isFinite(now) && now > 0) return now;
+      } catch {}
+    }
+    if (lastHarmonyClock && lastHarmonyClock.ts === rawTs) {
+      return rawTs + Math.max(0, Date.now() - lastHarmonyClock.localAt);
+    }
+    return Date.now();
+  }
   function harmonyPositionSec() {
     try {
       const st = harmonyState();
@@ -675,9 +773,10 @@
       const posMs = Number(st.position ?? st.position_as_of_timestamp);
       if (!Number.isFinite(posMs) || posMs < 0) return null;
       const durMs = Number(st.duration);
-      if (!st.paused && !st.isPaused && !st.loading && Number(st.timestamp) > 0) {
+      const rawTs = Number(st.timestamp);
+      if (!st.paused && !st.isPaused && !st.loading && rawTs > 0) {
         const speed = Number(st.playback_speed) > 0 ? Number(st.playback_speed) : 1;
-        const elapsed = Math.max(0, (Date.now() - Number(st.timestamp)) * speed);
+        const elapsed = Math.max(0, (harmonyServerNowMs(rawTs) - rawTs) * speed);
         const advanced = posMs + elapsed;
         return (Number.isFinite(durMs) && durMs > 0 ? Math.min(durMs, advanced) : advanced) / 1000;
       }
@@ -2262,57 +2361,153 @@
     } catch {}
   }
 
-  async function tryHarmonyPlay(trackId, startAt) {
-    const uri = `spotify:track:${trackId}`;
-    const ms = startAt > 0 ? Math.round(startAt * 1000) : 0;
-    if (spotifyPlayerApi && typeof spotifyPlayerApi.play === 'function') {
-      try {
-        const ctx = { uri };
-        const origin = { featureIdentifier: 'track' };
-        const opts = ms > 0 ? { seekTo: ms } : {};
-        await spotifyPlayerApi.play(ctx, origin, opts);
-        counters.lastPlayMethod = 'playerApi.play';
-        counters.lastPlayError = '';
-        return true;
-      } catch (err) {
-        counters.lastPlayError = String(err?.message || err || 'API_PLAY_ERR').slice(0, 120);
-      }
+  function resolveCollectionUri() {
+    const p = pfCache.profileAttributes?.me?.profile;
+    const rawUser = (typeof p?.username === 'string' && p.username.trim()) ||
+      (typeof p?.uri === 'string' && p.uri.startsWith('spotify:user:') ? p.uri.slice('spotify:user:'.length) : '');
+    if (rawUser && /^[A-Za-z0-9._-]+$/.test(rawUser)) {
+      return `spotify:user:${rawUser}:collection`;
     }
+    return '';
+  }
+
+  function resolveContextTarget(context) {
+    if (!context || typeof context !== 'object') return '';
+    const ctx = typeof context.contextUri === 'string' ? context.contextUri.trim() : '';
+    if (ctx === 'spotify:collection:tracks') {
+      return resolveCollectionUri();
+    }
+    if (/^spotify:(?:playlist|album|artist):[A-Za-z0-9]{22}$/.test(ctx)) {
+      return ctx;
+    }
+    const albumId = typeof context.albumId === 'string' ? context.albumId.trim() : '';
+    if (/^[A-Za-z0-9]{22}$/.test(albumId)) {
+      return `spotify:album:${albumId}`;
+    }
+    return '';
+  }
+
+  async function tryPlayUriTarget(playUri, playOpts, methodName) {
     const ctrl = harmonyController || harmonyPlayer?._controller;
     const p = harmonyPlayer || harmonyController;
     const targetVol = desiredMuted ? 0 : Math.min(1, Math.max(0, desiredVolume));
     try { (harmonyPlayer || ctrl)?.setVolume?.(targetVol); } catch {}
     try { (harmonyPlayer || ctrl)?.setMuted?.(Boolean(desiredMuted)); } catch {}
     for (const el of elements()) applyMediaSettings(el);
-    const playOpts = { ...(ms > 0 ? { initialOffset: ms, seekTo: ms } : {}), playOrigin: { featureIdentifier: 'web-player' } };
+
+    if (harmonyPlayer && typeof harmonyPlayer.playURI === 'function') {
+      try {
+        await harmonyPlayer.playURI(playUri, null, playOpts);
+        counters.lastPlayMethod = methodName;
+        counters.lastPlayError = '';
+        return true;
+      } catch (err) {
+        const msg = String(err?.message || err || 'HARMONY_URI_ERR').slice(0, 120);
+        counters.lastPlayError = msg;
+        pushDiag(`${methodName} failed: ${msg}`);
+        return false;
+      }
+    }
+
     if (harmonyPlayer && typeof harmonyPlayer._canStartNewContext === 'function') {
-      try { await harmonyPlayer._canStartNewContext(uri); } catch {}
+      try { await harmonyPlayer._canStartNewContext(null); } catch {}
     }
     if (harmonyPlayer?._autoActivateElement && typeof harmonyPlayer?._activateElement === 'function') {
       try { harmonyPlayer._activateElement(); } catch {}
     }
-    for (const target of [ctrl, harmonyPlayer]) {
-      if (target && typeof target.playURI === 'function') {
-        try {
-          await target.playURI(uri, undefined, playOpts);
-          counters.lastPlayMethod = 'harmony.playURI';
-          counters.lastPlayError = '';
-          return true;
-        } catch (err) {
-          counters.lastPlayError = String(err?.message || err || 'PLAY_URI_ERR').slice(0, 120);
-        }
+
+    if (ctrl && typeof ctrl.playURI === 'function') {
+      try {
+        await ctrl.playURI(playUri, undefined, playOpts);
+        counters.lastPlayMethod = methodName;
+        counters.lastPlayError = '';
+        return true;
+      } catch (err) {
+        const msg = String(err?.message || err || 'PLAY_URI_ERR').slice(0, 120);
+        counters.lastPlayError = msg;
+        pushDiag(`${methodName}(ctrl) failed: ${msg}`);
       }
     }
-    if (p && typeof p.playTracks === 'function') {
+
+    if (playUri.startsWith('spotify:track:') && p && typeof p.playTracks === 'function') {
       try {
-        await p.playTracks([uri], uri, playOpts);
+        await p.playTracks([playUri], null, { ...playOpts, contextURI: playUri, trackURI: playUri, index: 0 });
         counters.lastPlayMethod = 'harmony.playTracks';
         counters.lastPlayError = '';
         return true;
       } catch (err) {
-        counters.lastPlayError = String(err?.message || err || 'PLAY_TRACKS_ERR').slice(0, 120);
+        const msg = String(err?.message || err || 'PLAY_TRACKS_ERR').slice(0, 120);
+        counters.lastPlayError = msg;
+        pushDiag(`harmony.playTracks failed: ${msg}`);
       }
     }
+    return false;
+  }
+
+  async function tryHarmonyPlay(trackId, startAt, context) {
+    const uri = `spotify:track:${trackId}`;
+    const ms = startAt > 0 ? Math.round(startAt * 1000) : 0;
+    const baseOpts = {
+      ...(ms > 0 ? { initialOffset: ms, seekTo: ms } : {}),
+      shuffle: false,
+      repeatMode: 0,
+      playOrigin: { featureIdentifier: 'track' },
+    };
+    const ctxUri = resolveContextTarget(context);
+    const trackUid = typeof context?.trackUid === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(context.trackUid) ? context.trackUid : '';
+    const preferContext = context?.preferContext === true && Boolean(ctxUri);
+
+    const playSingle = async () => {
+      if (spotifyPlayerApi && typeof spotifyPlayerApi.play === 'function') {
+        try {
+          const ctx = { uri };
+          const origin = { featureIdentifier: 'track' };
+          const opts = { ...(ms > 0 ? { seekTo: ms } : {}), shuffle: false };
+          await spotifyPlayerApi.play(ctx, origin, opts);
+          counters.lastPlayMethod = 'playerApi.play';
+          counters.lastPlayError = '';
+          return true;
+        } catch (err) {
+          const msg = String(err?.message || err || 'API_PLAY_ERR').slice(0, 120);
+          counters.lastPlayError = msg;
+          pushDiag(`playerApi.play failed: ${msg}`);
+        }
+      }
+      return await tryPlayUriTarget(uri, baseOpts, 'harmony.playURI');
+    };
+
+    const playInContext = async () => {
+      if (!ctxUri) return false;
+      const feature = ctxUri.startsWith('spotify:album:') ? 'album' : ctxUri.includes(':collection') ? 'collection' : 'playlist';
+      if (spotifyPlayerApi && typeof spotifyPlayerApi.play === 'function') {
+        try {
+          const skipTo = trackUid ? { uri, uid: trackUid } : { uri };
+          await spotifyPlayerApi.play({ uri: ctxUri }, { featureIdentifier: feature }, { ...(ms > 0 ? { seekTo: ms } : {}), shuffle: false, skipTo });
+          counters.lastPlayMethod = 'playerApi.contextPlay';
+          counters.lastPlayError = '';
+          return true;
+        } catch (err) {
+          const msg = String(err?.message || err || 'API_CTX_ERR').slice(0, 120);
+          counters.lastPlayError = msg;
+          pushDiag(`playerApi.contextPlay failed: ${msg}`);
+        }
+      }
+      const ctxOpts = {
+        ...baseOpts,
+        contextURI: ctxUri,
+        trackURI: uri,
+        ...(trackUid ? { trackUID: trackUid } : {}),
+        playOrigin: { featureIdentifier: feature },
+      };
+      return await tryPlayUriTarget(ctxUri, ctxOpts, 'harmony.contextPlayURI');
+    };
+
+    if (preferContext) {
+      if (await playInContext()) return true;
+      return await playSingle();
+    }
+    if (await playSingle()) return true;
+    if (ctxUri) return await playInContext();
     return false;
   }
 
@@ -2347,8 +2542,12 @@
     return setRange(range('playback-progressbar'), ms);
   }
 
-  async function startTrackPlayback(trackId, startAt) {
+  async function startTrackPlayback(trackId, startAt, context) {
     desiredTrackId = trackId;
+    counters.expectedTrackId = trackId;
+    counters.actualTrackId = '';
+    counters.lastPlayError = '';
+    counters.lastPlaybackError = '';
     const runId = ++playSeq;
     counters.startPending = true;
     const isCurrent = () => playSeq === runId && desiredTrackId === trackId;
@@ -2356,7 +2555,8 @@
     const settleSeek = () => {
       if (startAt > 0.5) {
         const ms = Math.round(startAt * 1000);
-        setTimeout(() => {
+        clearTimeout(seekTimer);
+        seekTimer = setTimeout(() => {
           if (!isCurrent()) return;
           const cur = harmonyPositionSec();
           if (cur !== null && Math.abs(cur - startAt) <= 0.9) return;
@@ -2374,7 +2574,8 @@
       lastSeekAt = 0;
     }
     clearTimeout(playTimer);
-    if (await tryHarmonyPlay(trackId, startAt)) {
+    clearTimeout(seekTimer);
+    if (await tryHarmonyPlay(trackId, startAt, context)) {
       clearPending();
       settleSeek();
       return true;
@@ -2387,9 +2588,14 @@
       if (!isCurrent()) return;
       playTimer = setTimeout(tryClickPlay, ms);
     };
+    const findTrackPagePlayBtn = path => {
+      if (typeof document === 'undefined' || window.location?.pathname !== path) return null;
+      return document.querySelector?.('[data-testid="action-bar-row"] [data-testid="play-button"]');
+    };
     const tryClickPlay = () => {
       if (!isCurrent()) return;
       if (++attempts > 60) {
+        pushDiag(`play timeout for ${trackId} (hasHarmony=${Boolean(harmonyPlayer || harmonyController)} err=${counters.lastPlayError || 'none'})`);
         clearPending();
         return;
       }
@@ -2398,20 +2604,21 @@
         return;
       }
       if (spotifyPlayerApi || harmonyPlayer || harmonyController) {
-        void tryHarmonyPlay(trackId, startAt).then(ok => {
+        void tryHarmonyPlay(trackId, startAt, context).then(ok => {
           if (!isCurrent()) return;
           if (ok) {
             clearPending();
             settleSeek();
             return;
           }
+          const path = `/track/${trackId}`;
           if (attempts >= 3 && !navigated) {
             navigated = true;
-            const path = `/track/${trackId}`;
+            pushDiag(`fallback dom nav -> ${path} (err=${counters.lastPlayError || 'none'})`);
             if (window.location?.pathname !== path) spaNavigate(path);
           }
           if (navigated && !clickedDomPlay) {
-            const btn = typeof document !== 'undefined' ? document.querySelector?.('[data-testid="action-bar-row"] [data-testid="play-button"], main [data-testid="play-button"]') : null;
+            const btn = findTrackPagePlayBtn(path);
             if (btn && !btn.disabled) {
               clickedDomPlay = true;
               btn.click();
@@ -2422,17 +2629,21 @@
         });
         return;
       }
+      const path = `/track/${trackId}`;
       if (!navigated) {
         navigated = true;
-        const path = `/track/${trackId}`;
+        pushDiag(`no harmony, dom nav -> ${path}`);
         if (window.location?.pathname !== path) spaNavigate(path);
       }
-      const btn = typeof document !== 'undefined' ? document.querySelector?.('[data-testid="action-bar-row"] [data-testid="play-button"], main [data-testid="play-button"]') : null;
+      const btn = findTrackPagePlayBtn(path);
       if (btn && !btn.disabled && !clickedDomPlay) {
         clickedDomPlay = true;
         btn.click();
         counters.lastPlayMethod = 'dom.playButton';
-        if (startAt > 1) setTimeout(() => { if (isCurrent()) setRange(range('playback-progressbar'), Math.round(startAt * 1000)); }, 500);
+        if (startAt > 1) {
+          clearTimeout(seekTimer);
+          seekTimer = setTimeout(() => { if (isCurrent()) setRange(range('playback-progressbar'), Math.round(startAt * 1000)); }, 500);
+        }
       }
       scheduleNext(140);
     };
@@ -2443,15 +2654,16 @@
   Object.defineProperty(window, '__nocturneSpotifyLab', { value: Object.freeze({
     configure: enabled => { counters.enabled = enabled === true; },
     stats: () => ({ ...counters, hasApi: Boolean(spotifyPlayerApi), hasHarmony: Boolean(harmonyPlayer || harmonyController) }),
+    takeDiagnostics: () => diagnostics.splice(0, diagnostics.length),
     playing,
     nowPlaying: () => { try { return nowPlaying(); } catch { return null; } },
     account: () => testid('login-button') || testid('signup-button') ? 'out' : testid('user-widget-link') || auth.token ? 'in' : null,
-    playTrack: (trackId, startAt, vol, muted) => {
+    playTrack: (trackId, startAt, vol, muted, context) => {
       if (typeof trackId !== 'string' || !/^[A-Za-z0-9]{22}$/.test(trackId)) return false;
       if (typeof vol === 'number' && Number.isFinite(vol)) desiredVolume = Math.min(1, Math.max(0, vol));
       if (typeof muted === 'boolean') desiredMuted = muted;
       for (const el of elements()) applyMediaSettings(el);
-      void startTrackPlayback(trackId, Number(startAt) || 0);
+      void startTrackPlayback(trackId, Number(startAt) || 0, context);
       return true;
     },
     setVolume: (vol, muted) => {
@@ -2486,6 +2698,7 @@
         desiredTrackId = '';
         playSeq++;
         clearTimeout(playTimer);
+        clearTimeout(seekTimer);
         counters.startPending = false;
         if (!wasPlaying) {
           if (wasPending) {

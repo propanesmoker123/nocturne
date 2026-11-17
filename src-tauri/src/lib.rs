@@ -104,6 +104,7 @@ pub fn run() {
             journal::journal_tail,
             journal::journal_open_dir,
             feedback::send_feedback,
+            feedback::fetch_notifications,
             app_quit,
         ])
         .on_window_event(|window, event| match event {

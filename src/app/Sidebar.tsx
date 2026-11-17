@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Bug, Clock3, Compass, Disc3, Heart, Home, LibraryBig, ListMusic, Plus, Rss, Search, Settings, Users } from 'lucide-react'
+import { Bell, Bug, Clock3, Compass, Disc3, Heart, Home, LibraryBig, ListMusic, Plus, Rss, Search, Settings, Users } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton } from '../components/controls'
@@ -21,6 +21,7 @@ import { useSheet } from './sheetStore'
 import { myPlaylistsKey, playlistMenuItems } from './trackActions'
 import { showMenu } from './menu'
 import { useUpdates } from '../lib/updates'
+import { unreadNotificationCount, useNotifications } from '../lib/notifications'
 import { Spinner } from '../components/controls'
 
 const ic = { size: 18, strokeWidth: 2 } as const
@@ -265,6 +266,8 @@ export function Sidebar() {
   const service = useService((x) => x.current)
   const mine = useRouter((r) => routeSection(r.route) === 'mine')
   const feedbackOpen = useSheet((x) => x.sheet?.kind === 'feedback')
+  const notificationsOpen = useSheet((x) => x.sheet?.kind === 'notifications')
+  const unreadCount = useNotifications((n) => unreadNotificationCount(n.items, n.seenIds))
   // the account of the service picked on the rail
   const user = accountFor(service, vkUser, scUser, spUser)
   return (
@@ -286,15 +289,28 @@ export function Sidebar() {
         </button>
         <div className={s.footerActions}>
           <IconButton
-            size={30}
+            size={28}
+            active={notificationsOpen}
+            className={s.bellBtn}
+            data-unread={unreadCount > 0 ? 'true' : undefined}
+            label={unreadCount > 0 ? `Уведомления: ${unreadCount} непрочитанных` : 'Уведомления и обновления'}
+            onClick={() => useNotifications.getState().openSheet()}
+          >
+            <span className={s.bellWrap}>
+              <Bell size={16} strokeWidth={2} />
+              {unreadCount > 0 && <span className={s.bellBadge}>{unreadCount > 9 ? '9+' : unreadCount}</span>}
+            </span>
+          </IconButton>
+          <IconButton
+            size={28}
             active={feedbackOpen}
             label="Обратная связь: баг или идея"
             onClick={() => useSheet.getState().open({ kind: 'feedback', defaultKind: 'bug' })}
           >
-            <Bug size={17} strokeWidth={2} />
+            <Bug size={16} strokeWidth={2} />
           </IconButton>
-          <IconButton size={30} label="Настройки" onClick={() => push({ name: 'settings' })}>
-            <Settings size={17} strokeWidth={2} />
+          <IconButton size={28} label="Настройки" onClick={() => push({ name: 'settings' })}>
+            <Settings size={16} strokeWidth={2} />
           </IconButton>
         </div>
       </div>

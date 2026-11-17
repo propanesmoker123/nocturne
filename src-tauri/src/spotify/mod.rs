@@ -66,6 +66,12 @@ fn main_only(window: &Webview) -> Result<(), String> {
     Ok(())
 }
 fn script_error(_: impl std::fmt::Display) -> String { "Страница Spotify не ответила. Попробуйте обновить её.".into() }
+fn flush_diag(items: Option<&Value>) {
+    let Some(list) = items.and_then(|v| v.as_array()) else { return };
+    for item in list.iter().filter_map(|v| v.as_str()).take(10) {
+        crate::journal::write("spotify", item);
+    }
+}
 async fn eval(view: &Webview, script: &str) -> Result<String, String> {
     let (tx, rx) = oneshot::channel();
     let slot = Mutex::new(Some(tx));
@@ -283,19 +289,39 @@ pub async fn spotify_status(app: AppHandle, window: Webview, request: Option<Val
                     let start_at = req["startAt"].as_f64().unwrap_or(0.0).clamp(0.0, 86_400.0);
                     let vol_arg = req["volume"].as_f64().map(|v| v.clamp(0.0, 1.0).to_string()).unwrap_or_else(|| "null".into());
                     let muted_arg = req["muted"].as_bool().map(|m| m.to_string()).unwrap_or_else(|| "null".into());
+                    let context_uri = req["contextUri"].as_str().map(str::trim).filter(|s| rules::valid_context_uri(s));
+                    let album_id = req["albumId"].as_str().map(str::trim).filter(|s| rules::valid_spotify_id(s));
+                    let track_uid = req["trackUid"].as_str().map(str::trim).filter(|s| rules::valid_track_uid(s));
+                    let prefer_context = req["preferContext"].as_bool().unwrap_or(false);
+                    let context_arg = json!({
+                        "contextUri": context_uri,
+                        "albumId": album_id,
+                        "trackUid": track_uid,
+                        "preferContext": prefer_context,
+                    });
                     for _ in 0..12 {
                         let ready = eval(&view, "(() => { const s = window.__nocturneSpotifyLab?.stats(); return Boolean(s && (s.hasHarmony || s.hasApi)) || window.__nocturneSpotifyLab?.account() === 'out'; })()").await.unwrap_or_default();
                         if ready == "true" { break; }
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                    let raw = eval(&view, &format!("(() => {{ const ok = window.__nocturneSpotifyLab?.playTrack({}, {start_at}, {vol_arg}, {muted_arg}) ?? false; const st = window.__nocturneSpotifyLab?.stats() ?? {{}}; return {{ ok, drm: window.__nocturneSpotifyDrm ?? null, err: st.lastPlayError || '', method: st.lastPlayMethod || '' }}; }})()", serde_json::to_string(id).unwrap())).await?;
+                    let raw = eval(
+                        &view,
+                        &format!(
+                            "(() => {{ const ok = window.__nocturneSpotifyLab?.playTrack({}, {start_at}, {vol_arg}, {muted_arg}, {}) ?? false; const st = window.__nocturneSpotifyLab?.stats() ?? {{}}; const diag = window.__nocturneSpotifyLab?.takeDiagnostics?.() ?? []; return {{ ok, drm: window.__nocturneSpotifyDrm ?? null, hasHarmony: Boolean(st.hasHarmony), err: st.lastPlayError || '', method: st.lastPlayMethod || '', diag }}; }})()",
+                            serde_json::to_string(id).unwrap(),
+                            serde_json::to_string(&context_arg).unwrap()
+                        ),
+                    ).await?;
                     let res: Value = serde_json::from_str(&raw).map_err(script_error)?;
                     let ok = res["ok"].as_bool() == Some(true);
+                    flush_diag(res.get("diag"));
                     if res["drm"].as_bool() == Some(false) {
                         crate::journal::write("spotify", "play requested while Widevine DRM unavailable");
                     }
                     if !ok {
                         crate::journal::write("spotify", "playTrack rejected");
+                    } else if res["hasHarmony"].as_bool() == Some(false) {
+                        crate::journal::write("spotify", &format!("play requested without Harmony handle (method={})", res["method"].as_str().unwrap_or("")));
                     } else if let Some(err) = res["err"].as_str().filter(|s| !s.is_empty()) {
                         crate::journal::write("spotify", &format!("play notice: {err}"));
                     }
@@ -329,9 +355,12 @@ pub async fn spotify_status(app: AppHandle, window: Webview, request: Option<Val
     let raw = eval(&view, r#"(() => {
       const origin=location.origin;
       const phase=origin==='https://www.spotify.com' && location.pathname.includes('why-not-available')?'region':origin==='https://open.spotify.com'?'ready':['https://accounts.spotify.com','https://accounts.google.com','https://appleid.apple.com','https://idmsa.apple.com','https://www.facebook.com'].includes(origin)?'login':'loading';
-      return {open:true,phase,title:document.title.slice(0,160),drm:window.__nocturneSpotifyDrm??null,playing:window.__nocturneSpotifyLab?.playing()??null,nowPlaying:window.__nocturneSpotifyLab?.nowPlaying()??null,account:window.__nocturneSpotifyLab?.account()??null,...(window.__nocturneSpotifyLab?.stats()??{})};
+      const diag=window.__nocturneSpotifyLab?.takeDiagnostics?.()??[];
+      return {open:true,phase,title:document.title.slice(0,160),drm:window.__nocturneSpotifyDrm??null,playing:window.__nocturneSpotifyLab?.playing()??null,nowPlaying:window.__nocturneSpotifyLab?.nowPlaying()??null,account:window.__nocturneSpotifyLab?.account()??null,diag,...(window.__nocturneSpotifyLab?.stats()??{})};
     })()"#).await?;
     let mut status: Value = serde_json::from_str(&raw).map_err(script_error)?;
+    let diag = status.as_object_mut().and_then(|o| o.remove("diag"));
+    flush_diag(diag.as_ref());
     if status["phase"].as_str() == Some("ready") {
         st.ready.store(true, Ordering::Relaxed);
     }

@@ -138,6 +138,30 @@
   gap: 2px;
   margin-right: -4px;
 }
+.bellBtn[data-unread='true'] {
+  color: var(--accent-text);
+}
+.bellWrap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+.bellBadge {
+  position: absolute;
+  top: -5px;
+  right: -6px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3.5px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: #fff;
+  font: 700 9px/14px var(--font);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  box-shadow: 0 0 0 1.5px rgba(24, 24, 26, 0.92);
+  pointer-events: none;
+}
 .user {
   display: flex;
   align-items: center;

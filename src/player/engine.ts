@@ -1,12 +1,17 @@
 import Hls, { type ErrorData } from 'hls.js'
+import { journal } from '../lib/journal'
 import { invoke, isTauri } from '../lib/tauri'
 import { volumeToGain } from './logic'
 import { takePreloadedBlobUrl } from './preload'
 import { TauriLoader } from './tauriLoader'
 import { drmConfig, type ScPlaybackSource } from '../sc/playback'
 
-export type StreamOptions = Pick<ScPlaybackSource, 'drm' | 'waveformUrl'>
-export interface EngineSource extends StreamOptions { url: string; rawUrl?: string; hls: Hls | null }
+export interface StreamOptions extends Pick<ScPlaybackSource, 'drm' | 'waveformUrl'> {
+  spotifyContextUri?: string
+  spotifyAlbumId?: string
+  spotifyUid?: string
+}
+export interface EngineSource extends Pick<ScPlaybackSource, 'drm' | 'waveformUrl'> { url: string; rawUrl?: string; hls: Hls | null }
 
 export type EngineEvent = 'time' | 'state' | 'ended' | 'error' | 'loading' | 'buffered'
 
@@ -26,6 +31,12 @@ class Engine {
   private audioSeekTimer: ReturnType<typeof setTimeout> | null = null
   private audioSeekingPending = false
   private spotifyTrackId: string | null = null
+  private spotifyContextUri: string | undefined = undefined
+  private spotifyAlbumId: string | undefined = undefined
+  private spotifyUid: string | undefined = undefined
+  private spotifyRetriedWithContext = false
+  private spotifyMismatchLogged = false
+  private spotifyLastLoggedErr = ''
   private spotifyPos = 0
   private spotifyDur = 0
   private spotifyBuffered = 0
@@ -51,6 +62,8 @@ class Engine {
   lastError = ''
   /** Told about every new source, so the waveform can tap the same stream. */
   onSource: ((src: EngineSource) => void) | null = null
+  /** Called when Spotify started playing a different track than requested (e.g. Free shuffle/pick cap). */
+  onSpotifyMismatch: ((info: { requestedId: string; actualId: string }) => void) | null = null
 
   constructor() {
     this.audio = new Audio()
@@ -164,6 +177,12 @@ class Engine {
     this.audioSeekTarget = null
     this.audioSeekingPending = false
     this.spotifyTrackId = null
+    this.spotifyContextUri = undefined
+    this.spotifyAlbumId = undefined
+    this.spotifyUid = undefined
+    this.spotifyRetriedWithContext = false
+    this.spotifyMismatchLogged = false
+    this.spotifyLastLoggedErr = ''
     this.spotifyPos = 0
     this.spotifyDur = 0
     this.spotifyBuffered = 0
@@ -187,7 +206,7 @@ class Engine {
     this.audio.load()
   }
 
-  private async startSpotifyTrack(id: string, startAt: number) {
+  private async startSpotifyTrack(id: string, startAt: number, preferContext = false) {
     if (!isTauri() || this.spotifyTrackId !== id) return
     const gen = ++this.spotifyPlayGen
     this.spotifyWaiting = true
@@ -209,6 +228,10 @@ class Engine {
           startAt,
           volume: this.audio.volume,
           muted: this.audio.muted,
+          ...(this.spotifyContextUri ? { contextUri: this.spotifyContextUri } : {}),
+          ...(this.spotifyAlbumId ? { albumId: this.spotifyAlbumId } : {}),
+          ...(this.spotifyUid ? { trackUid: this.spotifyUid } : {}),
+          ...(preferContext ? { preferContext: true } : {}),
         },
       })
       if (this.spotifyTrackId !== id || this.spotifyPlayGen !== gen) return
@@ -274,9 +297,32 @@ class Engine {
       const activeNp = staleSwitch ? null : np
       const rawPlaying = activeNp ? activeNp.paused === false : (staleSwitch ? false : raw?.playing === true)
 
-      if (npTrackId === id || (!staleSwitch && rawPlaying && !startPending && npTrackId && startAge > 3500 && !this.spotifyActualId)) {
+      const playErr = typeof raw?.lastPlayError === 'string' && raw.lastPlayError ? raw.lastPlayError : ''
+      if (!startPending && playErr && playErr !== this.spotifyLastLoggedErr) {
+        this.spotifyLastLoggedErr = playErr
+        journal('spotify', `playback warning req=${id} err=${playErr}`)
+      }
+
+      if (npTrackId === id) {
         this.spotifyMatchedId = true
         this.spotifyActualId = npTrackId
+      } else if (!staleSwitch && rawPlaying && !startPending && npTrackId && startAge > 3500 && !this.spotifyActualId) {
+        if ((this.spotifyContextUri || this.spotifyAlbumId) && !this.spotifyRetriedWithContext) {
+          this.spotifyRetriedWithContext = true
+          journal('spotify', `retrying with context after mismatch req=${id} actual=${npTrackId}`)
+          void this.startSpotifyTrack(id, this.spotifyPos || 0, true)
+          return
+        }
+        this.spotifyMatchedId = true
+        this.spotifyActualId = npTrackId
+        if (!this.spotifyMismatchLogged) {
+          this.spotifyMismatchLogged = true
+          journal(
+            'spotify',
+            `track mismatch req=${id} actual=${npTrackId} method=${String(raw?.lastPlayMethod ?? '')} shuffle=${String(raw?.lastShuffle ?? '')} capped=${String(raw?.capped === true)}`,
+          )
+          this.onSpotifyMismatch?.({ requestedId: id, actualId: npTrackId })
+        }
       }
       if (this.spotifyMatchedId && this.spotifyActualId && npTrackId && npTrackId !== this.spotifyActualId && this.spotifyDur > 15 && this.spotifyPos >= this.spotifyDur - 8) {
         this.spotifyStarted = false
@@ -377,9 +423,12 @@ class Engine {
     if (isSpotify) {
       const id = url.slice('spotify:track:'.length).trim()
       this.spotifyTrackId = id
+      this.spotifyContextUri = options?.spotifyContextUri
+      this.spotifyAlbumId = options?.spotifyAlbumId
+      this.spotifyUid = options?.spotifyUid
       this.spotifyPos = startAt
       this.spotifyWaiting = autoplay
-      this.onSource?.({ url, hls: null, ...options })
+      this.onSource?.({ url, hls: null, drm: options?.drm, waveformUrl: options?.waveformUrl })
       this.emit('loading')
       this.emit('time')
       if (isTauri()) {

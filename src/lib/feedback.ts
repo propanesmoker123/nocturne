@@ -1,3 +1,4 @@
+import { useNotifications } from './notifications'
 import { invoke, isTauri } from './tauri'
 
 export type FeedbackKind = 'bug' | 'idea'
@@ -19,4 +20,5 @@ export async function sendFeedback(input: FeedbackSubmission): Promise<void> {
     contact: input.contact?.trim() || null,
     includeLog: input.includeLog,
   })
+  void useNotifications.getState().refresh(true)
 }

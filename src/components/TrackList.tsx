@@ -6,7 +6,7 @@ import { ServiceLogo } from './ServiceLogo'
 import { useScroller } from '../app/scroller'
 import { openTrackMenu } from '../app/trackActions'
 import { formatTime } from '../lib/format'
-import { usePlayer } from '../player/store'
+import { usePlayer, type QueueSource } from '../player/store'
 import { unplayableHint, useScSession } from '../sc/session'
 import { serviceOf, type Playlist, type Track } from '../vk/models'
 import { Artwork } from './Artwork'
@@ -155,6 +155,7 @@ interface TrackListProps {
   tracks: Track[]
   /** Queue that playback starts from; defaults to `tracks`. */
   queueSource?: Track[]
+  queueMeta?: QueueSource
   playlist?: Playlist
   showAlbum?: boolean
   showHeader?: boolean
@@ -169,7 +170,7 @@ interface TrackListProps {
 }
 
 /** Apple Music-style song table, virtualized against the page scroller. */
-export function TrackList({ tracks, queueSource, playlist, showAlbum = true, showHeader = true, markService = false, menuExtra, onReorder, note }: TrackListProps) {
+export function TrackList({ tracks, queueSource, queueMeta, playlist, showAlbum = true, showHeader = true, markService = false, menuExtra, onReorder, note }: TrackListProps) {
   const scroller = useScroller()
   const listRef = useRef<HTMLDivElement>(null)
   const [margin, setMargin] = useState(0)
@@ -195,13 +196,18 @@ export function TrackList({ tracks, queueSource, playlist, showAlbum = true, sho
     scrollMargin: margin,
   })
 
+  const resolvedMeta: QueueSource | undefined =
+    queueMeta ??
+    (playlist?.service === 'spotify' && playlist.spotifyId
+      ? { kind: 'list', service: 'spotify', label: playlist.title, contextUri: `spotify:${playlist.type}:${playlist.spotifyId}` }
+      : undefined)
   const source = queueSource ?? tracks
   const onPlay = (index: number) => {
     const t = tracks[index]
     // the track that is already on pauses or resumes instead of starting over
     if (t.key === usePlayer.getState().current?.key) return usePlayer.getState().toggle()
     const at = source === tracks ? index : source.findIndex((x) => x.key === t.key)
-    usePlayer.getState().playList(source, Math.max(0, at))
+    usePlayer.getState().playList(source, Math.max(0, at), resolvedMeta ? { source: resolvedMeta } : undefined)
   }
   const onMenu = (e: MouseEvent, track: Track, index: number) => openTrackMenu(e, track, { list: source, index, playlist, extra: menuExtra?.(track, index) })
   const third = showAlbum || !!note

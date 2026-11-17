@@ -1599,4 +1599,189 @@ describe('bounded Spotify ad experiment', () => {
     expect(lab.stats().startPending).toBe(false)
     expect(clicks).toBe(1)
   })
+
+  test('plays via harmonyPlayer.playURI with local device (null) and shuffle=false, falling back to context playURI and collecting diagnostics', async () => {
+    const calls: Array<{ fn: string; uri: unknown; dev: unknown; opts: Record<string, unknown> }> = []
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    const { win } = fixture()
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): { lastPlayMethod?: string; capped?: boolean; disallowNext?: boolean; lastShuffle?: boolean | null }
+      takeDiagnostics(): string[]
+      control(action: string): boolean
+      playTrack(
+        id: string,
+        startAt?: number,
+        vol?: number,
+        muted?: boolean,
+        context?: { contextUri?: string; albumId?: string; trackUid?: string; preferContext?: boolean },
+      ): boolean
+    }
+
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    host._harmony = {
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      playURI: async (uri: unknown, dev: unknown, opts: Record<string, unknown>) => {
+        calls.push({ fn: 'harmony.playURI', uri, dev, opts })
+        if (uri === 'spotify:track:4cOdK2wGLETKBW3PvgPWqT') {
+          throw new Error('SINGLE_TRACK_BLOCKED')
+        }
+      },
+      playTracks: async (uris: unknown, dev: unknown, opts: Record<string, unknown>) => {
+        calls.push({ fn: 'harmony.playTracks', uri: uris, dev, opts })
+      },
+      _controller: {
+        playURI: async (uri: unknown, dev: unknown, opts: Record<string, unknown>) => {
+          calls.push({ fn: 'ctrl.playURI', uri, dev, opts })
+        },
+      },
+    }
+
+    expect(
+      lab.playTrack('4cOdK2wGLETKBW3PvgPWqT', 12, 0.7, false, {
+        contextUri: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M',
+        trackUid: 'uid123',
+      }),
+    ).toBe(true)
+
+    await vi.waitFor(() => expect(calls.some((c) => c.uri === 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M')).toBe(true), { timeout: 1500 })
+    // Single-track attempt tried harmony.playURI with local device `null` and explicit `shuffle: false`.
+    expect(calls[0]).toMatchObject({
+      fn: 'harmony.playURI',
+      uri: 'spotify:track:4cOdK2wGLETKBW3PvgPWqT',
+      dev: null,
+      opts: { shuffle: false, repeatMode: 0, initialOffset: 12000 },
+    })
+    // Rejected single-track play falls back directly to playlist context + skipTo trackURI/trackUID.
+    const ctxCall = calls.find((c) => c.uri === 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M')
+    expect(ctxCall).toMatchObject({
+      fn: 'harmony.playURI',
+      dev: null,
+      opts: {
+        contextURI: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M',
+        trackURI: 'spotify:track:4cOdK2wGLETKBW3PvgPWqT',
+        trackUID: 'uid123',
+        shuffle: false,
+      },
+    })
+    expect(lab.stats().lastPlayMethod).toBe('harmony.contextPlayURI')
+
+    for (const fn of listeners.get('playback_capped') ?? []) fn({})
+    for (const fn of listeners.get('state_changed') ?? []) {
+      fn({ data: { state: { shuffle_mode: true, disallows: { skipping_next: true } } } })
+    }
+    expect(lab.stats().capped).toBe(true)
+    expect(lab.stats().disallowNext).toBe(true)
+    expect(lab.stats().lastShuffle).toBe(true)
+    const diag = lab.takeDiagnostics()
+    expect(diag.some((line) => line.includes('SINGLE_TRACK_BLOCKED'))).toBe(true)
+    expect(diag.some((line) => line.includes('playback_capped'))).toBe(true)
+    expect(lab.takeDiagnostics()).toEqual([])
+    lab.control('pause')
+  })
+
+  test('dom fallback never clicks a pre-navigation Home play button before /track/<id> renders', async () => {
+    let homeClicks = 0
+    let trackClicks = 0
+    const loc = { origin: 'https://open.spotify.com', pathname: '/' }
+    const doc = {
+      querySelector: (sel: string) => {
+        if (sel === '[data-testid="action-bar-row"] [data-testid="play-button"]' && loc.pathname === '/track/4cOdK2wGLETKBW3PvgPWqT') {
+          return { disabled: false, click: () => { trackClicks++ } }
+        }
+        if (sel.includes('main [data-testid="play-button"]') && loc.pathname === '/') {
+          return { disabled: false, click: () => { homeClicks++ } }
+        }
+        return null
+      },
+      querySelectorAll: () => [],
+    }
+    const history = {
+      state: { idx: 0 },
+      pushState: (_s: unknown, _t: string, url: string) => {
+        // Delay DOM route render slightly to simulate real SPA navigation.
+        setTimeout(() => { loc.pathname = url }, 120)
+      },
+    }
+    const { win } = fixture({}, undefined, undefined, {
+      location: loc,
+      document: doc,
+      history,
+      PopStateEvent: class extends Event {},
+      dispatchEvent: () => true,
+    })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      playTrack(id: string, startAt?: number, vol?: number, muted?: boolean): boolean
+      control(action: string): boolean
+    }
+    expect(lab.playTrack('4cOdK2wGLETKBW3PvgPWqT', 0, 0.5, false)).toBe(true)
+    await vi.waitFor(() => expect(trackClicks).toBe(1), { timeout: 1500 })
+    expect(homeClicks).toBe(0)
+    lab.control('pause')
+  })
+
+  test('harmonyPositionSec uses Spotify _serverTime (and state_changed anchor) so PC clock skew never jumps lyrics/progress forward', () => {
+    const skewMs = 3350
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    const mediaSession = { playbackState: 'playing', metadata: { title: 'CURSED', artist: 'WesGhost', album: 'Single', artwork: [] } }
+    const doc = {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    }
+    const { win } = fixture({}, undefined, undefined, { document: doc, navigator: { mediaSession } })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): Record<string, unknown>
+      nowPlaying(): { position: number; duration: number } | null
+    }
+
+    const baseLocal = Date.now()
+    let srvNow = baseLocal - skewMs
+    const hState = {
+      duration: 140000,
+      position: 80110,
+      timestamp: srvNow,
+      paused: false,
+      loading: false,
+      playback_speed: 1,
+      track_window: { current_track: { uri: 'spotify:track:2gk9ByA1PmGJxdCs5s4kyQ' } },
+    }
+    const srvClock: { _serverTime: number; _serverTimeFetchedAt: number | null; getApproximate: () => number } = {
+      _serverTime: srvNow,
+      _serverTimeFetchedAt: 1000,
+      getApproximate: () => srvNow,
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    host._harmony = {
+      playTracks: async () => {},
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      _controller: {
+        _state: hState,
+        _serverTime: srvClock,
+        playURI: async () => {},
+      },
+    }
+
+    // 1. Primary path: synced _serverTime prevents +3.35s local PC clock jump when playback resumes.
+    const np0 = lab.nowPlaying()
+    expect(np0?.position).toBeCloseTo(80.11, 1)
+    srvNow += 250
+    expect(lab.nowPlaying()?.position).toBeCloseTo(80.36, 1)
+
+    // 2. Fallback path: if _serverTime has not synced yet (_serverTimeFetchedAt === null), state_changed anchors timestamp locally.
+    srvClock._serverTimeFetchedAt = null
+    const freshSrvTs = Date.now() - skewMs
+    hState.position = 80110
+    hState.timestamp = freshSrvTs
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    const npAnchor = lab.nowPlaying()
+    expect(npAnchor?.position).toBeGreaterThanOrEqual(80.1)
+    expect(npAnchor?.position).toBeLessThan(80.5)
+  })
 })

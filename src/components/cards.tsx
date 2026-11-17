@@ -114,7 +114,16 @@ export async function playPlaylist(p: Playlist, shuffle = false) {
     }
     usePlayer.getState().playList(items, 0, {
       shuffle,
-      source: { kind: 'list', ...(isSp ? { service: 'spotify' as const } : {}), label: p.title },
+      source: {
+        kind: 'list',
+        ...(isSp
+          ? {
+              service: 'spotify' as const,
+              ...(p.spotifyId ? { contextUri: `spotify:${p.type}:${p.spotifyId}` } : {}),
+            }
+          : {}),
+        label: p.title,
+      },
     })
   } catch (e) {
     toast(isSp ? spotifyError(e) : isSc ? describeScError(e) : describeError(e), 'error')

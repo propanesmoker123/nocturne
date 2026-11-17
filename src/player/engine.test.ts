@@ -434,3 +434,68 @@ test('does not drop <audio> position backward onto an earlier HLS keyframe aroun
   audio.currentTime = 32.15
   expect(engine.getPlaybackPositionMs()).toBe(32150)
 })
+
+test('retries Spotify track with contextUri on track mismatch and reports persistent mismatch once', async () => {
+  const playRequests: Array<Record<string, unknown>> = []
+  const invokeMock = h.invoke as unknown as {
+    getMockImplementation: () => ((...a: unknown[]) => unknown) | undefined
+    mockImplementation: (fn: (...a: unknown[]) => unknown) => void
+  }
+  const origImpl = invokeMock.getMockImplementation()
+  invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+    const req = (args as { request?: Record<string, unknown> } | undefined)?.request
+    if (cmd === 'spotify_status' && req?.kind === 'play') {
+      playRequests.push(req)
+      return { ok: true }
+    }
+    if (cmd === 'spotify_status') {
+      return {
+        open: true,
+        phase: 'ready',
+        playing: true,
+        startPending: false,
+        lastPlayMethod: 'harmony.playURI',
+        lastShuffle: false,
+        capped: false,
+        nowPlaying: {
+          trackId: '9999999999999999999999',
+          isAd: false,
+          paused: false,
+          title: 'Random Song',
+          artist: 'Someone',
+          album: 'Radio',
+          position: 4.2,
+          duration: 190,
+          buffered: 25,
+        },
+      }
+    }
+    return true
+  })
+
+  const mismatches: Array<{ requestedId: string; actualId: string }> = []
+  const prevCb = engine.onSpotifyMismatch
+  engine.onSpotifyMismatch = (info) => mismatches.push(info)
+  try {
+    engine.load('spotify:track:4cOdK2wGLETKBW3PvgPWqT', 0, true, {
+      spotifyContextUri: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M',
+      spotifyAlbumId: '1111111111111111111111',
+      spotifyUid: 'uid-1',
+    })
+    await vi.advanceTimersByTimeAsync(4600)
+    expect(playRequests.length).toBe(2)
+    expect(playRequests[0].preferContext).toBeUndefined()
+    expect(playRequests[1]).toMatchObject({
+      contextUri: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M',
+      trackUid: 'uid-1',
+      preferContext: true,
+    })
+
+    await vi.advanceTimersByTimeAsync(4600)
+    expect(mismatches).toEqual([{ requestedId: '4cOdK2wGLETKBW3PvgPWqT', actualId: '9999999999999999999999' }])
+  } finally {
+    engine.onSpotifyMismatch = prevCb
+    engine.stop()
+    if (origImpl) invokeMock.mockImplementation(origImpl)
+  }
+})

@@ -19,6 +19,7 @@ import { startAlbumSync } from './albums/sync'
 import { startConnect } from './connect/runtime'
 import { startGlobalHotkeys } from './lib/globalHotkeys'
 import { journalUncaughtErrors } from './lib/journal'
+import { startNotificationChecks, useNotifications } from './lib/notifications'
 import { startServerTimeSync } from './lib/serverTime'
 import { startUpdateChecks } from './lib/updates'
 import { setMainWindowVisible, startWindowVisibility } from './lib/windowVisibility'
@@ -57,6 +58,7 @@ async function showWhatsNew() {
   const { getVersion } = await import('@tauri-apps/api/app')
   const kept = await takeWhatsNew(await getVersion())
   if (!kept) return
+  void useNotifications.getState().markSeen(`rel:${kept.version}`)
   const show = () => useSheet.getState().open({ kind: 'notes', title: `Что нового в ${kept.version}`, notes: kept.notes })
   // after whatever is on screen (a captcha at start must not be pushed aside)
   if (!useSheet.getState().sheet) return show()
@@ -105,6 +107,7 @@ async function boot() {
   startQuickSearch()
   startSystemSync()
   startUpdateChecks()
+  startNotificationChecks()
   startGlobalHotkeys({
     playPause: () => runCommand({ type: 'toggle' }, actions),
     next: () => runCommand({ type: 'next' }, actions),
