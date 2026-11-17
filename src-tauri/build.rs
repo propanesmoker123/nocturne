@@ -41,6 +41,7 @@ const COMMANDS: &[&str] = &[
     "journal_tail",
     "journal_open_dir",
     "send_feedback",
+    "fetch_notifications",
     "app_quit",
 ];
 

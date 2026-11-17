@@ -65,6 +65,7 @@
     "allow-journal-tail",
     "allow-journal-open-dir",
     "allow-send-feedback",
+    "allow-fetch-notifications",
     "allow-app-quit"
   ]
 }
