@@ -1,5 +1,5 @@
 import { normalizeCode } from '../together/code'
-import { bucketOf, BUCKETS, MAX_DURATION, MAX_TEXT, mergeAlbum, okAccessKey, okCover, okImage, okPermalink, type AlbumCover, type AlbumDoc, type AlbumEntry, type AlbumMeta, type AlbumTrack } from './model'
+import { bucketOf, BUCKETS, MAX_DURATION, MAX_TEXT, mergeAlbum, okAccessKey, okCover, okImage, okPermalink, okSpotifyId, type AlbumCover, type AlbumDoc, type AlbumEntry, type AlbumMeta, type AlbumTrack } from './model'
 
 /**
  * What goes to the relays: per album and per author one `meta` record, 16 bucket records and,
@@ -145,19 +145,21 @@ const optInt = (v: unknown) => v === undefined || int(v)
 /** A track as read: what it must have checked, what it may have left out when it is off. */
 function track(v: unknown): AlbumTrack | null {
   if (!isObj(v)) return null
-  if (v.service !== undefined && v.service !== 'sc') return null
+  if (v.service !== undefined && v.service !== 'sc' && v.service !== 'spotify') return null
+  if (v.service === 'spotify' && !okSpotifyId(v.spotifyId)) return null
   if (!int(v.id) || !int(v.ownerId, -Number.MAX_SAFE_INTEGER) || !text(v.title, MAX_TEXT) || !text(v.artist, MAX_TEXT)) return null
   if (typeof v.duration !== 'number' || !Number.isFinite(v.duration) || v.duration < 0 || v.duration > MAX_DURATION) return null
+  const service = v.service === 'sc' || v.service === 'spotify' ? v.service : undefined
   return {
-    ...(v.service ? { service: 'sc' as const } : {}),
+    ...(service === 'sc' ? { service: 'sc' as const } : service === 'spotify' ? { service: 'spotify' as const, spotifyId: v.spotifyId as string } : {}),
     id: v.id,
     ownerId: v.ownerId,
-    ...(okAccessKey(v.accessKey) ? { accessKey: v.accessKey } : {}),
+    ...(!service && okAccessKey(v.accessKey) ? { accessKey: v.accessKey } : {}),
     title: v.title,
     artist: v.artist,
     duration: v.duration,
-    ...(okCover(v.cover) ? { cover: v.cover } : {}),
-    ...(okPermalink(v.permalink) ? { permalink: v.permalink } : {}),
+    ...(okCover(v.cover, service) ? { cover: v.cover } : {}),
+    ...(service === 'sc' && okPermalink(v.permalink) ? { permalink: v.permalink } : {}),
   }
 }
 

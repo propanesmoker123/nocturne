@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { EV } from '../lib/events'
 import { invoke, isTauri, listen } from '../lib/tauri'
+import { clearVkCache, hydrateVkSnapshots, markVkSnapshotsStale, readVkSessionSnapshot, writeVkSessionSnapshot } from '../lib/warmCache'
 import * as vk from '../vk/api'
 import type { User } from '../vk/models'
 import { queryClient } from './queryClient'
@@ -18,6 +19,8 @@ interface SessionState {
   resetLogin(): Promise<void>
   logout(): Promise<void>
 }
+
+let liveReadyConfirmed = false
 
 export const useSession = create<SessionState>((set) => ({
   phase: 'pending',
@@ -42,19 +45,43 @@ export const useSession = create<SessionState>((set) => ({
     }
   },
   async logout() {
-    if (isTauri()) await invoke('session_logout').catch(() => {})
+    liveReadyConfirmed = false
+    if (isTauri()) {
+      clearVkCache()
+      await invoke('session_logout').catch(() => {})
+    }
     queryClient.clear()
     set({ phase: 'none', user: null, loggingIn: false })
   },
 }))
 
+/** Synchronously restores last signed-in VK snapshot before first React paint so relaunches feel instant. */
+export function hydrateVkWarmState(): void {
+  if (!isTauri()) return
+  const snap = readVkSessionSnapshot()
+  if (!snap?.signedIn || snap.userId <= 0) return
+  vk.setMeId(snap.userId)
+  hydrateVkSnapshots(queryClient)
+  if (useSession.getState().phase === 'pending') {
+    useSession.setState({ phase: 'ready', user: snap.user })
+  }
+}
+
 async function becomeReady(userId: number) {
   vk.setMeId(userId)
   useSession.setState({ phase: 'ready', loggingIn: false })
+  if (isTauri()) {
+    writeVkSessionSnapshot(true, userId, useSession.getState().user)
+    if (!liveReadyConfirmed) {
+      liveReadyConfirmed = true
+      markVkSnapshotsStale(queryClient)
+    }
+  }
   try {
     const user = await vk.getMe()
     vk.setMeId(user.id)
     useSession.setState({ user })
+    if (isTauri()) writeVkSessionSnapshot(true, user.id, user)
   } catch {
     // profile is cosmetic; playback works without it
   }
@@ -69,10 +96,18 @@ export async function initSession() {
   void listen<{ userId: number }>(EV.sessionReady, (e) => void becomeReady(e.payload.userId))
   void listen<boolean>(EV.sessionBusy, (e) => useSession.setState({ busy: !!e.payload }))
   void listen(EV.sessionLoggedOut, () => {
+    liveReadyConfirmed = false
+    clearVkCache()
     if (useSession.getState().phase === 'ready' && !useSession.getState().loggingIn) queryClient.clear()
     useSession.setState({ phase: 'none', user: null })
   })
   const status = await invoke<{ state: Phase; userId?: number }>('session_status')
   if (status.state === 'ready' && status.userId) await becomeReady(status.userId)
-  else useSession.setState({ phase: status.state })
+  else if (status.state === 'none') {
+    liveReadyConfirmed = false
+    clearVkCache()
+    useSession.setState({ phase: 'none', user: null })
+  } else if (useSession.getState().phase !== 'ready') {
+    useSession.setState({ phase: status.state })
+  }
 }

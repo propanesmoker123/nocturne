@@ -23,7 +23,16 @@
     actualTrackId: '',
     lastShuffle: null,
     disallowNext: false,
+    trackEnded: false,
+    endedTrackId: '',
   };
+  let lastHarmonyTrackUri = '';
+  let lastHarmonyPosMs = 0;
+  let lastHarmonyDurMs = 0;
+  let lastHarmonyWasPlaying = false;
+  let bleedTrackId = '';
+  let unwantedBleedMuted = false;
+  let unwantedBleedTimer = 0;
   const diagnostics = [];
   let lastDiag = '';
   function pushDiag(msg) {
@@ -149,15 +158,104 @@
         pushDiag(`harmony error: ${text}`);
       });
       player.addListener('state_changed', ev => {
-        const st = ev?.data?.state ?? null;
+        const st =
+          ev?.data?.state ??
+          ev?.state ??
+          (ev && (ev.track_window || ev.position !== undefined || ev.duration !== undefined) ? ev : null);
         if (!st) return;
         const sh = st.shuffle_mode !== undefined ? Boolean(st.shuffle_mode) : (st.options?.shuffling_context !== undefined ? Boolean(st.options.shuffling_context) : null);
         if (sh !== null) counters.lastShuffle = sh;
         counters.disallowNext = Boolean(st.disallows?.skipping_next);
-        const curUri = st.track_window?.current_track?.uri || '';
+        const curTrack = st.track_window?.current_track;
+        const curUri = curTrack?.uri || '';
+        const curId = extractTrackId(curUri);
+        const linkedId = extractTrackId(curTrack?.linked_from?.uri || curTrack?.linked_from?.id);
         const m = typeof curUri === 'string' ? curUri.match(/^spotify:track:([A-Za-z0-9]{22})$/) : null;
         if (m) counters.actualTrackId = m[1];
-        if (!st.paused && !st.isPaused && !st.loading && Number(st.timestamp) > 0) {
+        const curPosMs = Number(st.position ?? st.position_as_of_timestamp);
+        const curDurMs = Number(st.duration ?? curTrack?.duration_ms);
+        const isPaused = Boolean(st.paused || st.isPaused);
+        const sameTrack = !curUri || !lastHarmonyTrackUri || curUri === lastHarmonyTrackUri;
+        const advancing = !isPaused && !st.loading;
+        const matchesDesired = Boolean(desiredTrackId && (curId === desiredTrackId || linkedId === desiredTrackId));
+        const lastId = extractTrackId(lastHarmonyTrackUri);
+        const prevMatched = Boolean(
+          desiredTrackId &&
+          Array.isArray(st.track_window?.previous_tracks) &&
+          st.track_window.previous_tracks.some(t => extractTrackId(t?.uri) === desiredTrackId || extractTrackId(t?.linked_from?.uri) === desiredTrackId)
+        );
+        if (lastSeekTargetSec !== null && Date.now() - lastSeekAt >= 2000) {
+          lastSeekTargetSec = null;
+          lastSeekFromSec = null;
+        }
+        const nearPriorEnd =
+          lastId === desiredTrackId &&
+          lastHarmonyDurMs > 0 &&
+          lastHarmonyPosMs >= lastHarmonyDurMs - Math.min(10000, lastHarmonyDurMs / 2);
+        if (
+          !isAdPlaying() &&
+          !counters.startPending &&
+          bleedTrackId &&
+          (!curId || (curId !== bleedTrackId && linkedId !== bleedTrackId))
+        ) {
+          counters.trackEnded = true;
+          counters.endedTrackId = bleedTrackId;
+          setUnwantedBleedMute(true);
+          if (advancing) {
+            try { void (spotifyPlayerApi?.pause?.() ?? (harmonyPlayer || harmonyController)?.pause?.()); } catch {}
+          }
+          if (curUri) lastHarmonyTrackUri = curUri;
+          if (Number.isFinite(curDurMs) && curDurMs > 0) lastHarmonyDurMs = curDurMs;
+          if (Number.isFinite(curPosMs) && curPosMs >= 0) lastHarmonyPosMs = curPosMs;
+          lastHarmonyWasPlaying = false;
+          lastHarmonyClock = null;
+          return;
+        }
+        if (
+          !isAdPlaying() &&
+          !counters.startPending &&
+          desiredTrackId &&
+          curId &&
+          !matchesDesired &&
+          (prevMatched || nearPriorEnd)
+        ) {
+          bleedTrackId = desiredTrackId;
+          counters.trackEnded = true;
+          counters.endedTrackId = desiredTrackId;
+          desiredTrackId = '';
+          setUnwantedBleedMute(true);
+          try { void (spotifyPlayerApi?.pause?.() ?? (harmonyPlayer || harmonyController)?.pause?.()); } catch {}
+          if (curUri) lastHarmonyTrackUri = curUri;
+          if (Number.isFinite(curDurMs) && curDurMs > 0) lastHarmonyDurMs = curDurMs;
+          if (Number.isFinite(curPosMs) && curPosMs >= 0) lastHarmonyPosMs = curPosMs;
+          lastHarmonyWasPlaying = false;
+          lastHarmonyClock = null;
+          return;
+        }
+        if (advancing) {
+          if (!bleedTrackId && !unwantedBleedMuted) {
+            counters.trackEnded = false;
+            counters.endedTrackId = '';
+          }
+          counters.lastPlaybackError = '';
+        } else if (
+          !isAdPlaying() &&
+          isPaused && !st.loading &&
+          sameTrack &&
+          Number.isFinite(curDurMs) &&
+          curDurMs > 0 &&
+          Number.isFinite(curPosMs) &&
+          (curPosMs >= curDurMs || (lastHarmonyWasPlaying && lastSeekTargetSec === null &&
+            lastHarmonyPosMs >= curDurMs - Math.min(3000, curDurMs / 2) && curPosMs <= 1500))
+        ) {
+          counters.trackEnded = true;
+          counters.endedTrackId = curId || linkedId || desiredTrackId || '';
+        }
+        if (curUri) lastHarmonyTrackUri = curUri;
+        if (Number.isFinite(curDurMs) && curDurMs > 0) lastHarmonyDurMs = curDurMs;
+        if (Number.isFinite(curPosMs) && curPosMs >= 0) lastHarmonyPosMs = curPosMs;
+        lastHarmonyWasPlaying = advancing;
+        if (!isPaused && !st.loading && Number(st.timestamp) > 0) {
           lastHarmonyClock = { ts: Number(st.timestamp), localAt: Date.now() };
         } else {
           lastHarmonyClock = null;
@@ -175,6 +273,7 @@
           harmonyPlayer = val;
           hookHarmony(val);
           if (val._controller && !harmonyController) harmonyController = val._controller;
+          if (val._controller && typeof val._controller.addListener === 'function') hookHarmony(val._controller);
         }
         if (val && typeof this.play === 'function' && typeof this.skipToNext === 'function') spotifyPlayerApi = this;
       },
@@ -193,6 +292,7 @@
       set(val) {
         Object.defineProperty(this, '_controller', { value: val, writable: true, enumerable: true, configurable: true });
         if (val && typeof val.playURI === 'function' && !harmonyController) harmonyController = val;
+        if (val && typeof val.addListener === 'function' && typeof this.playTracks === 'function' && !this._hidden && !this._disableProgress && !this._observerMode) hookHarmony(val);
         if (val && typeof this.playTracks === 'function' && !this._hidden && !this._disableProgress && !this._observerMode && !harmonyPlayer) {
           harmonyPlayer = this;
           hookHarmony(this);
@@ -257,10 +357,33 @@
     if (el.loop === true) return true;
     return Boolean(el.isConnected && Number.isFinite(el.duration) && el.duration > 0 && el.duration <= 12 && !el.webkitAudioDecodedByteCount);
   }
+  function setUnwantedBleedMute(on) {
+    clearTimeout(unwantedBleedTimer);
+    unwantedBleedTimer = 0;
+    unwantedBleedMuted = Boolean(on);
+    if (unwantedBleedMuted) {
+      unwantedBleedTimer = setTimeout(() => {
+        unwantedBleedTimer = 0;
+        if (!unwantedBleedMuted) return;
+        unwantedBleedMuted = false;
+        for (const el of elements()) applyMediaSettings(el);
+      }, 1500);
+    }
+    for (const el of elements()) applyMediaSettings(el);
+  }
   function trackMediaElement(el) {
     if (!el || typeof el !== 'object') return el;
+    for (let i = media.length - 1; i >= 0; i--) {
+      if (!media[i].deref()) media.splice(i, 1);
+    }
     if (!media.some(reference => reference.deref() === el)) {
-      if (media.length >= 16) media.shift();
+      if (media.length >= 48) {
+        const dropIdx = media.findIndex(reference => {
+          const node = reference.deref();
+          return !node || isCanvasVideo(node) || (!node.mediaKeys && node.paused && !node.isConnected);
+        });
+        media.splice(dropIdx >= 0 ? dropIdx : 0, 1);
+      }
       media.push(new WeakRef(el));
       try {
         const sync = () => applyMediaSettings(el);
@@ -285,7 +408,7 @@
               return;
             }
             const ad = counters.enabled && isAdPlaying();
-            const target = ad || desiredMuted ? 0 : Math.min(1, Math.max(0, desiredVolume));
+            const target = ad || unwantedBleedMuted || desiredMuted ? 0 : Math.min(1, Math.max(0, desiredVolume));
             setNativeVol(this, target);
           },
         });
@@ -303,7 +426,7 @@
               return;
             }
             const ad = counters.enabled && isAdPlaying();
-            setNativeMuted(this, ad ? true : Boolean(desiredMuted));
+            setNativeMuted(this, ad || unwantedBleedMuted ? true : Boolean(desiredMuted));
           },
         });
       } catch {}
@@ -383,6 +506,11 @@
   }
   function applyMediaSettings(el) {
     if (!el || isCanvasVideo(el)) return;
+    if (unwantedBleedMuted) {
+      if (!getNativeMuted(el)) setNativeMuted(el, true);
+      if (getNativeVol(el) !== 0) setNativeVol(el, 0);
+      return;
+    }
     if (counters.enabled && isAdPlaying()) {
       if (!getNativeMuted(el)) setNativeMuted(el, true);
       if (getNativeVol(el) !== 0) setNativeVol(el, 0);
@@ -405,11 +533,20 @@
   }
 
   function playing() {
+    if (counters.trackEnded && !counters.startPending) return false;
     const list = elements();
     if (list.some(element => !element.paused && !element.ended)) return true;
+    const hs = harmonyState();
+    if (hs && (hs.paused !== undefined || hs.isPaused !== undefined)) {
+      if (list.some(element => element.ended && Number.isFinite(element.duration) && element.duration > 15)) {
+        return false;
+      }
+      return !hs.paused && !hs.isPaused && !hs.loading;
+    }
+    if (list.length) return false;
     const state = window.navigator?.mediaSession?.playbackState;
     if (state === 'playing' || state === 'paused') return state === 'playing';
-    return list.length ? false : null;
+    return null;
   }
 
   const seen = new Set();
@@ -775,6 +912,9 @@
       const durMs = Number(st.duration);
       const rawTs = Number(st.timestamp);
       if (!st.paused && !st.isPaused && !st.loading && rawTs > 0) {
+        if (!lastHarmonyClock || lastHarmonyClock.ts !== rawTs) {
+          lastHarmonyClock = { ts: rawTs, localAt: Date.now() };
+        }
         const speed = Number(st.playback_speed) > 0 ? Number(st.playback_speed) : 1;
         const elapsed = Math.max(0, (harmonyServerNowMs(rawTs) - rawTs) * speed);
         const advanced = posMs + elapsed;
@@ -823,12 +963,17 @@
     } else {
       lastSeekTargetSec = null;
       lastSeekFromSec = null;
-      const reliableStatePos =
-        statePos !== null && !(statePos < 0.5 && barPos !== null && barPos > 2) ? statePos : null;
+      const st = adNow ? null : harmonyState();
+      const harmonyLaggingPaused = Boolean(st && (st.paused || st.isPaused) && !st.loading && el && !el.paused && !el.ended);
       const alignedElPos =
         elPos !== null && !el.paused && (barPos === null || Math.abs(elPos - barPos) <= 2.5)
           ? elPos
           : null;
+      const stateStuckBehind =
+        statePos !== null &&
+        ((statePos < 0.5 && barPos !== null && barPos > 2) ||
+          (harmonyLaggingPaused && ((barPos !== null && barPos > statePos + 1) || (alignedElPos !== null && alignedElPos > statePos + 1))));
+      const reliableStatePos = statePos !== null && !stateStuckBehind ? statePos : null;
       position = reliableStatePos ?? alignedElPos ?? barPos ?? clockPos ?? elPos ?? 0;
     }
     return { position, duration };
@@ -855,6 +1000,14 @@
     }
     return null;
   }
+  function nowPlayingLinkedFromId() {
+    try {
+      const state = harmonyState();
+      const cur = state?.track_window?.current_track;
+      return extractTrackId(cur?.linked_from?.uri || cur?.linked_from?.id);
+    } catch {}
+    return null;
+  }
   function bufferedEndSec(el, posSec) {
     try {
       const b = el?.buffered;
@@ -867,17 +1020,34 @@
     } catch {}
     return 0;
   }
+  function isTrackEndedNow(el) {
+    if (isAdPlaying()) return false;
+    if (counters.trackEnded) return true;
+    const list = elements();
+    const node = el === undefined ? activeElement() : el;
+    if (node?.ended && Number.isFinite(node.duration) && node.duration > 15) return true;
+    return list.some(m => m?.ended && Number.isFinite(m.duration) && m.duration > 15 && !list.some(other => other !== m && !other.paused && !other.ended));
+  }
   function nowPlaying() {
     const adNow = isAdPlaying();
     const widget = testid('now-playing-widget');
     const meta = window.navigator?.mediaSession?.metadata;
-    const title = clip(meta?.title) || clip(widget?.querySelector?.('[data-testid="context-item-info-title"]')?.textContent);
+    const hTrack = adNow ? null : harmonyState()?.track_window?.current_track;
+    const title =
+      clip(meta?.title) ||
+      clip(widget?.querySelector?.('[data-testid="context-item-info-title"]')?.textContent) ||
+      clip(hTrack?.name);
     if (!title && !adNow) return null;
-    const artist = clip(meta?.artist) || clip(widget?.querySelector?.('[data-testid="context-item-info-subtitles"]')?.textContent);
+    const hArtists = Array.isArray(hTrack?.artists) ? hTrack.artists.map(a => clip(a?.name)).filter(Boolean).join(', ') : '';
+    const artist =
+      clip(meta?.artist) ||
+      clip(widget?.querySelector?.('[data-testid="context-item-info-subtitles"]')?.textContent) ||
+      hArtists;
     const artwork = [...(meta?.artwork ?? [])].map(item => ({ src: cdn(item?.src), size: parseInt(item?.sizes, 10) || 0 })).filter(item => item.src).sort((a, b) => a.size - b.size);
+    const hImages = [...(hTrack?.album?.images ?? [])].map(item => ({ src: cdn(item?.url), size: Number(item?.width) || 300 })).filter(item => item.src).sort((a, b) => a.size - b.size);
     const fallback = cdn(widget?.querySelector?.('img')?.src);
-    const small = artwork.find(item => item.size >= 64)?.src ?? artwork[0]?.src ?? fallback;
-    const large = artwork[artwork.length - 1]?.src ?? fallback;
+    const small = artwork.find(item => item.size >= 64)?.src ?? artwork[0]?.src ?? fallback ?? hImages[0]?.src ?? null;
+    const large = artwork[artwork.length - 1]?.src ?? fallback ?? hImages[hImages.length - 1]?.src ?? small;
     const like = widget?.querySelector?.('[data-testid="add-button"][aria-checked]');
     const volume = range('volume-bar');
     const level = volume ? Number(volume.value) / (Number(volume.max) || 1) : null;
@@ -888,15 +1058,18 @@
     const prog = progress();
     return {
       trackId: adNow ? null : nowPlayingTrackId(widget),
+      linkedFromTrackId: adNow ? null : nowPlayingLinkedFromId(),
       isAd: adNow,
       paused: playback !== true,
       title: adNow ? 'Реклама' : title,
       artist,
-      album: clip(meta?.album),
+      album: clip(meta?.album) || clip(hTrack?.album?.name),
       cover: small,
       coverLarge: large,
       ...prog,
       buffered: adNow ? null : bufferedEndSec(el, prog.position),
+      trackEnded: isTrackEndedNow(el),
+      endedTrackId: counters.endedTrackId || null,
       liked: like ? like.getAttribute('aria-checked') === 'true' : null,
       shuffle: checked('control-button-shuffle') === true,
       repeat: repeat === 'mixed' ? 'one' : repeat === true ? 'all' : 'off',
@@ -1119,6 +1292,14 @@
     if (auth.clientToken) headers['client-token'] = auth.clientToken;
     if (auth.acceptLanguage) headers['accept-language'] = auth.acceptLanguage;
     return headers;
+  }
+  async function changeLibraryViaWebApi(method, uris) {
+    if (!uris.length) throw new Error('MISSING_LIBRARY_URI');
+    if (!await ensureToken(2500)) throw new Error('SIGNED_OUT');
+    await ensureClientToken(false);
+    const query = new URLSearchParams({ uris: uris.join(',') });
+    const res = await fetch.call(window, `https://api.spotify.com/v1/me/library?${query}`, { method, headers: apiHeaders() });
+    if (!res.ok) throw new Error(`HTTP_${res.status}`);
   }
   async function queryPathfinder(operationName, variables = {}, opts = {}) {
     const key = operationName + ':' + JSON.stringify(variables);
@@ -1857,18 +2038,35 @@
       };
     }
 
+    async function mutateLibrary(add, uris) {
+      const op = add ? 'addToLibrary' : 'removeFromLibrary';
+      const attempts = add
+        ? [{ libraryItemUris: uris, interactionId: null }, { libraryItemUris: uris }, { uris }]
+        : [{ libraryItemUris: uris }, { uris }];
+      for (const vars of attempts) {
+        try {
+          return await queryPathfinder(op, vars, { fresh: true, ttlMs: 0 });
+        } catch (err) {
+          const msg = String(err?.message || '');
+          if (msg === 'SIGNED_OUT' || msg === 'HTTP_429') throw err;
+        }
+      }
+      return await changeLibraryViaWebApi(add ? 'PUT' : 'DELETE', uris);
+    }
+
     if (route === '/me/tracks' && (method === 'PUT' || method === 'DELETE')) {
       const ids = (params.get('ids') || '').split(',').map(s => s.trim()).filter(Boolean);
       const uris = ids.map(id => `spotify:track:${id}`);
-      await queryPathfinder(method === 'PUT' ? 'addToLibrary' : 'removeFromLibrary', { libraryItemUris: uris }, { fresh: true, ttlMs: 0 });
+      await mutateLibrary(method === 'PUT', uris);
       invalidatePfCache('fetchLibraryTracks');
+      invalidatePfCache('libraryV3');
       return { ok: true };
     }
 
     if (route === '/me/albums' && (method === 'PUT' || method === 'DELETE')) {
       const ids = (params.get('ids') || '').split(',').map(s => s.trim()).filter(Boolean);
       const uris = ids.map(id => `spotify:album:${id}`);
-      await queryPathfinder(method === 'PUT' ? 'addToLibrary' : 'removeFromLibrary', { libraryItemUris: uris }, { fresh: true, ttlMs: 0 });
+      await mutateLibrary(method === 'PUT', uris);
       invalidatePfCache('libraryV3');
       return { ok: true };
     }
@@ -1876,7 +2074,7 @@
     if (route === '/me/following' && (method === 'PUT' || method === 'DELETE')) {
       const ids = (params.get('ids') || '').split(',').map(s => s.trim()).filter(Boolean);
       const uris = ids.map(id => `spotify:artist:${id}`);
-      await queryPathfinder(method === 'PUT' ? 'addToLibrary' : 'removeFromLibrary', { libraryItemUris: uris }, { fresh: true, ttlMs: 0 });
+      await mutateLibrary(method === 'PUT', uris);
       invalidatePfCache('libraryV3');
       return { ok: true };
     }
@@ -2148,10 +2346,60 @@
       const pid = plMatch[1];
       const sub = plMatch[2];
       if (sub === 'followers' && (method === 'PUT' || method === 'DELETE')) {
-        await queryPathfinder(method === 'PUT' ? 'addToLibrary' : 'removeFromLibrary', {
-          libraryItemUris: [`spotify:playlist:${pid}`],
-        }, { fresh: true, ttlMs: 0 });
+        const add = method === 'PUT';
+        const token = await ensureToken(2500);
+        if (!token) throw new Error('SIGNED_OUT');
+        await ensureClientToken(false);
+        let username = resolveProfileUsername();
+        if (!username) {
+          const prof = await queryPathfinder('profileAttributes', {}).catch(() => null);
+          username = resolveProfileUsername(prof?.me?.profile);
+        }
+        let saved = false;
+        if (username) {
+          const op = add
+            ? {
+                kind: 'ADD',
+                add: {
+                  addFirst: true,
+                  items: [{ uri: `spotify:playlist:${pid}`, attributes: { timestamp: String(Date.now()) } }],
+                },
+              }
+            : {
+                kind: 'REM',
+                rem: {
+                  itemsAsKey: true,
+                  items: [{ uri: `spotify:playlist:${pid}` }],
+                },
+              };
+          const rootUrl = `https://spclient.wg.spotify.com/playlist/v2/user/${encodeURIComponent(username)}/rootlist/changes`;
+          const body = JSON.stringify({
+            deltas: [{ ops: [op], info: { source: { client: 'WEBPLAYER' } } }],
+            wantResultingRevisions: false,
+            wantSyncResult: false,
+            nonces: [],
+          });
+          let res = await fetch.call(window, rootUrl, {
+            method: 'POST',
+            headers: { ...apiHeaders(), 'Content-Type': 'application/json;charset=UTF-8' },
+            body,
+          });
+          if (res.status === 401 || res.status === 403) {
+            await ensureClientToken(true);
+            res = await fetch.call(window, rootUrl, {
+              method: 'POST',
+              headers: { ...apiHeaders(), 'Content-Type': 'application/json;charset=UTF-8' },
+              body,
+            });
+          }
+          saved = Boolean(res.ok);
+          if (res.status === 429) throw new Error('HTTP_429');
+        }
+        if (!saved) {
+          await changeLibraryViaWebApi(method, [`spotify:playlist:${pid}`]);
+        }
         invalidatePfCache('libraryV3');
+        invalidatePfCache('editablePlaylists');
         invalidatePfCache('fetchPlaylist:');
         return { ok: true };
       }
@@ -2361,14 +2609,16 @@
     } catch {}
   }
 
-  function resolveCollectionUri() {
-    const p = pfCache.profileAttributes?.me?.profile;
+  function resolveProfileUsername(profile) {
+    const p = profile || pfCache.profileAttributes?.me?.profile;
     const rawUser = (typeof p?.username === 'string' && p.username.trim()) ||
       (typeof p?.uri === 'string' && p.uri.startsWith('spotify:user:') ? p.uri.slice('spotify:user:'.length) : '');
-    if (rawUser && /^[A-Za-z0-9._-]+$/.test(rawUser)) {
-      return `spotify:user:${rawUser}:collection`;
-    }
-    return '';
+    return rawUser && /^[A-Za-z0-9._-]+$/.test(rawUser) ? rawUser : '';
+  }
+
+  function resolveCollectionUri() {
+    const user = resolveProfileUsername();
+    return user ? `spotify:user:${user}:collection` : '';
   }
 
   function resolveContextTarget(context) {
@@ -2543,11 +2793,19 @@
   }
 
   async function startTrackPlayback(trackId, startAt, context) {
+    bleedTrackId = '';
+    setUnwantedBleedMute(false);
     desiredTrackId = trackId;
     counters.expectedTrackId = trackId;
     counters.actualTrackId = '';
     counters.lastPlayError = '';
     counters.lastPlaybackError = '';
+    counters.trackEnded = false;
+    counters.endedTrackId = '';
+    lastHarmonyTrackUri = '';
+    lastHarmonyPosMs = 0;
+    lastHarmonyDurMs = 0;
+    lastHarmonyWasPlaying = false;
     const runId = ++playSeq;
     counters.startPending = true;
     const isCurrent = () => playSeq === runId && desiredTrackId === trackId;
@@ -2575,12 +2833,13 @@
     }
     clearTimeout(playTimer);
     clearTimeout(seekTimer);
-    if (await tryHarmonyPlay(trackId, startAt, context)) {
+    const started = await tryHarmonyPlay(trackId, startAt, context);
+    if (!isCurrent()) return false;
+    if (started) {
       clearPending();
       settleSeek();
       return true;
     }
-    if (!isCurrent()) return false;
     let attempts = 0;
     let navigated = false;
     let clickedDomPlay = false;
@@ -2653,7 +2912,7 @@
 
   Object.defineProperty(window, '__nocturneSpotifyLab', { value: Object.freeze({
     configure: enabled => { counters.enabled = enabled === true; },
-    stats: () => ({ ...counters, hasApi: Boolean(spotifyPlayerApi), hasHarmony: Boolean(harmonyPlayer || harmonyController) }),
+    stats: () => ({ ...counters, trackEnded: isTrackEndedNow(), hasApi: Boolean(spotifyPlayerApi), hasHarmony: Boolean(harmonyPlayer || harmonyController) }),
     takeDiagnostics: () => diagnostics.splice(0, diagnostics.length),
     playing,
     nowPlaying: () => { try { return nowPlaying(); } catch { return null; } },
@@ -2695,11 +2954,15 @@
       if (action === 'pause') {
         const wasPending = counters.startPending;
         const wasPlaying = playing() === true;
+        bleedTrackId = '';
+        setUnwantedBleedMute(false);
         desiredTrackId = '';
         playSeq++;
         clearTimeout(playTimer);
         clearTimeout(seekTimer);
         counters.startPending = false;
+        counters.trackEnded = false;
+        counters.endedTrackId = '';
         if (!wasPlaying) {
           if (wasPending) {
             try { void (spotifyPlayerApi?.pause?.() ?? p?.pause?.()); } catch {}
@@ -2707,8 +2970,18 @@
           }
           return false;
         }
-      } else if (action === 'play' && playing() === true) {
-        return false;
+      } else if (action === 'play') {
+        bleedTrackId = '';
+        setUnwantedBleedMute(false);
+        if (!desiredTrackId && counters.expectedTrackId) desiredTrackId = counters.expectedTrackId;
+        counters.trackEnded = false;
+        counters.endedTrackId = '';
+        counters.lastPlaybackError = '';
+        if (playing() === true) return false;
+      } else if (action === 'toggle' || action === 'next' || action === 'previous') {
+        bleedTrackId = '';
+        setUnwantedBleedMute(false);
+        counters.endedTrackId = '';
       }
       const selectors = {
         toggle: '[data-testid="control-button-playpause"]', play: '[data-testid="control-button-playpause"]', pause: '[data-testid="control-button-playpause"]',
@@ -2717,15 +2990,22 @@
         mute: '[data-testid="volume-bar-toggle-mute-button"]', like: '[data-testid="now-playing-widget"] [data-testid="add-button"]',
       };
       if (selectors[action]) {
+        if (action === 'pause') {
+          if (spotifyPlayerApi?.pause) { void spotifyPlayerApi.pause(); return true; }
+          if (p?.pause) { void p.pause(); return true; }
+          const btn = typeof document !== 'undefined' ? document.querySelector?.(selectors[action]) : null;
+          const lbl = btn?.getAttribute?.('aria-label') || '';
+          if (/^(?:play|играть|воспроизвести)\b/i.test(lbl)) return false;
+        } else if (action === 'play') {
+          if (spotifyPlayerApi?.resume) { void spotifyPlayerApi.resume(); return true; }
+          if (p?.resume) { void p.resume(); return true; }
+          const btn = typeof document !== 'undefined' ? document.querySelector?.(selectors[action]) : null;
+          const lbl = btn?.getAttribute?.('aria-label') || '';
+          if (/^(?:pause|пауза)\b/i.test(lbl)) return false;
+        }
         if (click(selectors[action])) return true;
         try {
-          if (action === 'pause') {
-            if (spotifyPlayerApi?.pause) void spotifyPlayerApi.pause();
-            else if (p?.pause) void p.pause();
-          } else if (action === 'play') {
-            if (spotifyPlayerApi?.resume) void spotifyPlayerApi.resume();
-            else if (p?.resume) void p.resume();
-          } else if (action === 'toggle' && p?.togglePlay) {
+          if (action === 'toggle' && p?.togglePlay) {
             void p.togglePlay();
           }
         } catch {}
@@ -2733,8 +3013,14 @@
       }
       if (typeof value !== 'number' || !Number.isFinite(value)) return false;
       if (action === 'seek') {
+        bleedTrackId = '';
+        setUnwantedBleedMute(false);
+        counters.trackEnded = false;
+        counters.endedTrackId = '';
+        counters.lastPlaybackError = '';
         const clampedSec = Math.max(0, value);
         const ms = Math.round(clampedSec * 1000);
+        lastHarmonyPosMs = ms;
         const preSeekPos = progress().position;
         lastSeekFromSec = Number.isFinite(preSeekPos) ? preSeekPos : null;
         lastSeekTargetSec = clampedSec;

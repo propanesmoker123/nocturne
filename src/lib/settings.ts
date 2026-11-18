@@ -65,6 +65,8 @@ export interface Settings {
   broadcastStatus: boolean
   /** SoundCloud comments as avatars over the waveform */
   waveComments: boolean
+  /** Crossfade duration in seconds between tracks (0 = off, 1..12 = smooth overlap) */
+  crossfade: number
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -80,6 +82,7 @@ export const DEFAULT_SETTINGS: Settings = {
   closeToTray: true,
   broadcastStatus: false,
   waveComments: true,
+  crossfade: 3,
 }
 
 const HEX = /^#[0-9a-f]{6}$/i
@@ -153,6 +156,7 @@ export function mergeSettings(saved: unknown): Settings {
     closeToTray: bool(saved.closeToTray, d.closeToTray),
     broadcastStatus: bool(saved.broadcastStatus, d.broadcastStatus),
     waveComments: bool(saved.waveComments, d.waveComments),
+    crossfade: Math.round(num(saved.crossfade, d.crossfade, 0, 12)),
   }
 }
 
@@ -178,6 +182,7 @@ const pick = (s: SettingsState): Settings => ({
   closeToTray: s.closeToTray,
   broadcastStatus: s.broadcastStatus,
   waveComments: s.waveComments,
+  crossfade: s.crossfade,
 })
 
 export const useSettings = create<SettingsState>((set, get) => ({

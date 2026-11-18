@@ -456,6 +456,23 @@ export function SettingsPage() {
       </Group>
 
       <Group title="Приложение">
+        <Row
+          title="Плавный переход между треками"
+          sub={st.crossfade > 0 ? `${st.crossfade} сек — первый трек плавно затухает, а следующий мягко вступает` : 'Выключен'}
+        >
+          <div className={s.sliderBox}>
+            <Slider
+              label="Плавный переход между треками"
+              value={st.crossfade / 12}
+              valueText={(v) => {
+                const sec = Math.round(v * 12)
+                return sec > 0 ? `${sec} сек` : 'Выкл'
+              }}
+              onChange={(v) => st.update({ crossfade: Math.round(v * 12) })}
+              onCommit={(v) => st.update({ crossfade: Math.round(v * 12) })}
+            />
+          </div>
+        </Row>
         <Row title="Закрывать в трей" sub="Крестик прячет окно, музыка продолжает играть">
           <Switch label="Закрывать в трей" checked={st.closeToTray} onChange={(v) => st.update({ closeToTray: v })} />
         </Row>

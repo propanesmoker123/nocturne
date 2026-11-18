@@ -132,6 +132,15 @@ describe('queue editing', () => {
     expect(upcoming(q)).toEqual(['c'])
   })
 
+  test('a removed track stays out when shuffle is toggled', () => {
+    const q = createQueue(['a', 'b', 'c'], 2, true, 'off', () => 0.1)
+    const without = removeAt(q, 1)
+    const unshuffled = setShuffle(without, false)
+    expect(current(unshuffled)).toBe('c')
+    expect(unshuffled.items).toEqual(q.items.filter((_, i) => i !== q.order[1]))
+    expect(setShuffle(unshuffled, true).order).toHaveLength(2)
+  })
+
   test('move reorders upcoming tracks without changing the current track', () => {
     const q = move(createQueue(['a', 'b', 'c', 'd'], 0, false, 'off'), 3, 1)
     expect(current(q)).toBe('a')

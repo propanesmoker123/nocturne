@@ -121,4 +121,14 @@ describe('mergeSettings', () => {
       whisperModel: 'tiny',
     })
   })
+
+  test('validates crossfade duration between 0 and 12 seconds', () => {
+    expect(DEFAULT_SETTINGS.crossfade).toBe(3)
+    expect(mergeSettings({}).crossfade).toBe(3)
+    expect(mergeSettings({ crossfade: 0 }).crossfade).toBe(0)
+    expect(mergeSettings({ crossfade: 7.4 }).crossfade).toBe(7)
+    expect(mergeSettings({ crossfade: 30 }).crossfade).toBe(12)
+    expect(mergeSettings({ crossfade: -2 }).crossfade).toBe(0)
+    expect(mergeSettings({ crossfade: 'yes' }).crossfade).toBe(3)
+  })
 })

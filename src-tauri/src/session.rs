@@ -24,7 +24,7 @@ const WEB_APP_ID: u32 = 6287487;
 const PAGE_RECHECK: Duration = Duration::from_secs(4);
 /// Hard floor between two web_token requests, whatever triggers them.
 const REFRESH_SPACING: Duration = Duration::from_secs(2);
-const POLL_EVERY: Duration = Duration::from_millis(150);
+const POLL_EVERY: Duration = Duration::from_millis(50);
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long one script round trip into the session page may take.
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -312,10 +312,14 @@ impl SessionState {
         }
     }
 
-    fn valid_token(&self, margin_secs: i64) -> Option<String> {
+    fn valid_web_token(&self, margin_secs: i64) -> Option<WebToken> {
         let g = self.token.lock().ok()?;
         let t = g.as_ref()?;
-        (t.expires - now_secs() > margin_secs).then(|| t.access_token.clone())
+        (t.expires - now_secs() > margin_secs).then(|| t.clone())
+    }
+
+    fn valid_token(&self, margin_secs: i64) -> Option<String> {
+        self.valid_web_token(margin_secs).map(|t| t.access_token)
     }
 
     pub fn invalidate(&self) {
@@ -595,6 +599,9 @@ async fn resolve_user_id(app: &AppHandle, access_token: &str) -> Result<Option<i
 pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
     let st = app.state::<SessionState>();
     let mut last = st.last_refresh.lock().await;
+    if let Some(tok) = st.valid_web_token(90) {
+        return Ok(tok);
+    }
     let wait = crate::vk::wait_before(*last, Instant::now(), REFRESH_SPACING);
     if !wait.is_zero() {
         tokio::time::sleep(wait).await;

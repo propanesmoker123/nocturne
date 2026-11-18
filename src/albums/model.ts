@@ -9,6 +9,7 @@ import type { ServiceId, Track } from '../vk/models'
 /** What an album remembers of a track: enough to find it again, play it and show it. */
 export interface AlbumTrack {
   service?: ServiceId
+  spotifyId?: string
   id: number
   ownerId: number
   accessKey?: string
@@ -114,15 +115,32 @@ export const bucketOf = (eid: string) => fnv1a32(eid) % BUCKETS
 
 const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
 
-const sameKeyOf = (t: { service?: ServiceId; ownerId: number; id: number }) => `${t.service ?? 'vk'}:${t.ownerId}_${t.id}`
+const sameKeyOf = (t: { service?: ServiceId; ownerId: number; id: number; spotifyId?: string }) =>
+  t.service === 'spotify' ? `spotify:${t.spotifyId ?? ''}` : `${t.service ?? 'vk'}:${t.ownerId}_${t.id}`
 
 // What an album's track may carry, the same for what is kept here and what is read from relays.
 export const MAX_TEXT = 300
 export const MAX_DURATION = 36_000
+export const okSpotifyId = (v: unknown): v is string => typeof v === 'string' && /^[0-9A-Za-z]{22}$/.test(v)
 export const okAccessKey = (v: unknown): v is string => typeof v === 'string' && /^[0-9A-Za-z_-]{1,64}$/.test(v)
-/** Only VK's and SoundCloud's image servers: a cover from anywhere else would tell that server who looks. */
-export const okCover = (v: unknown): v is string =>
-  typeof v === 'string' && v.length <= 1000 && /^https:\/\/([a-z0-9-]+\.)+(userapi\.com|vkuserphoto\.ru|vkuser\.net|vk-cdn\.net|sndcdn\.com)\//.test(v)
+const SPOTIFY_IMAGE_HOSTS = new Set(['i.scdn.co', 'mosaic.scdn.co'])
+const isSpotifyImageHost = (host: string) => SPOTIFY_IMAGE_HOSTS.has(host) || /^image-cdn-[a-z0-9-]+\.spotifycdn\.com$/.test(host)
+const isLegacyImageHost = (host: string) => /^([a-z0-9-]+\.)+(userapi\.com|vkuserphoto\.ru|vkuser\.net|vk-cdn\.net|sndcdn\.com)$/.test(host)
+/** Only VK's, SoundCloud's and Spotify's approved image CDNs: a cover from anywhere else would tell that server who looks. */
+export const okCover = (v: unknown, service?: ServiceId): v is string => {
+  if (typeof v !== 'string' || v.length > 1000) return false
+  let url: URL
+  try {
+    url = new URL(v)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'https:' || url.username || url.password) return false
+  const host = url.hostname.toLowerCase()
+  if (service === 'spotify') return isSpotifyImageHost(host)
+  if (service === 'sc' || service === 'vk') return isLegacyImageHost(host)
+  return isLegacyImageHost(host) || isSpotifyImageHost(host)
+}
 export const okPermalink = (v: unknown): v is string => typeof v === 'string' && v.length <= 500 && /^https:\/\/([a-z0-9-]+\.)*soundcloud\.com\//.test(v)
 /** The longest cover, whole `data:` address: its record still fits under the relays' 60 KB. */
 export const MAX_IMAGE = 48_000
@@ -190,16 +208,18 @@ export function imageSize(dataUrl: string): { w: number; h: number } | null {
 
 export function snapshot(t: Track): AlbumTrack {
   const sc = t.service === 'sc'
-  const cover = t.cover?.m
+  const sp = t.service === 'spotify'
+  const cover = t.cover?.m ?? t.cover?.s ?? t.cover?.l
   return {
-    ...(sc ? { service: 'sc' as const } : {}),
-    id: t.id,
-    ownerId: t.ownerId,
-    ...(!sc && okAccessKey(t.accessKey) ? { accessKey: t.accessKey } : {}),
+    ...(sc ? { service: 'sc' as const } : sp ? { service: 'spotify' as const } : {}),
+    ...(sp && okSpotifyId(t.spotifyId) ? { spotifyId: t.spotifyId } : {}),
+    id: Number.isSafeInteger(t.id) && t.id >= 0 ? t.id : 0,
+    ownerId: Number.isSafeInteger(t.ownerId) ? t.ownerId : 0,
+    ...(!sc && !sp && okAccessKey(t.accessKey) ? { accessKey: t.accessKey } : {}),
     title: t.title.slice(0, MAX_TEXT),
     artist: t.artist.slice(0, MAX_TEXT),
     duration: Math.min(Math.max(0, Number.isFinite(t.duration) ? t.duration : 0), MAX_DURATION),
-    ...(okCover(cover) ? { cover } : {}),
+    ...(okCover(cover, t.service) ? { cover } : {}),
     ...(sc && okPermalink(t.permalink) ? { permalink: t.permalink } : {}),
   }
 }
@@ -208,11 +228,13 @@ export function snapshot(t: Track): AlbumTrack {
 export function toTrack(e: AlbumEntry): Track {
   const t = e.track!
   const sc = t.service === 'sc'
+  const sp = t.service === 'spotify' && okSpotifyId(t.spotifyId)
   return {
     ...(sc ? { service: 'sc' as const, permalink: t.permalink } : {}),
+    ...(sp ? { service: 'spotify' as const, spotifyId: t.spotifyId, permalink: `https://open.spotify.com/track/${t.spotifyId}` } : {}),
     id: t.id,
     ownerId: t.ownerId,
-    key: sc ? `sc_${t.id}` : `${t.ownerId}_${t.id}`,
+    key: sp ? `sp_${t.spotifyId}` : sc ? `sc_${t.id}` : `${t.ownerId}_${t.id}`,
     ...(t.accessKey ? { accessKey: t.accessKey } : {}),
     artist: t.artist,
     title: t.title,
@@ -221,7 +243,7 @@ export function toTrack(e: AlbumEntry): Track {
     ...(t.cover ? { cover: { s: t.cover, m: t.cover, l: t.cover } } : {}),
     explicit: false,
     artists: sc ? [{ id: String(t.ownerId), name: t.artist }] : [{ name: t.artist }],
-    playable: true,
+    playable: t.service === 'spotify' ? sp : true,
     hasLyrics: false,
     liked: false,
   }
@@ -260,6 +282,7 @@ export function addTracks(d: AlbumDoc, tracks: Track[], now: number, by: string,
   let skipped: 'full' | null = null
   const entries = { ...d.entries }
   for (const t of tracks) {
+    if (t.service === 'spotify' && !okSpotifyId(t.spotifyId)) continue
     const k = sameKeyOf(t)
     if (present.has(k)) continue
     if (count >= MAX_TRACKS) {

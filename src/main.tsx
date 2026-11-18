@@ -9,7 +9,7 @@ import { toggleLibrary } from './app/library'
 import { queryClient } from './app/queryClient'
 import { initService, useService } from './app/service'
 import { useRouter } from './app/router'
-import { initSession, useSession } from './app/session'
+import { initSession, hydrateVkWarmState, useSession } from './app/session'
 import { askCaptcha, useSheet } from './app/sheetStore'
 import { installShortcuts } from './app/shortcuts'
 import { startSystemSync } from './app/systemSync'
@@ -22,6 +22,7 @@ import { journalUncaughtErrors } from './lib/journal'
 import { startNotificationChecks, useNotifications } from './lib/notifications'
 import { startServerTimeSync } from './lib/serverTime'
 import { startUpdateChecks } from './lib/updates'
+import { installWarmCacheObserver } from './lib/warmCache'
 import { setMainWindowVisible, startWindowVisibility } from './lib/windowVisibility'
 import { takeWhatsNew } from './lib/whatsNew'
 import { initSettings, useSettings } from './lib/settings'
@@ -32,7 +33,7 @@ import { openQuickSearch, startQuickSearch } from './quicksearch/bridge'
 import { initPlayer, usePlayer } from './player/store'
 import { setDrmAvailable } from './sc/normalize'
 import { probeDrm } from './sc/playback'
-import { initScSession } from './sc/session'
+import { hydrateScWarmState, initScSession } from './sc/session'
 import { hydrateSpotifyWarmState, initSpotifySession } from './spotify/session'
 import { setCaptchaHandler } from './vk/api'
 import { startSpotifyBridge } from './spotify/runtime'
@@ -79,6 +80,9 @@ async function boot() {
   await loadAlbums()
   await initService()
   if (window.location.hash === '#spotify') useService.getState().select('spotify')
+  installWarmCacheObserver(queryClient)
+  hydrateVkWarmState()
+  hydrateScWarmState()
   hydrateSpotifyWarmState()
   if (isTauri()) void invoke('set_user_agent', { ua: navigator.userAgent }).catch(() => {})
 
@@ -92,7 +96,7 @@ async function boot() {
 
   void initSpotifySession()
   void initScSession()
-  await initSession()
+  void initSession()
   // protected SoundCloud tracks play only where the browser has Widevine or PlayReady; else they stay grey
   void probeDrm().then(setDrmAvailable)
   void showWhatsNew().catch(() => {})

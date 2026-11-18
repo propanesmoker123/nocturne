@@ -9,10 +9,11 @@ import { Button, Spinner } from '../components/controls'
 import { Carousel, CardsSkeleton, EmptyState, MixHero, PlaylistCard, RecommendedCard, Section, TrackListSkeleton } from '../components/cards'
 import { PageHeader } from '../components/PageHeader'
 import { TrackGrid } from '../components/TrackList'
+import { pickRealTrackCovers } from '../lib/covers'
 import { usePlayer } from '../player/store'
 import * as vk from '../vk/api'
 import { describeError } from '../vk/errors'
-import type { Block } from '../vk/models'
+import type { Block, Track } from '../vk/models'
 
 export const catalogKey = () => ['catalog', vk.getMeId()] as const
 
@@ -24,17 +25,16 @@ function greeting(name?: string): string {
 }
 
 /** A few covers from the recommendations, for the VK Mix card while nothing plays from it. */
-function tasteCovers(blocks: Block[]): string[] {
-  const out: string[] = []
+function tasteCovers(blocks: Block[], history: Track[] = []): string[] {
+  const tracks: Track[] = []
   for (const b of blocks) {
-    if (b.kind !== 'tracks') continue
-    for (const t of b.tracks) {
-      const c = t.cover?.m
-      if (c && !out.includes(c)) out.push(c)
-      if (out.length === 3) return out
+    if (b.kind === 'tracks') tracks.push(...b.tracks)
+    else if (b.kind === 'recommended') {
+      for (const item of b.items) tracks.push(...item.tracks)
     }
   }
-  return out
+  tracks.push(...history)
+  return pickRealTrackCovers(tracks, 3)
 }
 
 /** Loads the rest of a paged catalog section once the reader scrolls near its end. */
@@ -111,7 +111,7 @@ export function BlockView({ block }: { block: Block }) {
     const title = block.title || 'Слушайте друг друга'
     return (
       <Section title={title} onOpen={openCards(block, title)}>
-        <Carousel card={264}>
+        <Carousel card={280}>
           {block.items.map((item) => (
             <RecommendedCard key={`${item.playlist.ownerId}_${item.playlist.id}`} item={item} />
           ))}
@@ -138,7 +138,7 @@ export function Home() {
   const q = useQuery({ queryKey: catalogKey(), queryFn: vk.getCatalog, staleTime: 10 * 60_000 })
   const home = q.data?.[0]
   const rest = useSectionRest(home?.id, home?.nextFrom)
-  const mixCovers = useMemo(() => tasteCovers(home?.blocks ?? []), [home])
+  const mixCovers = useMemo(() => tasteCovers(home?.blocks ?? [], history), [home, history])
 
   return (
     <>

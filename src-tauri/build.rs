@@ -42,6 +42,7 @@ const COMMANDS: &[&str] = &[
     "journal_open_dir",
     "send_feedback",
     "fetch_notifications",
+    "window_fullscreen",
     "app_quit",
 ];
 

@@ -1,4 +1,4 @@
-import { motion } from 'motion/react'
+import { motion, useReducedMotion } from 'motion/react'
 import appIcon from '../assets/app-icon.png'
 import { useSession } from '../app/session'
 import { WindowControls } from '../app/Titlebar'
@@ -59,23 +59,28 @@ function UpdateNotice() {
   )
 }
 
-export function Login() {
+export function Login({ embedded = false }: { embedded?: boolean }) {
   const loggingIn = useSession((x) => x.loggingIn)
   const busy = useSession((x) => x.busy)
   const login = useSession((x) => x.login)
   const resetLogin = useSession((x) => x.resetLogin)
+  const reduced = useReducedMotion()
   return (
-    <div className={s.screen}>
-      <Wallpaper config={{ kind: 'preset', preset: 'dusk' }} look={{ blur: 0, dim: 0.45 }} />
-      <div className={s.chrome} data-tauri-drag-region>
-        <WindowControls />
-      </div>
-      <UpdateNotice />
+    <div className={embedded ? `${s.screen} ${s.embedded}` : s.screen}>
+      {!embedded && (
+        <>
+          <Wallpaper config={{ kind: 'preset', preset: 'dusk' }} look={{ blur: 0, dim: 0.45 }} />
+          <div className={s.chrome} data-tauri-drag-region>
+            <WindowControls />
+          </div>
+          <UpdateNotice />
+        </>
+      )}
       <motion.div
         className={s.card}
-        initial={{ opacity: 0, y: 18, filter: 'blur(8px)' }}
-        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-        transition={{ type: 'spring', stiffness: 160, damping: 22 }}
+        initial={reduced ? { opacity: 0 } : { opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={reduced ? { duration: 0.01 } : { duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
       >
         <img className={s.icon} src={appIcon} alt="" />
         <h1 className={s.title}>Nocturne</h1>
@@ -101,7 +106,10 @@ export function Login() {
             </Button>
           )}
           <p className={s.note}>Вход идёт на странице VK в отдельном окне — пароль Nocturne не видит. Доступ хранится только в памяти, пока приложение открыто.</p>
-          <Button onClick={() => useService.getState().select('spotify')}>Открыть Spotify</Button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <Button onClick={() => useService.getState().select('sc')}>Открыть SoundCloud</Button>
+            <Button onClick={() => useService.getState().select('spotify')}>Открыть Spotify</Button>
+          </div>
         </div>
       </motion.div>
       <div className={s.disclaimer}>Неофициальный клиент. Nocturne не связан с VK.</div>

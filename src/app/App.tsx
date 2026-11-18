@@ -1,30 +1,10 @@
-import { motion } from 'motion/react'
-import { useEffect, useRef } from 'react'
+import { motion, MotionConfig, useReducedMotion } from 'motion/react'
+import { lazy, Suspense, useLayoutEffect, useRef, type ComponentType, type UIEvent } from 'react'
 import { Spinner } from '../components/controls'
 import { Wallpaper } from '../components/Wallpaper'
 import { useSettings } from '../lib/settings'
-import { AlbumPage } from '../pages/albums/AlbumPage'
-import { AlbumsPage } from '../pages/albums/AlbumsPage'
-import { Artist } from '../pages/Artist'
-import { Explore } from '../pages/Explore'
-import { FriendPage, Friends } from '../pages/Friends'
 import { Home } from '../pages/Home'
-import { Library } from '../pages/Library'
 import { CopyJournalLink, Login } from '../pages/Login'
-import { PlaylistPage } from '../pages/PlaylistPage'
-import { Playlists } from '../pages/Playlists'
-import { Recent } from '../pages/Recent'
-import { SectionPage } from '../pages/SectionPage'
-import { ScHome } from '../pages/sc/ScHome'
-import { ScLikes } from '../pages/sc/ScLikes'
-import { ScPlaylistPage } from '../pages/sc/ScPlaylistPage'
-import { ScPlaylists } from '../pages/sc/ScPlaylists'
-import { ScFollowing } from '../pages/sc/ScFollowing'
-import { ScSearch } from '../pages/sc/ScSearch'
-import { ScStream } from '../pages/sc/ScStream'
-import { ScUser } from '../pages/sc/ScUser'
-import { SearchPage } from '../pages/Search'
-import { SettingsPage } from '../pages/Settings'
 import s from './App.module.css'
 import { useChrome } from './chrome'
 import { ContextMenu } from './ContextMenu'
@@ -36,11 +16,41 @@ import { ServiceRail } from './ServiceRail'
 import { useSession } from './session'
 import { Sheets } from './Sheets'
 import { Sidebar } from './Sidebar'
-import { Titlebar, WindowControls } from './Titlebar'
+import { Titlebar } from './Titlebar'
 import { Toasts } from './Toasts'
-import { SpotifyArtistPage, SpotifyPage, SpotifyPlaylistPage, SpotifySearchPage } from '../spotify/SpotifyPage'
 import { SpotifyMiniPlayer } from '../spotify/SpotifyMiniPlayer'
 import { useSpotify } from '../spotify/runtime'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lazyNamed<T extends Record<string, ComponentType<any>>, K extends keyof T>(load: () => Promise<T>, name: K) {
+  return lazy(async () => ({ default: (await load())[name] }))
+}
+
+const AlbumPage = lazyNamed(() => import('../pages/albums/AlbumPage'), 'AlbumPage')
+const AlbumsPage = lazyNamed(() => import('../pages/albums/AlbumsPage'), 'AlbumsPage')
+const Artist = lazyNamed(() => import('../pages/Artist'), 'Artist')
+const Explore = lazyNamed(() => import('../pages/Explore'), 'Explore')
+const FriendPage = lazyNamed(() => import('../pages/Friends'), 'FriendPage')
+const Friends = lazyNamed(() => import('../pages/Friends'), 'Friends')
+const Library = lazyNamed(() => import('../pages/Library'), 'Library')
+const PlaylistPage = lazyNamed(() => import('../pages/PlaylistPage'), 'PlaylistPage')
+const Playlists = lazyNamed(() => import('../pages/Playlists'), 'Playlists')
+const Recent = lazyNamed(() => import('../pages/Recent'), 'Recent')
+const SectionPage = lazyNamed(() => import('../pages/SectionPage'), 'SectionPage')
+const ScHome = lazyNamed(() => import('../pages/sc/ScHome'), 'ScHome')
+const ScLikes = lazyNamed(() => import('../pages/sc/ScLikes'), 'ScLikes')
+const ScPlaylistPage = lazyNamed(() => import('../pages/sc/ScPlaylistPage'), 'ScPlaylistPage')
+const ScPlaylists = lazyNamed(() => import('../pages/sc/ScPlaylists'), 'ScPlaylists')
+const ScFollowing = lazyNamed(() => import('../pages/sc/ScFollowing'), 'ScFollowing')
+const ScSearch = lazyNamed(() => import('../pages/sc/ScSearch'), 'ScSearch')
+const ScStream = lazyNamed(() => import('../pages/sc/ScStream'), 'ScStream')
+const ScUser = lazyNamed(() => import('../pages/sc/ScUser'), 'ScUser')
+const SearchPage = lazyNamed(() => import('../pages/Search'), 'SearchPage')
+const SettingsPage = lazyNamed(() => import('../pages/Settings'), 'SettingsPage')
+const SpotifyArtistPage = lazyNamed(() => import('../spotify/SpotifyPage'), 'SpotifyArtistPage')
+const SpotifyPage = lazyNamed(() => import('../spotify/SpotifyPage'), 'SpotifyPage')
+const SpotifyPlaylistPage = lazyNamed(() => import('../spotify/SpotifyPage'), 'SpotifyPlaylistPage')
+const SpotifySearchPage = lazyNamed(() => import('../spotify/SpotifyPage'), 'SpotifySearchPage')
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
@@ -102,20 +112,100 @@ function Page({ route }: { route: Route }) {
 /** Search keeps one page instance while the query changes. */
 const routeKey = (r: Route) => (r.name === 'search' || r.name === 'sc-search' || r.name === 'spotify-search' ? r.name : JSON.stringify(r))
 
+/** VK login progress inside `<main>` so SoundCloud, Spotify, and «Моё» remain accessible while VK signs in. */
+function VkPendingGate({ busy }: { busy: boolean }) {
+  return (
+    <div className={s.splash}>
+      <Spinner size={24} />
+      {busy && (
+        <>
+          <p className={s.splashNote}>VK пока не выдаёт доступ — пробуем ещё раз…</p>
+          {/* VK may be down for hours: a way to look at it and to send what happened */}
+          <button type="button" className={s.splashLink} onClick={() => void useSession.getState().login()}>
+            Открыть окно VK
+          </button>
+          <CopyJournalLink />
+        </>
+      )}
+    </div>
+  )
+}
+
 function Shell() {
   const route = useRouter((r) => r.route)
+  const navIndex = useRouter((r) => r.index)
+  const vkPhase = useSession((x) => x.phase)
+  const busy = useSession((x) => x.busy)
   const scroller = useRef<HTMLDivElement>(null)
+  const restoringRef = useRef<number | null>(null)
   const setScrolled = useChrome((c) => c.setScrolled)
   const wallpaper = useSettings((x) => x.wallpaper)
   const blur = useSettings((x) => x.wallpaperBlur)
   const dim = useSettings((x) => x.wallpaperDim)
   const key = routeKey(route)
+  const navKey = `${key}:${navIndex}`
   const spotifyPlaying = useSpotify((x) => x.owner && x.track !== null)
+  const reduced = useReducedMotion()
+  const needsVkAuth = routeService(route) === 'vk' && vkPhase !== 'ready'
 
-  useEffect(() => {
-    scroller.current?.scrollTo({ top: 0 })
-    setScrolled(false)
-  }, [key, setScrolled])
+  useLayoutEffect(() => {
+    const el = scroller.current
+    const target = useRouter.getState().currentScroll()
+    setScrolled(target > 36)
+    if (!el) return
+    if (target <= 0) {
+      restoringRef.current = null
+      el.scrollTo({ top: 0 })
+      return
+    }
+    restoringRef.current = target
+    el.scrollTo({ top: target })
+    if (el.scrollTop >= target - 2) {
+      restoringRef.current = null
+      return
+    }
+    if (typeof ResizeObserver === 'undefined') return
+    const content = el.firstElementChild ?? el
+    const ro = new ResizeObserver(() => {
+      if (restoringRef.current === null) {
+        ro.disconnect()
+        return
+      }
+      el.scrollTo({ top: target })
+      setScrolled(el.scrollTop > 36)
+      if (el.scrollTop >= target - 2) {
+        restoringRef.current = null
+        ro.disconnect()
+      }
+    })
+    ro.observe(content)
+    const timer = window.setTimeout(() => {
+      restoringRef.current = null
+      ro.disconnect()
+    }, 1500)
+    return () => {
+      ro.disconnect()
+      window.clearTimeout(timer)
+    }
+  }, [navKey, setScrolled])
+
+  const cancelRestore = () => {
+    restoringRef.current = null
+  }
+
+  const handleScroll = (e: UIEvent<HTMLDivElement>) => {
+    const top = e.currentTarget.scrollTop
+    setScrolled(top > 36)
+    const target = restoringRef.current
+    if (target !== null) {
+      if (top >= target - 2) {
+        restoringRef.current = null
+        useRouter.getState().saveScroll(top)
+      }
+      return
+    }
+    useRouter.getState().saveScroll(top)
+  }
 
   return (
     <ScrollerContext.Provider value={scroller}>
@@ -124,9 +214,28 @@ function Shell() {
         <ServiceRail />
         <Sidebar />
         <main className={s.main}>
-          <div ref={scroller} className={s.scroller} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 36)}>
-            <motion.div key={key} className={s.page} initial={{ y: 14 }} animate={{ y: 0 }} transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}>
-              <Page route={route} />
+          <div
+            ref={scroller}
+            className={s.scroller}
+            onScroll={handleScroll}
+            onWheel={cancelRestore}
+            onTouchStart={cancelRestore}
+            onPointerDown={cancelRestore}
+          >
+            <motion.div
+              key={key}
+              className={s.page}
+              initial={reduced ? false : { opacity: 0.92, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={reduced ? { duration: 0.01 } : { duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {needsVkAuth ? (
+                vkPhase === 'pending' ? <VkPendingGate busy={busy} /> : <Login embedded />
+              ) : (
+                <Suspense fallback={<div className={s.routeFallback}><Spinner size={24} /></div>}>
+                  <Page route={route} />
+                </Suspense>
+              )}
             </motion.div>
           </div>
           <Titlebar />
@@ -140,38 +249,11 @@ function Shell() {
 }
 
 export function App() {
-  const spotify = useRouter(state => routeService(state.route) === 'spotify')
-  const phase = useSession((x) => x.phase)
-  const busy = useSession((x) => x.busy)
-  const body =
-    phase === 'pending' && !spotify ? (
-      <div className={s.splash} data-tauri-drag-region>
-        <div className={s.splashChrome}>
-          <WindowControls />
-        </div>
-        <Spinner size={24} />
-        {busy && (
-          <>
-            <p className={s.splashNote}>VK пока не выдаёт доступ — пробуем ещё раз…</p>
-            {/* VK may be down for hours: a way to look at it and to send what happened */}
-            <button type="button" className={s.splashLink} onClick={() => void useSession.getState().login()}>
-              Открыть окно VK
-            </button>
-            <CopyJournalLink />
-          </>
-        )}
-      </div>
-    ) : phase === 'none' && !spotify ? (
-      <Login />
-    ) : (
-      <Shell />
-    )
-
   return (
-    <>
-      {body}
+    <MotionConfig reducedMotion="user">
+      <Shell />
       <Toasts />
       <Sheets />
-    </>
+    </MotionConfig>
   )
 }

@@ -1,6 +1,6 @@
-import { AnimatePresence, motion, useIsPresent } from 'motion/react'
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'motion/react'
 import { Bell, Megaphone, MessageCircle, RefreshCw, Sparkles } from 'lucide-react'
-import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Button, IconButton, Segmented, Spinner, Switch } from '../components/controls'
 import { sendFeedback, type FeedbackKind } from '../lib/feedback'
 import { journalTail } from '../lib/journal'
@@ -251,7 +251,6 @@ function FeedbackBody({ req }: { req: Extract<SheetRequest, { kind: 'feedback' }
   const initialKind = req.defaultKind ?? 'bug'
   const [kind, setKind] = useState<FeedbackKind>(initialKind)
   const [message, setMessage] = useState('')
-  const [contact, setContact] = useState('')
   const [includeLog, setIncludeLog] = useState(initialKind === 'bug')
   const [logTouched, setLogTouched] = useState(false)
   const [preview, setPreview] = useState<string | null>(null)
@@ -283,7 +282,7 @@ function FeedbackBody({ req }: { req: Extract<SheetRequest, { kind: 'feedback' }
     setBusy(true)
     setError('')
     try {
-      await sendFeedback({ kind, message: trimmed, contact, includeLog })
+      await sendFeedback({ kind, message: trimmed, includeLog })
       toast('Спасибо! Отчёт отправлен разработчику', 'added')
       close()
     } catch (err) {
@@ -295,7 +294,6 @@ function FeedbackBody({ req }: { req: Extract<SheetRequest, { kind: 'feedback' }
   return (
     <form onSubmit={submit}>
       <h2 className={s.sheetTitle}>Обратная связь</h2>
-      <p className={s.sheetText}>Отправляется напрямую разработчику в Telegram. Ни ваш аккаунт, ни пароли или треки не передаются.</p>
       <div className={s.feedbackSwitch}>
         <Segmented
           id="feedback-kind"
@@ -316,16 +314,6 @@ function FeedbackBody({ req }: { req: Extract<SheetRequest, { kind: 'feedback' }
           autoFocus
           onChange={(e) => setMessage(e.target.value)}
           placeholder={kind === 'bug' ? 'Например: при входе в SoundCloud через Google открывается белое окно…' : 'Например: хочется видеть…'}
-        />
-      </label>
-      <label className={s.field}>
-        <span className={s.fieldLabel}>Контакт для ответа (необязательно)</span>
-        <input
-          className={s.input}
-          value={contact}
-          maxLength={160}
-          onChange={(e) => setContact(e.target.value)}
-          placeholder="@telegram или почта, если нужен ответ"
         />
       </label>
       <div className={s.feedbackLogRow}>
@@ -555,17 +543,27 @@ function NotificationsBody() {
   )
 }
 
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"], [contenteditable=""]'
+
+function focusableInside(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (el) => el.getAttribute('aria-hidden') !== 'true',
+  )
+}
+
 /** The dimming layer stops catching clicks as soon as it starts leaving. */
-function Layer({ children, onDismiss }: { children: ReactNode; onDismiss(): void }) {
+function Layer({ children, onDismiss, layerRef, reduced }: { children: ReactNode; onDismiss(): void; layerRef: React.RefObject<HTMLDivElement | null>; reduced: boolean }) {
   const present = useIsPresent()
   return (
     <motion.div
+      ref={layerRef}
       className={s.sheetLayer}
       style={{ pointerEvents: present ? 'auto' : 'none' }}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.18 }}
+      transition={reduced ? { duration: 0.01 } : { duration: 0.16 }}
       onMouseDown={(e) => e.target === e.currentTarget && onDismiss()}
     >
       {children}
@@ -577,26 +575,113 @@ export function Sheets() {
   const sheet = useSheet((x) => x.sheet)
   const seq = useSheet((x) => x.seq)
   const close = useSheet((x) => x.close)
+  const reduced = Boolean(useReducedMotion())
+  const baseTitleId = useId()
+  const layerRef = useRef<HTMLDivElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const prevFocusRef = useRef<HTMLElement | null>(null)
+  const [titleId, setTitleId] = useState<string | undefined>(undefined)
+
+  useLayoutEffect(() => {
+    if (!sheet || !dialogRef.current) {
+      setTitleId(undefined)
+      return
+    }
+    const heading = dialogRef.current.querySelector<HTMLElement>('h2, h3')
+    if (heading) {
+      if (!heading.id) heading.id = baseTitleId
+      setTitleId(heading.id)
+    } else {
+      setTitleId(undefined)
+    }
+  }, [sheet, seq, baseTitleId])
 
   useEffect(() => {
     if (!sheet) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [sheet, close])
+    if (!prevFocusRef.current && document.activeElement instanceof HTMLElement) {
+      prevFocusRef.current = document.activeElement
+    }
+
+    const parent = layerRef.current?.parentElement
+    const madeInert: HTMLElement[] = []
+    if (parent) {
+      for (const child of Array.from(parent.children)) {
+        if (child !== layerRef.current && child instanceof HTMLElement && !child.inert) {
+          child.inert = true
+          madeInert.push(child)
+        }
+      }
+    }
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        close()
+        return
+      }
+      if (e.key !== 'Tab' || !dialogRef.current) return
+      const nodes = focusableInside(dialogRef.current)
+      if (nodes.length === 0) {
+        e.preventDefault()
+        dialogRef.current.focus()
+        return
+      }
+      const first = nodes[0]
+      const last = nodes[nodes.length - 1]
+      const active = document.activeElement
+      if (e.shiftKey) {
+        if (active === first || !dialogRef.current.contains(active)) {
+          e.preventDefault()
+          last.focus()
+        }
+      } else if (active === last || !dialogRef.current.contains(active)) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+
+    const focusInitial = () => {
+      const dlg = dialogRef.current
+      if (!dlg) return
+      if (document.activeElement && dlg.contains(document.activeElement)) return
+      const first = focusableInside(dlg)[0]
+      ;(first ?? dlg).focus()
+    }
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(focusInitial) : 0
+    if (!raf) focusInitial()
+
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf)
+      for (const el of madeInert) el.inert = false
+    }
+  }, [sheet, seq, close])
+
+  useEffect(() => {
+    if (sheet) return
+    const prev = prevFocusRef.current
+    prevFocusRef.current = null
+    if (prev && prev.isConnected) prev.focus()
+  }, [sheet])
 
   return (
     <AnimatePresence>
       {sheet && (
-        <Layer key="sheet" onDismiss={close}>
+        <Layer key="sheet" layerRef={layerRef} reduced={reduced} onDismiss={close}>
           <motion.div
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
+            aria-labelledby={titleId}
+            aria-label={titleId ? undefined : 'Диалог'}
+            tabIndex={-1}
             className={sheet.kind === 'notifications' ? `${s.sheet} ${s.sheetWide}` : s.sheet}
-            initial={{ y: 24, scale: 0.97, opacity: 0 }}
-            animate={{ y: 0, scale: 1, opacity: 1 }}
-            exit={{ y: 12, scale: 0.98, opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+            initial={reduced ? { opacity: 0 } : { y: 16, scale: 0.98, opacity: 0 }}
+            animate={reduced ? { opacity: 1 } : { y: 0, scale: 1, opacity: 1 }}
+            exit={reduced ? { opacity: 0 } : { y: 8, scale: 0.99, opacity: 0 }}
+            transition={reduced ? { duration: 0.01 } : { duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
           >
             {/* a new opening is a new body: a form opened again starts empty */}
             <Fragment key={seq}>

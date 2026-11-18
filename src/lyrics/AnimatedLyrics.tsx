@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { scrollWithin } from '../lib/scrollWithin'
 import { useSettings } from '../lib/settings'
+import { useWindowVisibility } from '../lib/windowVisibility'
 import { engine } from '../player/engine'
 import { usePlayer } from '../player/store'
 import { useWaveform } from '../player/waveformStore'
@@ -25,6 +26,7 @@ interface Props {
 
 export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false, footer }: Props) {
   const isPlaying = usePlayer((p) => p.isPlaying)
+  const visible = useWindowVisibility((x) => x.visible)
   const position = usePlayer((p) => p.position)
   const duration = usePlayer((p) => p.duration || track.duration)
   const seek = usePlayer((p) => p.seek)
@@ -300,7 +302,7 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
     }
 
     syncFrame(readPlaybackMs(performance.now()), performance.now())
-    if (!isPlaying && beatSmoothRef.current.kick === 0 && beatSmoothRef.current.energy === 0) {
+    if (!visible || (!isPlaying && beatSmoothRef.current.kick === 0 && beatSmoothRef.current.energy === 0)) {
       return () => {
         syncNowRef.current = null
       }
@@ -318,7 +320,7 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
       syncNowRef.current = null
       cancelAnimationFrame(raf)
     }
-  }, [isPlaying, duration, lyrics, effectsOn, wordSyncOn])
+  }, [isPlaying, visible, duration, lyrics, effectsOn, wordSyncOn])
 
   // Smooth spring scroll on normal playback advances; only snap immediately right after a multi-line seek jump
   useEffect(() => {

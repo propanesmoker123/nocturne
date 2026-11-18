@@ -7,6 +7,8 @@
   display: flex;
   justify-content: center;
   pointer-events: none;
+  container-type: inline-size;
+  container-name: miniplayer;
 }
 
 .bar {
@@ -16,7 +18,7 @@
   max-width: 1180px;
   height: var(--player-h);
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(300px, 460px) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 1.15fr) minmax(240px, 420px) auto;
   align-items: center;
   gap: 20px;
   padding: 0 18px 0 12px;
@@ -58,14 +60,9 @@
   flex: none;
   margin-left: -4px;
 }
-/* a narrow window has no room for both: the plus stays in the track menu and «Сейчас играет» */
-@media (max-width: 1100px) {
-  .markAdd {
-    display: none;
-  }
-}
 .titles {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-width: 0;
   gap: 1px;
@@ -148,9 +145,51 @@
   gap: 4px;
   min-width: 0;
 }
+.bar .moreBtn {
+  display: none;
+}
+.volumeWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
+}
 .volume {
-  width: 112px;
-  margin-left: 2px;
+  flex: none;
+  width: clamp(88px, 8.5vw, 114px);
+  min-width: 88px;
+  margin-left: 4px;
+}
+.volumePopover {
+  display: none;
+  position: absolute;
+  left: 50%;
+  right: auto;
+  bottom: calc(100% + 14px);
+  transform: translateX(-50%);
+  z-index: 6;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 42px;
+  padding: 10px 6px 8px;
+  border-radius: 999px;
+  background: var(--mat-chrome);
+  backdrop-filter: var(--mat-blur-strong);
+  -webkit-backdrop-filter: var(--mat-blur-strong);
+  box-shadow: var(--mat-edge), 0 14px 36px -10px rgba(0, 0, 0, 0.55);
+}
+.volumeSlider {
+  display: flex;
+  justify-content: center;
+  width: 24px;
+  height: 96px;
+}
+.volumePercent {
+  text-align: center;
+  font: 600 11px/1 var(--font);
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
 }
 .empty {
   color: var(--label-3);
@@ -167,12 +206,65 @@
   color: var(--label-3);
 }
 
-@media (max-width: 1100px) {
+@container miniplayer (max-width: 960px) {
   .bar {
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 380px) auto;
-    gap: 12px;
+    grid-template-columns: minmax(210px, 1.15fr) minmax(200px, 360px) auto;
+    gap: 14px;
+    padding: 0 14px 0 12px;
   }
-  .volume {
+  .bar .markAdd {
+    display: none;
+  }
+  .bar .right {
+    gap: 3px;
+  }
+  .bar .volume {
+    width: 84px;
+    min-width: 84px;
+  }
+}
+
+@container miniplayer (max-width: 760px) {
+  .bar {
+    grid-template-columns: minmax(196px, 1.15fr) minmax(176px, 1fr) auto;
+    gap: 10px;
+    padding: 0 12px 0 10px;
+  }
+  .bar .secondaryBtn {
+    display: none;
+  }
+  .bar .moreBtn {
+    display: inline-grid;
+  }
+  .bar .volume {
+    display: none;
+  }
+  .bar .volumeWrap[data-open='true'] .volumePopover {
+    display: flex;
+  }
+  .bar .transport {
+    gap: 4px;
+  }
+  .bar .timeline {
+    grid-template-columns: 36px 1fr 40px;
+    gap: 6px;
+    font-size: 11px;
+  }
+}
+
+@container miniplayer (max-width: 560px) {
+  .bar {
+    grid-template-columns: minmax(152px, 1fr) minmax(144px, 1fr) auto;
+    gap: 8px;
+    padding: 0 10px;
+  }
+  .bar .marks {
+    display: none;
+  }
+  .bar .transport {
+    gap: 2px;
+  }
+  .bar .transportExtra {
     display: none;
   }
 }

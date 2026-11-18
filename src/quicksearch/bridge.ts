@@ -7,7 +7,7 @@ import { emitTo, invoke, listen } from '../lib/tauri'
 import { usePlayer } from '../player/store'
 import * as sc from '../sc/api'
 import { describeScError } from '../sc/errors'
-import { scKeys } from '../sc/queries'
+import { nextCursor, scKeys } from '../sc/queries'
 import * as spotify from '../spotify/api'
 import { spKeys } from '../spotify/queries'
 import { spotifyError } from '../spotify/runtime'
@@ -51,14 +51,73 @@ function wholeLibrary(): Promise<Track[]> {
   return ownLoading
 }
 
-/** SoundCloud's «own» list is the person's likes: from the likes page's cache, else the first page, once a minute. */
-function scLikes(): Promise<Track[]> {
+const SC_LIKES_MAX = 2000
+let scLikesFill: { me: number; promise: Promise<void>; listeners: Set<(items: Track[], partial: boolean) => void> } | null = null
+
+function notifyScListeners(listeners: Set<(items: Track[], partial: boolean) => void>, items: Track[], partial: boolean) {
+  for (const fn of listeners) fn(items, partial)
+}
+
+/** Ensures SoundCloud likes fill into the shared `scKeys.likes(me)` infinite cache, notifying on progress. */
+async function scLikes(onProgress?: (items: Track[], partial: boolean) => void): Promise<{ items: Track[]; partial: boolean }> {
   const me = sc.getScMeId()
   // the profile has not come yet: no likes to search
-  if (me <= 0) return Promise.resolve([])
-  const shared = queryClient.getQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me))
-  if (shared) return Promise.resolve(shared.pages.flatMap((p) => p.items))
-  return queryClient.fetchQuery({ queryKey: ['sc-quick-likes', me], queryFn: async () => (await sc.getLikes(me)).items, staleTime: LIBRARY_TTL })
+  if (me <= 0) return { items: [], partial: false }
+
+  let data = queryClient.getQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me))
+  if (!data) {
+    data = await queryClient.fetchInfiniteQuery({
+      queryKey: scKeys.likes(me),
+      initialPageParam: undefined as string | undefined,
+      queryFn: ({ pageParam }) => sc.getLikes(me, pageParam),
+      getNextPageParam: (_last: sc.ScPage<Track>, pages: sc.ScPage<Track>[]) => nextCursor(pages, SC_LIKES_MAX),
+      staleTime: LIBRARY_TTL,
+    })
+  }
+
+  const initialItems = data.pages.flatMap((p) => p.items)
+  const next = nextCursor(data.pages, SC_LIKES_MAX)
+  if (!next) return { items: initialItems, partial: false }
+
+  if (!scLikesFill || scLikesFill.me !== me) {
+    const listeners = new Set<(items: Track[], partial: boolean) => void>()
+    if (onProgress) listeners.add(onProgress)
+    const promise = (async () => {
+      try {
+        for (;;) {
+          const cur = queryClient.getQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me))
+          if (!cur) break
+          const cursor = nextCursor(cur.pages, SC_LIKES_MAX)
+          if (!cursor) {
+            notifyScListeners(listeners, cur.pages.flatMap((p) => p.items), false)
+            break
+          }
+          const page = await sc.getLikes(me, cursor)
+          const updated = queryClient.setQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me), (prev) => {
+            if (!prev) return prev
+            return {
+              pages: [...prev.pages, page],
+              pageParams: [...prev.pageParams, cursor],
+            }
+          })
+          const items = updated?.pages.flatMap((p) => p.items) ?? []
+          const more = Boolean(updated && nextCursor(updated.pages, SC_LIKES_MAX))
+          notifyScListeners(listeners, items, more)
+          if (!more || !page.items.length) break
+        }
+      } catch {
+        const cur = queryClient.getQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me))
+        notifyScListeners(listeners, cur?.pages.flatMap((p) => p.items) ?? [], false)
+      } finally {
+        if (scLikesFill?.me === me) scLikesFill = null
+      }
+    })()
+    scLikesFill = { me, promise, listeners }
+  } else if (onProgress) {
+    scLikesFill.listeners.add(onProgress)
+  }
+
+  return { items: initialItems, partial: true }
 }
 
 /** Spotify's «own» list is the person's liked tracks: from the liked-tracks cache when complete, else fetched up to 500 tracks once a minute. */
@@ -94,6 +153,7 @@ function answer({ seq, q }: QuickQuery) {
   const term = q.trim()
   const service = useService.getState().current
   let own: Track[] | null = null
+  let ownPartial = false
   let global: Track[] | null = null
   let error: string | null = null
   const publish = () => {
@@ -105,6 +165,7 @@ function answer({ seq, q }: QuickQuery) {
       own: found.own.map(toQuickTrack),
       others: found.others.map(toQuickTrack),
       service,
+      ownPartial: ownPartial || undefined,
       loading: own === null || (global === null && error === null),
       error,
       accent: document.documentElement.style.getPropertyValue('--accent').trim() || null,
@@ -119,11 +180,30 @@ function answer({ seq, q }: QuickQuery) {
     return publish()
   }
   // the service picked in the main window is the one searched
-  const ownReq = service === 'spotify' ? spLikes() : service === 'sc' ? scLikes() : wholeLibrary()
-  ownReq.then(
-    (items) => ((own = items), publish()),
-    () => ((own = []), publish()),
-  )
+  if (service === 'sc') {
+    scLikes((items, partial) => {
+      own = items
+      ownPartial = partial
+      publish()
+    }).then(
+      ({ items, partial }) => {
+        own = items
+        ownPartial = partial
+        publish()
+      },
+      () => {
+        own = []
+        ownPartial = false
+        publish()
+      },
+    )
+  } else {
+    const ownReq = service === 'spotify' ? spLikes() : wholeLibrary()
+    ownReq.then(
+      (items) => ((own = items), publish()),
+      () => ((own = []), publish()),
+    )
+  }
   const found =
     service === 'spotify'
       ? queryClient.fetchQuery({ queryKey: spKeys.search(term), queryFn: () => spotify.search(term) }).then((r) => r.tracks)

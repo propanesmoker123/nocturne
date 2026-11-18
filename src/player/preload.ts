@@ -6,11 +6,10 @@ import * as sc from '../sc/api'
 import * as spotify from '../spotify/api'
 import type { ScPlaybackSource } from '../sc/playback'
 import { serviceOf, type Track } from '../vk/models'
-import { needsFreshUrl } from './logic'
+import { needsFreshUrl, SC_URL_MAX_AGE_MS } from './logic'
 import * as waveform from './waveform'
 
 export const MAX_PRELOAD_BYTES = 24 * 1024 * 1024
-const SC_SOURCE_TTL_MS = 4 * 60 * 1000
 
 export interface PreloadedSource {
   url: string
@@ -133,34 +132,22 @@ function warmCoverImages(t: Track) {
   for (const src of [t.cover.m, t.cover.l]) if (src) new Image().src = src
 }
 
-async function preloadHlsStream(gen: number, manifestUrl: string) {
+async function preloadHlsStream(gen: number, manifestUrl: string, loadVariants = true) {
   const buf = await fetchPreloadBytes(gen, manifestUrl)
   if (gen !== generation) return
-  const parsed = parseHlsManifest(new TextDecoder().decode(buf), manifestUrl)
+  const text = new TextDecoder().decode(buf)
+  const parsed = parseHlsManifest(text, manifestUrl)
 
-  const subPlaylists = parsed.variants.length
-    ? [parsed.variants[0], ...parsed.media.slice(0, 1)]
-    : []
-
-  if (subPlaylists.length) {
-    for (const subUrl of subPlaylists) {
+  if (loadVariants && parsed.variants.length) {
+    for (const subUrl of [parsed.variants[0], ...parsed.media.slice(0, 1)]) {
       if (gen !== generation || cachedBytes >= MAX_PRELOAD_BYTES) return
-      const subBuf = await fetchPreloadBytes(gen, subUrl)
-      if (gen !== generation) return
-      const subParsed = parseHlsManifest(new TextDecoder().decode(subBuf), subUrl)
-      for (const u of [...subParsed.initAndKeys, ...subParsed.segments]) {
-        if (gen !== generation || cachedBytes >= MAX_PRELOAD_BYTES) return
-        try {
-          await fetchPreloadBytes(gen, u)
-        } catch {
-          // Stop on segment failure without breaking playback; hls.js can still retry live.
-          return
-        }
-      }
+      await preloadHlsStream(gen, subUrl, false)
     }
     return
   }
 
+  // hls.js requests the exact slices of shared files while playing this kind of manifest.
+  if (/#EXT-X-(?:BYTERANGE:|MAP:[^\r\n]*\bBYTERANGE=)/m.test(text)) return
   for (const u of [...parsed.initAndKeys, ...parsed.segments]) {
     if (gen !== generation || cachedBytes >= MAX_PRELOAD_BYTES) return
     try {
@@ -279,7 +266,7 @@ export function takePreloadedSource(track: Track, now = Date.now()): PreloadedSo
   if (track.urlFetchedAt === 0 && entry.fetchedAt <= 0) return null
   const svc = serviceOf(track)
   if (svc === 'sc') {
-    return now - entry.fetchedAt < SC_SOURCE_TTL_MS ? entry : null
+    return now - entry.fetchedAt < SC_URL_MAX_AGE_MS ? entry : null
   }
   return !needsFreshUrl({ ...track, url: entry.url, urlFetchedAt: entry.fetchedAt }, now) ? entry : null
 }

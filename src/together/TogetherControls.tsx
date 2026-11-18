@@ -11,6 +11,10 @@ import s from './together.module.css'
 
 const usePanel = create<{ open: boolean; set(open: boolean): void }>((set) => ({ open: false, set: (open) => set({ open }) }))
 
+export function openTogetherPanel(): void {
+  usePanel.getState().set(true)
+}
+
 /** A listener does not seek or skip: the host does. Null when the player is the person's own. */
 export function useControlledBy(): string | null {
   return useTogether((t) => (t.role === 'listener' ? (t.hostName ?? 'ведущий') : null))
@@ -204,7 +208,7 @@ function Listening() {
 }
 
 /** «Слушать вместе» in the mini player: the button and its card above the bar. */
-export function TogetherButton() {
+export function TogetherButton({ buttonClassName }: { buttonClassName?: string } = {}) {
   const { open, set } = usePanel()
   const role = useTogether((t) => t.role)
   const [joining, setJoining] = useState(false)
@@ -229,7 +233,7 @@ export function TogetherButton() {
 
   return (
     <div ref={box} className={s.anchor}>
-      <IconButton size={32} label="Слушать вместе" active={open || !!role} onClick={() => set(!open)}>
+      <IconButton className={buttonClassName} size={32} label="Слушать вместе" active={open || !!role} onClick={() => set(!open)}>
         <Users size={18} strokeWidth={2.1} />
       </IconButton>
       {open && (

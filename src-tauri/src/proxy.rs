@@ -56,10 +56,17 @@ fn host_allowed(url: &str) -> bool {
     origin_for(url).is_some()
 }
 
+fn range_header([start, end]: [u64; 2]) -> Result<String, String> {
+    if start >= end {
+        return Err("invalid media byte range".into());
+    }
+    Ok(format!("bytes={start}-{}", end - 1))
+}
+
 #[tauri::command]
-pub async fn proxy_fetch(http: State<'_, Http>, url: String) -> Result<tauri::ipc::Response, String> {
+pub async fn proxy_fetch(http: State<'_, Http>, url: String, range: Option<[u64; 2]>) -> Result<tauri::ipc::Response, String> {
     let Some(origin) = origin_for(&url) else {
-        return Err(format!("host not allowed: {url}"));
+        return Err("media host not allowed".into());
     };
     let (origin, referer) = match origin {
         Origin::Vk => ("https://vk.ru", "https://vk.ru/"),
@@ -72,12 +79,16 @@ pub async fn proxy_fetch(http: State<'_, Http>, url: String) -> Result<tauri::ip
         crate::journal::write("proxy", &format!("{host}: {msg}"));
         msg
     };
-    let resp = http
+    let mut request = http
         .client
         .get(&url)
         .header(reqwest::header::USER_AGENT, http.user_agent())
         .header(reqwest::header::ORIGIN, origin)
-        .header(reqwest::header::REFERER, referer)
+        .header(reqwest::header::REFERER, referer);
+    if let Some(bounds) = range {
+        request = request.header(reqwest::header::RANGE, range_header(bounds)?);
+    }
+    let resp = request
         .send()
         .await
         .map_err(|e| fail(format!("network: {}", e.without_url())))?;
@@ -85,7 +96,17 @@ pub async fn proxy_fetch(http: State<'_, Http>, url: String) -> Result<tauri::ip
     if !status.is_success() {
         return Err(fail(format!("HTTP {}", status.as_u16())));
     }
+    if let Some([start, end]) = range {
+        let expected = format!("bytes {start}-{}/", end - 1);
+        let content_range = resp.headers().get(reqwest::header::CONTENT_RANGE).and_then(|v| v.to_str().ok());
+        if status != reqwest::StatusCode::PARTIAL_CONTENT || !content_range.is_some_and(|v| v.starts_with(&expected)) {
+            return Err(fail("unexpected response to media byte range".into()));
+        }
+    }
     let bytes = resp.bytes().await.map_err(|e| fail(format!("network: {}", e.without_url())))?;
+    if range.is_some_and(|[start, end]| bytes.len() as u64 != end - start) {
+        return Err(fail("incomplete media byte range".into()));
+    }
     Ok(tauri::ipc::Response::new(bytes.to_vec()))
 }
 
@@ -125,5 +146,13 @@ mod tests {
     #[test]
     fn rejects_plain_http() {
         assert!(!host_allowed("http://cs1-2v4.vkuseraudio.net/a"));
+    }
+
+    #[test]
+    fn range_end_from_hls_is_exclusive() {
+        assert_eq!(range_header([0, 1]).unwrap(), "bytes=0-0");
+        assert_eq!(range_header([256, 1024]).unwrap(), "bytes=256-1023");
+        assert!(range_header([1, 1]).is_err());
+        assert!(range_header([2, 0]).is_err());
     }
 }

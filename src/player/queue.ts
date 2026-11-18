@@ -100,12 +100,14 @@ export function append<T>(q: QueueState<T>, items: T[]): QueueState<T> {
 }
 
 export function removeAt<T>(q: QueueState<T>, orderPos: number): QueueState<T> {
-  if (orderPos < 0 || orderPos >= q.order.length) return q
-  const order = q.order.filter((_, i) => i !== orderPos)
+  const removed = q.order[orderPos]
+  if (removed === undefined) return q
+  const items = q.items.filter((_, i) => i !== removed)
+  const order = q.order.filter((_, i) => i !== orderPos).map((i) => i > removed ? i - 1 : i)
   let pos = q.pos
   if (orderPos < q.pos) pos -= 1
   pos = Math.min(pos, Math.max(order.length - 1, 0))
-  return { ...q, order, pos }
+  return { ...q, items, order, pos }
 }
 
 export function move<T>(q: QueueState<T>, from: number, to: number): QueueState<T> {

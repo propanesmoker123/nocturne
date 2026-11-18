@@ -100,8 +100,13 @@
   place-items: center;
   align-content: center;
   gap: 14px;
-  height: 100%;
+  min-height: calc(100vh - var(--titlebar-h) - var(--player-h) - 62px);
   color: var(--label-2);
+}
+.routeFallback {
+  display: grid;
+  place-items: center;
+  min-height: 240px;
 }
 .splashNote {
   max-width: 320px;

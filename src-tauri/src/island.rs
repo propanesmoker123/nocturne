@@ -222,7 +222,8 @@ pub fn start(app: &AppHandle) {
             tick = tick.wrapping_add(1);
             let Some(win) = app.get_webview_window(LABEL) else { continue };
             if tick % 10 == 0 {
-                let pos = win.outer_position().map(|p| (p.x + 8, p.y + 8)).unwrap_or((0, 0));
+                let w = win.outer_size().map(|s| s.width as i32).unwrap_or(WIDTH as i32);
+                let pos = win.outer_position().map(|p| (p.x + w / 2, p.y + 8)).unwrap_or((0, 0));
                 let now_full = fullscreen_on(pos);
                 if now_full != fullscreen {
                     trace!("full screen on island monitor: {now_full}");

@@ -14,6 +14,7 @@ interface SliderProps {
   disabled?: boolean
   size?: 'sm' | 'md' | 'lg'
   tone?: 'light' | 'accent'
+  orientation?: 'horizontal' | 'vertical'
   className?: string
 }
 
@@ -31,15 +32,17 @@ export function Slider({
   disabled,
   size = 'md',
   tone = 'light',
+  orientation = 'horizontal',
   className,
 }: SliderProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [drag, setDrag] = useState<number | null>(null)
   const shown = clamp(drag ?? value)
+  const vertical = orientation === 'vertical'
 
   const fromEvent = (e: PointerEvent) => {
     const r = ref.current!.getBoundingClientRect()
-    return clamp((e.clientX - r.left) / r.width)
+    return vertical ? clamp((r.bottom - e.clientY) / r.height) : clamp((e.clientX - r.left) / r.width)
   }
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
@@ -90,11 +93,13 @@ export function Slider({
       className={[s.slider, className].filter(Boolean).join(' ')}
       data-size={size}
       data-tone={tone}
+      data-orientation={vertical ? 'vertical' : undefined}
       data-dragging={drag !== null || undefined}
       data-disabled={disabled || undefined}
       role="slider"
       tabIndex={disabled ? -1 : 0}
       aria-label={label}
+      aria-orientation={vertical ? 'vertical' : undefined}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(shown * 100)}
@@ -108,8 +113,10 @@ export function Slider({
       onWheel={onWheel}
     >
       <div className={s.track}>
-        {buffered !== undefined && <div className={s.buffered} style={{ width: `${clamp(buffered) * 100}%` }} />}
-        <div className={s.fill} style={{ width: `${shown * 100}%` }} />
+        {buffered !== undefined && (
+          <div className={s.buffered} style={vertical ? { height: `${clamp(buffered) * 100}%` } : { width: `${clamp(buffered) * 100}%` }} />
+        )}
+        <div className={s.fill} style={vertical ? { height: `${shown * 100}%` } : { width: `${shown * 100}%` }} />
       </div>
     </div>
   )

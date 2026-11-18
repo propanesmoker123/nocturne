@@ -3,6 +3,7 @@ import { useEffect, useMemo } from 'react'
 import { useChrome } from '../../app/chrome'
 import { showMenu, type MenuItem } from '../../app/menu'
 import { useRouter } from '../../app/router'
+import { useSession } from '../../app/session'
 import { useSheet } from '../../app/sheetStore'
 import { toast } from '../../app/toast'
 import { makeCover, MAX_SOURCE, pickImage } from '../../albums/coverImage'
@@ -16,6 +17,7 @@ import { TrackList } from '../../components/TrackList'
 import { formatLongDuration, pluralRu } from '../../lib/format'
 import { usePlayer } from '../../player/store'
 import { useScSession } from '../../sc/session'
+import { useSpotifySession } from '../../spotify/session'
 import s from '../pages.module.css'
 import a from './albums.module.css'
 
@@ -24,17 +26,32 @@ const ic = { size: 16, strokeWidth: 1.9 } as const
 export function AlbumPage({ id }: { id: string }) {
   const doc = useAlbums((x) => x.docs[id])
   const entry = useAlbums((x) => x.list.find((e) => e.id === id))
+  const vkSignedOut = useSession((x) => x.phase === 'none')
   const scSignedOut = useScSession((x) => x.phase === 'signed-out')
+  const spSignedOut = useSpotifySession((x) => x.phase === 'signed-out')
+  const push = useRouter((r) => r.push)
   const setTitle = useChrome((c) => c.setTitle)
   const name = doc?.meta.name || entry?.name || ''
   useEffect(() => setTitle(name), [name, setTitle])
 
   const live = useMemo(() => (doc ? liveEntries(doc) : []), [doc])
   const tracks = useMemo(
-    // a SoundCloud track does not play without its account
-    () => live.map((e) => ({ ...toTrack(e), ...(scSignedOut && e.track?.service === 'sc' ? { playable: false } : {}) })),
-    [live, scSignedOut],
+    () =>
+      live.map((e) => {
+        const svc = e.track?.service ?? 'vk'
+        const signedOut = svc === 'sc' ? scSignedOut : svc === 'spotify' ? spSignedOut : vkSignedOut
+        const track = toTrack(e)
+        return signedOut ? { ...track, playable: false } : track
+      }),
+    [live, vkSignedOut, scSignedOut, spSignedOut],
   )
+  const missingAuth = useMemo(() => {
+    const names: string[] = []
+    if (vkSignedOut && live.some((e) => (e.track?.service ?? 'vk') === 'vk')) names.push('VK')
+    if (scSignedOut && live.some((e) => e.track?.service === 'sc')) names.push('SoundCloud')
+    if (spSignedOut && live.some((e) => e.track?.service === 'spotify')) names.push('Spotify')
+    return names
+  }, [live, vkSignedOut, scSignedOut, spSignedOut])
 
   if (!doc || !entry || entry.removedAt || doc.meta.deletedAt) {
     return <EmptyState icon={<Disc3 size={26} />} title="Альбома больше нет" text="Его удалили или у вас больше нет к нему доступа." />
@@ -152,9 +169,19 @@ export function AlbumPage({ id }: { id: string }) {
         </div>
       </div>
       {tracks.length === 0 ? (
-        <EmptyState icon={<Disc3 size={26} />} title="В альбоме пока нет треков" text="Плюс в строке любого трека VK или SoundCloud добавляет его сюда." />
+        <EmptyState icon={<Disc3 size={26} />} title="В альбоме пока нет треков" text="Плюс в строке любого трека VK, SoundCloud или Spotify добавляет его сюда." />
       ) : (
-        <TrackList tracks={tracks} showAlbum={false} markService menuExtra={rowMenu} onReorder={(from, to) => live[from] && albums.move(id, live[from].eid, to)} />
+        <>
+          {missingAuth.length > 0 && (
+            <div className={a.authNotice}>
+              <span>Чтобы слушать треки из {missingAuth.join(', ')}, войдите в аккаунт.</span>
+              <button type="button" className={a.authNoticeLink} onClick={() => push({ name: 'settings' })}>
+                Настройки входа
+              </button>
+            </div>
+          )}
+          <TrackList tracks={tracks} showAlbum={false} markService menuExtra={rowMenu} onReorder={(from, to) => live[from] && albums.move(id, live[from].eid, to)} />
+        </>
       )}
     </>
   )

@@ -1,6 +1,7 @@
 import { Monitor, MonitorSmartphone, Smartphone } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { renderSVG } from 'uqr'
+import { create } from 'zustand'
 import { Button, IconButton } from '../components/controls'
 import { isAndroid } from '../lib/platform'
 import { usePlayer } from '../player/store'
@@ -81,10 +82,26 @@ export function DevicesList() {
   )
 }
 
+const useDevicesPanel = create<{
+  open: boolean
+  linking: boolean
+  setOpen(open: boolean): void
+  setLinking(linking: boolean): void
+}>((set) => ({
+  open: false,
+  linking: false,
+  setOpen: (open) => set({ open }),
+  setLinking: (linking) => set({ linking }),
+}))
+
+export function openDevicesPanel(): void {
+  const code = useDevices.getState().code
+  useDevicesPanel.setState({ open: true, linking: !code })
+}
+
 /** The «Устройства» button: lit while another device plays; its card lists the devices or offers to link one. */
-export function DevicesButton() {
-  const [open, setOpen] = useState(false)
-  const [linking, setLinking] = useState(false)
+export function DevicesButton({ buttonClassName }: { buttonClassName?: string } = {}) {
+  const { open, linking, setOpen, setLinking } = useDevicesPanel()
   const code = useDevices((d) => d.code)
   const heard = useDevices((d) => Object.keys(d.devices).length)
   const heardBefore = useRef(heard)
@@ -92,7 +109,7 @@ export function DevicesButton() {
   useEffect(() => {
     if (heard > heardBefore.current) setLinking(false)
     heardBefore.current = heard
-  }, [heard])
+  }, [heard, setLinking])
   const remoteName = usePlayer((p) => p.remoteName)
   const togetherOn = useTogether((t) => !!t.role)
   const box = useRef<HTMLDivElement>(null)
@@ -106,10 +123,11 @@ export function DevicesButton() {
       window.removeEventListener('pointerdown', onDown, true)
       window.removeEventListener('keydown', onKey)
     }
-  }, [open])
+  }, [open, setOpen])
   return (
     <div ref={box} className={s.anchor}>
       <IconButton
+        className={buttonClassName}
         size={32}
         label={remoteName ? `Играет на устройстве «${remoteName}»` : 'Устройства'}
         active={open || !!remoteName}

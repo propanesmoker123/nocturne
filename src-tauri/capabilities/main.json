@@ -7,8 +7,12 @@
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen",
     "core:window:allow-close",
     "core:window:allow-hide",
     "core:window:allow-show",
@@ -66,6 +70,7 @@
     "allow-journal-open-dir",
     "allow-send-feedback",
     "allow-fetch-notifications",
+    "allow-window-fullscreen",
     "allow-app-quit"
   ]
 }

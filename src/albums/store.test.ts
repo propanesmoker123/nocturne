@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { png } from '../test/images'
 import type { Track } from '../vk/models'
+import type { AlbumDoc } from './model'
+import { albumKey, applyRecord, openRecord, parseRecord, sealRecord, splitDoc } from './records'
 
 const h = vi.hoisted(() => ({ saved: [] as unknown[], loaded: null as unknown, unlink: null as null | ((kind: 'here' | 'all') => void) }))
 vi.mock('../lib/persist', () => ({ loadJSON: async () => h.loaded, saveJSON: async () => {}, debouncedSaver: () => ({ save: (d: unknown) => void h.saved.push(d), flush() {} }) }))
 vi.mock('../connect/devices', () => ({ useDevices: { getState: () => ({ deviceId: 'aaaaaaaaaaaaaaaa' }) }, onUnlink: (fn: (kind: 'here' | 'all') => void) => void (h.unlink = fn) }))
 
 const { useAlbums, onAlbumsChanged, loadAlbums, joinKind } = await import('./store')
-const { addTracks, liveEntries, mergeAlbum, newAlbum, renameAlbum, MAX_TRACKS } = await import('./model')
+const { addTracks, albumArt, liveEntries, mergeAlbum, newAlbum, renameAlbum, toTrack, MAX_TRACKS } = await import('./model')
 
 const track = (id: number): Track => ({ id, ownerId: 1, key: `1_${id}`, artist: 'A', title: `T${id}`, duration: 100, urlFetchedAt: 0, explicit: false, artists: [], playable: true, hasLyrics: false, liked: false })
 const s = () => useAlbums.getState()
@@ -121,6 +123,40 @@ describe('albums and unlinking devices', () => {
 })
 
 describe('albums kept safe', () => {
+  test('a Spotify track keeps its playback identity after saving and sharing an album', async () => {
+    const spotifyCover = 'https://i.scdn.co/image/cover'
+    const scCover = 'https://i1.sndcdn.com/artworks-x-t300x300.jpg'
+    const tracks: Track[] = [
+      { ...track(1), service: 'spotify', ownerId: 0, spotifyId: '4cOdK2wGLETKBW3PvgPWqT', key: 'sp_4cOdK2wGLETKBW3PvgPWqT', cover: { s: spotifyCover, m: spotifyCover, l: spotifyCover } },
+      { ...track(2), service: 'sc', key: 'sc_2', permalink: 'https://soundcloud.com/artist/song', cover: { s: scCover, m: scCover, l: scCover } },
+      track(3),
+    ]
+    const id = s().create('Микс')
+    expect(s().add(id, tracks)).toEqual({ added: 3, skipped: null })
+    h.loaded = JSON.parse(JSON.stringify(h.saved.at(-1)))
+    useAlbums.setState({ ready: false, docs: {}, list: [] })
+    await loadAlbums()
+
+    const doc = s().docs[id]
+    const expected = [
+      { service: 'spotify', spotifyId: '4cOdK2wGLETKBW3PvgPWqT', key: 'sp_4cOdK2wGLETKBW3PvgPWqT', cover: { m: spotifyCover }, permalink: 'https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT', playable: true },
+      { service: 'sc', key: 'sc_2', cover: { m: scCover }, permalink: 'https://soundcloud.com/artist/song' },
+      { key: '1_3' },
+    ]
+    expect(liveEntries(doc).map(toTrack)).toMatchObject(expected)
+
+    const key = await albumKey(entry(id).code)
+    const { meta, buckets } = splitDoc(doc)
+    let shared: AlbumDoc | null = null
+    for (const record of [meta, ...buckets.filter((b) => b.entries.length)]) {
+      const opened = parseRecord(await openRecord(key, await sealRecord(key, record)))
+      expect(opened).not.toBeNull()
+      shared = applyRecord(shared, opened!)
+    }
+    expect(liveEntries(shared!).map(toTrack)).toMatchObject(expected)
+    expect(albumArt(shared!)).toEqual({ src: spotifyCover })
+  })
+
   test('albums made before the saved ones load are kept with them', async () => {
     const old = newAlbum('Старый', 1, 'bbbbbbbbbbbbbbbb')
     h.loaded = { docs: { [old.id]: old }, list: [{ id: old.id, code: 'AAAA-BBBB-CCCC-DDDD', codeAt: 1, name: 'Старый', shared: false, updatedAt: 1, by: 'bbbbbbbbbbbbbbbb' }] }

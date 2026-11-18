@@ -6,7 +6,7 @@ import { showMenu } from '../app/menu'
 import { playlistMenuItems } from '../app/trackActions'
 import { Artwork } from '../components/Artwork'
 import { Button, IconButton } from '../components/controls'
-import { EmptyState, TrackListSkeleton } from '../components/cards'
+import { EmptyState, TrackListSkeleton, usePlaylistCovers } from '../components/cards'
 import { IconMore, IconPlay } from '../components/Icons'
 import { TrackList } from '../components/TrackList'
 import { formatLongDuration, formatPlays, pluralRu } from '../lib/format'
@@ -30,11 +30,12 @@ export function PlaylistPage({ ownerId, id, accessKey }: { ownerId: number; id: 
   const totalSec = tracks.items.reduce((n, t) => n + t.duration, 0)
   const count = tracks.total || p?.count || 0
   const playable = tracks.items.some((t) => t.playable)
+  const art = usePlaylistCovers(p, tracks.items)
 
   return (
     <>
       <div className={s.hero}>
-        <Artwork className={s.heroArt} src={p?.cover} mosaic={p?.covers} size={232} radius={14} seed={p?.title ?? String(id)} />
+        <Artwork className={s.heroArt} src={art.src} mosaic={art.mosaic} size={232} radius={14} seed={p?.title ?? String(id)} />
         <div style={{ minWidth: 0 }}>
           <div className={s.heroKind}>{p?.type === 'album' ? 'Альбом' : 'Плейлист'}</div>
           <h1 className={s.heroTitle}>{p?.title ?? '…'}</h1>

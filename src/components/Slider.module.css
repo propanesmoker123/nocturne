@@ -64,3 +64,21 @@
   outline: 2px solid color-mix(in oklab, var(--accent) 70%, transparent);
   outline-offset: 3px;
 }
+.slider[data-orientation='vertical'] {
+  justify-content: center;
+  width: 24px;
+  height: 100%;
+}
+.slider[data-orientation='vertical'] .track {
+  width: var(--track-active);
+  height: 100%;
+  transform: scaleX(var(--track-scale));
+}
+.slider[data-orientation='vertical']:hover .track,
+.slider[data-orientation='vertical'][data-dragging] .track {
+  transform: scaleX(1);
+}
+.slider[data-orientation='vertical'] .buffered,
+.slider[data-orientation='vertical'] .fill {
+  inset: auto 0 0 0;
+}

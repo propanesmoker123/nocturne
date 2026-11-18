@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { LoaderContextType } from 'hls.js'
 import type { Track } from '../vk/models'
 
 const h = vi.hoisted(() => {
   const fetchCalls: string[] = []
+  const fetchRanges: (readonly [number, number] | undefined)[] = []
   const vkCalls: number[] = []
   const scCalls: number[] = []
   const spotifyWaveCalls: string[] = []
@@ -14,10 +16,11 @@ const h = vi.hoisted(() => {
   let scDrm: unknown = undefined
   let scWaveformUrl: string | undefined = undefined
 
-  const proxyFetch = vi.fn((url: string) => {
+  const proxyFetch = vi.fn((url: string, range?: readonly [number, number]) => {
     fetchCalls.push(url)
+    fetchRanges.push(range)
     const immediate = files.get(url)
-    if (immediate) return Promise.resolve(immediate)
+    if (immediate) return Promise.resolve(range ? immediate.slice(...range) : immediate)
     return new Promise<ArrayBuffer>((resolve, reject) => {
       pending.set(url, { resolve, reject })
     })
@@ -25,6 +28,7 @@ const h = vi.hoisted(() => {
 
   return {
     fetchCalls,
+    fetchRanges,
     vkCalls,
     scCalls,
     spotifyWaveCalls,
@@ -43,6 +47,7 @@ const h = vi.hoisted(() => {
     },
     reset() {
       fetchCalls.length = 0
+      fetchRanges.length = 0
       vkCalls.length = 0
       scCalls.length = 0
       spotifyWaveCalls.length = 0
@@ -65,7 +70,7 @@ const h = vi.hoisted(() => {
 
 vi.mock('../lib/tauri', () => ({
   isTauri: () => true,
-  invoke: (_cmd: string, args?: { url?: string }) => h.proxyFetch(args?.url ?? ''),
+  invoke: (_cmd: string, args?: { url?: string; range?: readonly [number, number] }) => h.proxyFetch(args?.url ?? '', args?.range),
 }))
 
 vi.mock('../vk/api', () => ({
@@ -226,7 +231,7 @@ describe('preload', () => {
     const loader0 = new TauriLoader({})
     const ok0 = await new Promise<{ data: unknown; code: number }>((resolve) => {
       loader0.load(
-        { url: 'https://cdn.example/t2/seg0.ts', responseType: 'arraybuffer' } as never,
+        { type: LoaderContextType.MEDIA_FRAGMENT, url: 'https://cdn.example/t2/seg0.ts', responseType: 'arraybuffer', rangeStart: 0, rangeEnd: 0 },
         {} as never,
         {
           onSuccess: (res: { data: unknown; code?: number }) => resolve({ data: res.data, code: res.code ?? 0 }),
@@ -256,6 +261,44 @@ describe('preload', () => {
     h.pending.get('https://cdn.example/t2/seg1.ts')?.resolve(new Uint8Array([9, 8]).buffer)
     const ok1 = await ok1Promise
     expect(new Uint8Array(ok1.data as ArrayBuffer)).toEqual(new Uint8Array([9, 8]))
+  })
+
+  test('does not preload the full file behind HLS byte ranges and requests the exact segment', async () => {
+    const manifest = 'https://cdn.example/range/index.m3u8'
+    const segment = 'https://cdn.example/range/audio.mp4'
+    h.setVkUrl(manifest)
+    h.setFile(manifest, '#EXTM3U\n#EXT-X-MAP:URI="audio.mp4",BYTERANGE="2@0"\n#EXTINF:4,\n#EXT-X-BYTERANGE:3@2\naudio.mp4')
+    h.setFile(segment, new Uint8Array([0, 1, 2, 3, 4, 5]).buffer)
+    syncNextPreload(vkTrack(2))
+    await flush()
+    expect(h.fetchCalls).toEqual([manifest])
+
+    const loader = new TauriLoader({})
+    const onSuccess = vi.fn()
+    loader.load({ type: LoaderContextType.MEDIA_FRAGMENT, url: segment, responseType: 'arraybuffer', rangeStart: 2, rangeEnd: 5 }, {} as never, {
+      onSuccess, onError: vi.fn(), onTimeout: vi.fn(),
+    })
+    await flush()
+    expect(h.fetchRanges.at(-1)).toEqual([2, 5])
+    expect(new Uint8Array(onSuccess.mock.calls[0]?.[0].data)).toEqual(new Uint8Array([2, 3, 4]))
+  })
+
+  test('aborts a fragment load and ignores its response when a replacement request has started', async () => {
+    const loader = new TauriLoader({})
+    const first = 'https://cdn.example/old.ts'
+    const second = 'https://cdn.example/new.ts'
+    const old = { onSuccess: vi.fn(), onError: vi.fn(), onTimeout: vi.fn(), onAbort: vi.fn() }
+    const current = { onSuccess: vi.fn(), onError: vi.fn(), onTimeout: vi.fn() }
+    loader.load({ type: LoaderContextType.MEDIA_FRAGMENT, url: first, responseType: 'arraybuffer' }, {} as never, old)
+    loader.abort()
+    loader.load({ type: LoaderContextType.MEDIA_FRAGMENT, url: second, responseType: 'arraybuffer' }, {} as never, current)
+
+    h.pending.get(first)?.resolve(new ArrayBuffer(2))
+    h.pending.get(second)?.resolve(new ArrayBuffer(4))
+    await flush()
+    expect(old.onAbort).toHaveBeenCalledOnce()
+    expect(old.onSuccess).not.toHaveBeenCalled()
+    expect(current.onSuccess).toHaveBeenCalledOnce()
   })
 
   test('cancels in-flight preload and evicts previous track bytes immediately when the next track changes', async () => {

@@ -91,6 +91,21 @@ describe('album operations', () => {
     expect(titles(d)).toEqual(['Song 1', 'Song 9', 'Song 2', 'Song 3'])
   })
 
+  test('addTracks identifies Spotify tracks by their full Spotify IDs', () => {
+    const first = vk(1, { service: 'spotify', ownerId: 0, spotifyId: '4cOdK2wGLETKBW3PvgPWqT' })
+    const second = { ...first, spotifyId: '5xTtaWoae3wi06K5WfVUUH' }
+    const { doc } = addTracks(newAlbum('Mix', 1, A), [first, second], 2, A)
+    expect(liveEntries(doc).map((e) => e.track?.spotifyId)).toEqual(['4cOdK2wGLETKBW3PvgPWqT', '5xTtaWoae3wi06K5WfVUUH'])
+    expect(addTracks(doc, [{ ...first, id: 2 }], 3, A).added).toBe(0)
+  })
+
+  test('addTracks skips Spotify tracks without a valid provider ID', () => {
+    const malformed = vk(1, { service: 'spotify', ownerId: 0, spotifyId: 'not-a-spotify-id' })
+    const missing = { ...malformed, id: 2, spotifyId: undefined }
+    const { doc } = addTracks(newAlbum('Mix', 1, A), [malformed, missing, vk(3)], 2, A)
+    expect(liveEntries(doc).map(toTrack).map((t) => t.key)).toEqual(['100_3'])
+  })
+
   test('a full album takes no more', () => {
     let d = newAlbum('Big', 1, A)
     d = addTracks(d, Array.from({ length: MAX_TRACKS - 1 }, (_, i) => vk(i + 1)), 2, A).doc

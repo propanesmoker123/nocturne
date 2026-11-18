@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { parseCssRgb } from '../lib/color'
+import { useWindowVisibility } from '../lib/windowVisibility'
 import { engine } from '../player/engine'
 import { useWaveform } from '../player/waveformStore'
 import { sampleBeatAt, stepBeatEnvelope } from './beats'
@@ -217,9 +218,14 @@ export function ParticlesCanvas({
   className,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const visible = useWindowVisibility((x) => x.visible)
   const waveKey = useWaveform((w) => w.key)
   const wavePeaks = useWaveform((w) => w.peaks)
   const waveBeats = useWaveform((w) => w.beats)
+  const orbsRef = useRef<BokehOrb[] | null>(null)
+  const embersRef = useRef<Ember[] | null>(null)
+  const sparksRef = useRef<WordSpark[]>([])
+  const beatRef = useRef({ kick: 0, energy: 0 })
 
   const liveRef = useRef<{
     playing: boolean
@@ -240,69 +246,59 @@ export function ParticlesCanvas({
   }
 
   useEffect(() => {
-    if (!enabled) return
     const canvas = canvasRef.current
+    if (!enabled) return
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    if (!visible) return
 
     const isSparks = mode === 'sparks'
     let width = Math.max(1, canvas.clientWidth)
     let height = Math.max(1, canvas.clientHeight)
     let dpr = Math.min(window.devicePixelRatio || 1, isSparks ? 2 : 1.5)
 
-    const resize = () => {
-      if (!canvas) return
-      width = Math.max(1, canvas.clientWidth)
-      height = Math.max(1, canvas.clientHeight)
-      dpr = Math.min(window.devicePixelRatio || 1, isSparks ? 2 : 1.5)
-      canvas.width = Math.round(width * dpr)
-      canvas.height = Math.round(height * dpr)
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    if (!isSparks) {
+      orbsRef.current ??= Array.from({ length: 34 }, (_, i) => ({
+        nx: Math.random(),
+        ny: Math.random(),
+        r: 26 + Math.random() * 44,
+        vx: (Math.random() - 0.5) * 9,
+        vy: -4 - Math.random() * 9,
+        alpha: 0.042 + Math.random() * 0.068,
+        phase: i * 1.37,
+        warm: i % 3 !== 1,
+      }))
+      embersRef.current ??= Array.from({ length: 64 }, (_, i) => ({
+        nx: Math.random(),
+        ny: Math.random(),
+        r: 1.45 + Math.random() * 2.1,
+        vy: 13 + Math.random() * 21,
+        sway: 6 + Math.random() * 13,
+        alpha: 0.14 + Math.random() * 0.22,
+        phase: i * 0.93,
+        accented: i % 3 !== 0,
+      }))
     }
-    resize()
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null
-    ro?.observe(canvas)
 
-    const orbs: BokehOrb[] = isSparks
-      ? []
-      : Array.from({ length: 34 }, (_, i) => ({
-          nx: Math.random(),
-          ny: Math.random(),
-          r: 26 + Math.random() * 44,
-          vx: (Math.random() - 0.5) * 9,
-          vy: -4 - Math.random() * 9,
-          alpha: 0.042 + Math.random() * 0.068,
-          phase: i * 1.37,
-          warm: i % 3 !== 1,
-        }))
-
-    const embers: Ember[] = isSparks
-      ? []
-      : Array.from({ length: 64 }, (_, i) => ({
-          nx: Math.random(),
-          ny: Math.random(),
-          r: 1.45 + Math.random() * 2.1,
-          vy: 13 + Math.random() * 21,
-          sway: 6 + Math.random() * 13,
-          alpha: 0.14 + Math.random() * 0.22,
-          phase: i * 0.93,
-          accented: i % 3 !== 0,
-        }))
-
-    const sparks: WordSpark[] = []
-    const beatState = { kick: 0, energy: 0 }
+    const orbs = orbsRef.current ?? []
+    const embers = embersRef.current ?? []
+    const sparks = sparksRef.current
+    const beatState = beatRef.current
     const accentRgb: [number, number, number] = readAccentRgb(canvas)
     let targetAccentRgb: [number, number, number] = [...accentRgb]
     let accentTick = 0
     let raf = 0
     let last = performance.now()
+    let disposed = false
 
     const frame = (now: number) => {
+      if (disposed) return
       const dtMs = Math.max(1, Math.min(64, now - last))
       const dt = Math.min(0.05, dtMs / 1000)
       last = now
       const t = now * 0.001
+      const { playing: live, duration: dur, beats, peaks } = liveRef.current
 
       if (isSparks) {
         const queue = burstsRef?.current
@@ -314,7 +310,11 @@ export function ParticlesCanvas({
         }
         ctx.clearRect(0, 0, width, height)
         if (sparks.length) drawWordSparks(ctx, sparks, dt)
-        raf = requestAnimationFrame(frame)
+        if (live || sparks.length > 0) {
+          raf = requestAnimationFrame(frame)
+        } else {
+          raf = 0
+        }
         return
       }
 
@@ -326,7 +326,6 @@ export function ParticlesCanvas({
       accentRgb[1] += (targetAccentRgb[1] - accentRgb[1]) * colorStep
       accentRgb[2] += (targetAccentRgb[2] - accentRgb[2]) * colorStep
 
-      const { playing: live, duration: dur, beats, peaks } = liveRef.current
       let targetKick = 0
       let targetEnergy = 0
       if (live) {
@@ -336,7 +335,8 @@ export function ParticlesCanvas({
       }
       stepBeatEnvelope(beatState, targetKick, targetEnergy, dtMs)
       const beat = beatState
-      const speedScale = (live ? 1.0 : 0.28) * (1 + beat.energy * 0.55 + beat.kick * 1.15)
+      const settling = beat.kick > 0.002 || beat.energy > 0.002
+      const speedScale = live ? 1 + beat.energy * 0.55 + beat.kick * 1.15 : settling ? 0.25 : 0
       const area = width * height
       const activeOrbs = Math.min(orbs.length, Math.max(14, Math.round(area / 48000)))
       const activeEmbers = Math.min(embers.length, Math.max(24, Math.round(area / 25000)))
@@ -350,8 +350,10 @@ export function ParticlesCanvas({
       for (let i = 0; i < activeOrbs; i++) {
         const orb = orbs[i]!
         const radius = orb.r * orbScale * (1 + beat.energy * 0.16 + beat.kick * 0.16)
-        orb.ny += (orb.vy * dt * speedScale) / height
-        orb.nx += ((orb.vx + Math.sin(t * 0.55 + orb.phase) * 7) * dt * speedScale) / width
+        if (speedScale > 0) {
+          orb.ny += (orb.vy * dt * speedScale) / height
+          orb.nx += ((orb.vx + Math.sin(t * 0.55 + orb.phase) * 7) * dt * speedScale) / width
+        }
         const padY = (radius * 1.3) / height
         const padX = (radius * 1.1) / width
         if (orb.ny < -padY) {
@@ -378,8 +380,10 @@ export function ParticlesCanvas({
       // Ambient drifting embers
       for (let i = 0; i < activeEmbers; i++) {
         const p = embers[i]!
-        p.ny -= (p.vy * dt * speedScale) / height
-        p.nx += (Math.sin(t * 1.05 + p.phase) * p.sway * dt) / width
+        if (speedScale > 0) {
+          p.ny -= (p.vy * dt * speedScale) / height
+          p.nx += (Math.sin(t * 1.05 + p.phase) * p.sway * dt * speedScale) / width
+        }
         const padY = 14 / height
         const padX = 14 / width
         if (p.ny < -padY) {
@@ -406,15 +410,35 @@ export function ParticlesCanvas({
         ctx.fill()
       }
 
-      raf = requestAnimationFrame(frame)
+      if (live || settling) {
+        raf = requestAnimationFrame(frame)
+      } else {
+        beatState.kick = 0
+        beatState.energy = 0
+        raf = 0
+      }
     }
 
-    raf = requestAnimationFrame(frame)
+    const resize = () => {
+      if (!canvas) return
+      width = Math.max(1, canvas.clientWidth)
+      height = Math.max(1, canvas.clientHeight)
+      dpr = Math.min(window.devicePixelRatio || 1, isSparks ? 2 : 1.5)
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      if (!raf) raf = requestAnimationFrame(frame)
+    }
+    resize()
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null
+    ro?.observe(canvas)
+
     return () => {
-      cancelAnimationFrame(raf)
+      disposed = true
+      if (raf) cancelAnimationFrame(raf)
       ro?.disconnect()
     }
-  }, [enabled, mode, burstsRef])
+  }, [enabled, mode, burstsRef, playing, visible])
 
   if (!enabled) return null
   return <canvas ref={canvasRef} className={className} aria-hidden="true" />

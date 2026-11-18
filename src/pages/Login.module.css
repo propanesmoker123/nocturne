@@ -6,6 +6,12 @@
   overflow: hidden;
   isolation: isolate;
 }
+.embedded {
+  height: auto;
+  min-height: calc(100vh - var(--titlebar-h) - var(--player-h) - 62px);
+  padding: 24px 0;
+  overflow: visible;
+}
 .card {
   position: relative;
   display: flex;
@@ -91,6 +97,10 @@
   text-align: center;
   font: var(--t-footnote);
   color: var(--label-3);
+}
+.embedded .disclaimer {
+  position: static;
+  margin-top: 24px;
 }
 .chrome {
   position: absolute;

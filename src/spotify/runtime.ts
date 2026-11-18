@@ -59,7 +59,7 @@ let lastPlaying: boolean | null = null
 let pages = 0
 const sync = () => useSpotify.setState({ owner: available && owner })
 
-export const spotifyOwnsPlayback = () => available && owner
+export const spotifyOwnsPlayback = () => available && owner && usePlayer.getState().current?.service !== 'spotify'
 export function claimSpotifyPlayback() { available = true; owner = true; lastPlaying = false; sync(); usePlayer.getState().pause() }
 export function releaseSpotifyPlayback() {
   available = false; owner = false; lastPlaying = null
@@ -186,7 +186,12 @@ export function startSpotifyBridge(): () => void {
   if (!isTauri()) return () => {}
   // A track started in VK/SC takes over; an unopened Spotify view does not add any work.
   const off = usePlayer.subscribe((state, previous) => {
-    if (state.isPlaying && !previous.isPlaying && state.current?.service !== 'spotify') {
+    if (state.current?.service === 'spotify') {
+      if (owner) {
+        owner = false
+        sync()
+      }
+    } else if (state.isPlaying && !previous.isPlaying) {
       owner = false
       sync()
       if (available) void spotifyControl('pause').catch(() => {})

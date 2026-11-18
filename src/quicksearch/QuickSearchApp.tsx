@@ -258,10 +258,15 @@ export function QuickSearchApp() {
                 />
               ),
             )}
+            {res?.ownPartial && <div className={s.note}>Загружаем остальные лайки SoundCloud…</div>}
             {res?.error && <div className={s.note}>{res.error}</div>}
           </div>
         )}
-        {searching && !loading && rows.length === 0 && <div className={s.empty}>{res?.error ?? 'Ничего не нашлось'}</div>}
+        {searching && !loading && rows.length === 0 && (
+          <div className={s.empty}>
+            {res?.error ?? (res?.ownPartial ? 'Загружаем остальные лайки SoundCloud…' : 'Ничего не нашлось')}
+          </div>
+        )}
 
         <div className={s.footer} aria-hidden="true">
           <span>

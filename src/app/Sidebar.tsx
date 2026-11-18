@@ -84,9 +84,11 @@ function SearchField() {
 }
 
 function PlaylistLinks() {
+  const vkPhase = useSession((x) => x.phase)
   const route = useRouter((r) => r.route)
   const push = useRouter((r) => r.push)
-  const q = useQuery({ queryKey: myPlaylistsKey(), queryFn: () => vk.getPlaylists(vk.getMeId(), 0, 200) })
+  const q = useQuery({ queryKey: myPlaylistsKey(), queryFn: () => vk.getPlaylists(vk.getMeId(), 0, 200), enabled: vkPhase === 'ready' })
+  if (vkPhase !== 'ready') return null
   if (q.isLoading) return <div className={s.hint}>Загружаем…</div>
   if (q.isError) return <div className={s.hint}>Плейлисты не загрузились</div>
   const items = q.data?.items ?? []
@@ -151,6 +153,7 @@ function ScPlaylistLinks() {
 }
 
 function VkNav() {
+  const vkReady = useSession((x) => x.phase === 'ready')
   return (
     <>
       <div className={s.group}>
@@ -166,7 +169,7 @@ function VkNav() {
       <div className={s.group}>
         <div className={s.groupHead}>
           Мои плейлисты
-          <IconButton size={22} label="Новый плейлист" onClick={() => useSheet.getState().open({ kind: 'playlist-create' })}>
+          <IconButton size={22} label="Новый плейлист" disabled={!vkReady} onClick={() => useSheet.getState().open({ kind: 'playlist-create' })}>
             <Plus size={15} strokeWidth={2.4} />
           </IconButton>
         </div>
@@ -260,8 +263,11 @@ function UpdateCard() {
 
 export function Sidebar() {
   const vkUser = useSession((x) => x.user)
+  const vkPhase = useSession((x) => x.phase)
   const scUser = useScSession((x) => x.user)
+  const scPhase = useScSession((x) => x.phase)
   const spUser = useSpotifySession((x) => x.user)
+  const spPhase = useSpotifySession((x) => x.phase)
   const push = useRouter((r) => r.push)
   const service = useService((x) => x.current)
   const mine = useRouter((r) => routeSection(r.route) === 'mine')
@@ -270,6 +276,10 @@ export function Sidebar() {
   const unreadCount = useNotifications((n) => unreadNotificationCount(n.items, n.seenIds))
   // the account of the service picked on the rail
   const user = accountFor(service, vkUser, scUser, spUser)
+  const signedOut =
+    (service === 'vk' && vkPhase === 'none') ||
+    (service === 'sc' && scPhase === 'signed-out') ||
+    (service === 'spotify' && spPhase === 'signed-out')
   return (
     <nav className={s.sidebar} aria-label="Разделы">
       <div className={s.brand} data-tauri-drag-region>
@@ -283,7 +293,7 @@ export function Sidebar() {
         <button type="button" className={s.user} onClick={() => push({ name: 'settings' })}>
           {user?.photo ? <img className={s.avatar} src={user.photo} alt="" referrerPolicy="no-referrer" /> : <span className={s.avatar} />}
           <span style={{ minWidth: 0 }}>
-            <div className={`${s.userName} truncate`}>{user?.name ?? 'Загрузка…'}</div>
+            <div className={`${s.userName} truncate`}>{user?.name ?? (signedOut ? 'Не выполнен вход' : 'Загрузка…')}</div>
             <div className={s.userSub}>Настройки</div>
           </span>
         </button>

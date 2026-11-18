@@ -93,6 +93,8 @@ export interface QuickResults {
   others: QuickTrack[]
   /** Active service whose catalog was searched. */
   service?: 'vk' | 'sc' | 'spotify'
+  /** True while SoundCloud likes beyond the first cursor page are still loading into the shared cache. */
+  ownPartial?: boolean
   /** Still waiting for the library or VK. */
   loading: boolean
   error: string | null

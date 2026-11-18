@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { toast } from '../app/toast'
 import { journal } from '../lib/journal'
 import { debouncedSaver, loadJSON } from '../lib/persist'
+import { useSettings } from '../lib/settings'
 import * as sc from '../sc/api'
 import type { ScPlaybackSource } from '../sc/playback'
 import { describeScError, SC_UNREACHABLE, ScApiError } from '../sc/errors'
@@ -107,7 +108,7 @@ export function livePosition(): number {
   const { current, position } = usePlayer.getState()
   // in remote mode this engine may still hold the same track, paused somewhere else
   if (remote) return position
-  return current && loadedKey === current.key ? engine.position : position
+  return activeLoad?.attached && activeLoad.key === current?.key ? engine.position : position
 }
 
 /** What a press means when another device plays and this one is its remote. */
@@ -170,8 +171,11 @@ export function setPlayerRemote(r: PlayerRemote | null) {
     remote = r
     stopScWatch()
     // a load still on its way never starts, and this device's own audio stops for good
-    loadToken++
-    loadedKey = null
+    activeLoad = null
+    selectionToken++
+    queueSession++
+    pendingAdvance = null
+    extendInFlight = null
     currentFullyLoaded = false
     clearPreload()
     engine.stop()
@@ -188,23 +192,49 @@ export function showRemote(v: RemoteView) {
   usePlayer.setState({ remoteName: v.name, remoteNear: v.near ?? null, queue: null, current: v.track, position: v.position, duration: v.duration, isPlaying: v.playing, isLoading: false, volume: v.volume, shuffle: v.shuffle, repeat: v.repeat })
 }
 
-let loadToken = 0
-let loadedKey: string | null = null
+interface TrackLoad {
+  key: string
+  startAt: number
+  autoplay: boolean
+  retried: boolean
+  attached: boolean
+}
+
+let activeLoad: TrackLoad | null = null
+let queueSession = 0
+let selectionToken = 0
+let extendInFlight: { session: number; promise: Promise<void> } | null = null
+let pendingAdvance: { session: number; manual: boolean; autoplay: boolean } | null = null
 let currentFullyLoaded = false
 /** Without a VPN, SoundCloud's stream hosts in Russia take the connection and send nothing. */
 export const SC_START_TIMEOUT_MS = 15_000
 let scWatch: ReturnType<typeof setTimeout> | undefined
-const stopScWatch = () => clearTimeout(scWatch)
+function stopScWatch() {
+  clearTimeout(scWatch)
+  scWatch = undefined
+}
 let consecutiveFailures = 0
 /** How much of the current load was really heard: it reaches «Недавние» only past half. */
 let heard = { key: '', seconds: 0, last: 0, recorded: false }
-const retried = new Set<string>()
 const sessionSaver = debouncedSaver('session', 1200)
 const historySaver = debouncedSaver('history', 2000)
 
 export const usePlayer = create<PlayerState>((set, get) => {
-  let pendingLoad: { token: number; autoplay: boolean } | null = null
-  const currentLoad = () => pendingLoad?.token === loadToken ? pendingLoad : null
+  const currentLoad = () => !remote && activeLoad?.key === get().current?.key ? activeLoad : null
+  const engineLoad = () => {
+    const load = currentLoad()
+    return load?.attached ? load : null
+  }
+
+  const stopLoaded = () => {
+    activeLoad = null
+    pendingAdvance = null
+    stopScWatch()
+    currentFullyLoaded = false
+    clearPreload()
+    engine.stop()
+    set({ isPlaying: false, isLoading: false })
+  }
 
   const replaceTrack = (track: Track) => {
     const q = get().queue
@@ -218,37 +248,62 @@ export const usePlayer = create<PlayerState>((set, get) => {
     if (!remote && currentFullyLoaded) syncNextPreload(nextPreloadTarget(get().queue))
   }
 
-  const extendMixIfNeeded = async () => {
+  const extendMixIfNeeded = (): Promise<void> => {
     const { source, queue } = get()
-    if (source?.kind !== 'mix' || !queue || Q.upcoming(queue).length > 3) return
-    try {
-      let incoming: Track[] = []
-      if (source.service === 'spotify') {
-        const sp = await import('../spotify/api')
-        incoming = source.seed ? await sp.getTrackRadio(source.seed) : await sp.getSpotifyMix()
-      } else {
-        incoming = await vk.getStreamMix(20)
+    if (source?.kind !== 'mix' || !queue || Q.upcoming(queue).filter(isPlayable).length > 3) return Promise.resolve()
+    if (extendInFlight && extendInFlight.session === queueSession) return extendInFlight.promise
+    const session = queueSession
+    let promise!: Promise<void>
+    promise = (async () => {
+      try {
+        let incoming: Track[] = []
+        if (source.service === 'spotify') {
+          const sp = await import('../spotify/api')
+          incoming = source.seed ? await sp.getTrackRadio(source.seed) : await sp.getSpotifyMix()
+        } else {
+          incoming = await vk.getStreamMix(20)
+        }
+        if (queueSession !== session) return
+        const q = get().queue
+        if (!q) return
+        const more = dedupeAppend(q.items, incoming.filter(isPlayable))
+        if (more.length) {
+          set({ queue: Q.append(q, more) })
+          syncPreload()
+        }
+        const adv = pendingAdvance
+        if (adv && adv.session === session) {
+          pendingAdvance = null
+          const curQ = get().queue
+          const n2 = curQ && Q.next(curQ, isPlayable, adv.manual)
+          if (n2 === curQ && curQ) {
+            engine.seek(0)
+            setPlayback(adv.autoplay)
+          } else if (n2) {
+            set({ queue: n2 })
+            void loadCurrent(adv.autoplay)
+          }
+        }
+      } catch {
+        if (queueSession === session) journal('player', `${source.service ?? 'vk'} mix replenishment failed`)
+        if (pendingAdvance?.session === session) pendingAdvance = null
+        // the mix simply ends when upstream stops answering
+      } finally {
+        if (extendInFlight?.promise === promise) extendInFlight = null
       }
-      const more = dedupeAppend(queue.items, incoming)
-      const q = get().queue
-      if (q && more.length) {
-        set({ queue: Q.append(q, more) })
-        syncPreload()
-      }
-    } catch {
-      // the mix simply ends when upstream stops answering
-    }
+    })()
+    extendInFlight = { session, promise }
+    return promise
   }
 
   /** A SoundCloud stream that has not started this long after loading is not going to. */
-  const watchScStart = (token: number, t: Track) => {
-    stopScWatch()
+  const watchScStart = (load: TrackLoad, t: Track) => {
+    if (scWatch !== undefined || !load.autoplay || (engine.playing && !engine.waiting)) return
     scWatch = setTimeout(() => {
-      if (token !== loadToken || remote || get().current?.key !== t.key) return
-      journal('player', 'soundcloud stream did not start')
-      engine.stop()
-      loadedKey = null
-      onFailure(t, SC_UNREACHABLE)
+      scWatch = undefined
+      if (engineLoad() !== load || !load.autoplay || (engine.playing && !engine.waiting)) return
+      journal('player', 'sc: audio did not start within the loading timeout')
+      onFailure(t, SC_UNREACHABLE, load.autoplay)
     }, SC_START_TIMEOUT_MS)
   }
 
@@ -258,35 +313,35 @@ export const usePlayer = create<PlayerState>((set, get) => {
     if (err.kind === 'signedOut') return 'Войдите в SoundCloud, чтобы слушать этот трек'
     if (err.kind === 'invalid') return 'Доступно только в SoundCloud'
     if (err.kind === 'http') return describeScError(err)
-    return SC_UNREACHABLE
+    return describeScError(err)
   }
 
-  const loadCurrent = async (autoplay: boolean, startAt = 0) => {
+  const loadCurrent = async (autoplay: boolean, startAt = 0, retried = false, overlapSec = 0) => {
     const q = get().queue
     const t = q && Q.current(q)
-    const token = ++loadToken
-    const intent = { token, autoplay }
-    pendingLoad = intent
-    currentFullyLoaded = false
-    stopScWatch()
     if (!t) {
-      pendingLoad = null
-      clearPreload()
-      engine.stop()
-      loadedKey = null
-      set({ current: null, isPlaying: false, isLoading: false })
+      stopLoaded()
+      set({ current: null, position: 0, duration: 0, buffered: 0 })
       return
     }
+    const intent: TrackLoad = { key: t.key, startAt, autoplay, retried, attached: false }
+    activeLoad = intent
+    currentFullyLoaded = false
+    stopScWatch()
     clearPreloadExcept(t.key)
-    set({ current: t, position: startAt, duration: t.duration, buffered: 0, isLoading: autoplay })
-    heard = { key: t.key, seconds: 0, last: startAt, recorded: false }
+    set({ current: t, position: startAt, duration: t.duration, buffered: 0, isPlaying: false, isLoading: autoplay })
+    beginWaveform(t.key, t.duration)
     let track = t
     let scSource: ScPlaybackSource | undefined
-    const preloaded = serviceOf(t) === 'spotify' ? null : takePreloadedSource(t)
-    if (serviceOf(t) === 'spotify') {
+    const service = serviceOf(t)
+    const preloaded = service === 'spotify' || retried ? null : takePreloadedSource(t)
+    // The outgoing stream only has a role during a deliberate crossfade.
+    const needsVkLink = service === 'vk' && (retried || needsFreshUrl(t, Date.now()))
+    if (overlapSec === 0 && ((service === 'sc' && !preloaded?.scSource) || (needsVkLink && !preloaded?.url))) engine.stop()
+    if (service === 'spotify') {
       const spId = t.spotifyId || (t.url?.startsWith('spotify:track:') ? t.url.slice('spotify:track:'.length) : '')
       if (spId) track = { ...t, url: `spotify:track:${spId}`, urlFetchedAt: Date.now() }
-    } else if (serviceOf(t) === 'sc') {
+    } else if (service === 'sc') {
       if (preloaded?.scSource) {
         scSource = preloaded.scSource
         track = { ...t, url: scSource.url, urlFetchedAt: preloaded.fetchedAt }
@@ -294,89 +349,146 @@ export const usePlayer = create<PlayerState>((set, get) => {
       } else {
         try {
           scSource = await sc.streamSource(t)
-          if (token !== loadToken) return
+          if (activeLoad !== intent) return
           track = { ...t, url: scSource.url, urlFetchedAt: Date.now() }
           replaceTrack(track)
         } catch (e) {
-          if (token !== loadToken) return
-          pendingLoad = null
+          if (activeLoad !== intent) return
+          journal('player', `sc: stream lookup failed (${ScApiError.from(e).kind})`)
           onFailure(t, scLinkFailure(e), intent.autoplay)
           return
         }
       }
-    } else if (needsFreshUrl(t, Date.now())) {
+    } else if (needsVkLink) {
       if (preloaded?.url) {
         track = { ...t, url: preloaded.url, urlFetchedAt: preloaded.fetchedAt }
         replaceTrack(track)
       } else {
         try {
           const [fresh] = await vk.getByIds([t])
-          if (token !== loadToken) return
+          if (activeLoad !== intent) return
           if (fresh) {
             track = { ...t, url: fresh.url, urlFetchedAt: fresh.urlFetchedAt, playable: fresh.playable, liked: fresh.liked || t.liked }
             replaceTrack(track)
           }
         } catch {
-          if (token !== loadToken) return
+          if (activeLoad !== intent) return
+          journal('player', 'vk: fresh link lookup failed')
         }
       }
     }
-    pendingLoad = null
+    if (activeLoad !== intent) return
     if (!track.url || !track.playable) {
+      journal('player', `${service}: no playable stream at queue position ${(q?.pos ?? 0) + 1}`)
       onFailure(track, 'Трек недоступен в вашем регионе или удалён', intent.autoplay)
       return
     }
-    if (remote) return
-    loadedKey = track.key
-    beginWaveform(track.key, track.duration)
+    heard = { key: track.key, seconds: 0, last: intent.startAt, recorded: false }
     const src = get().source
     const spotifyOptions =
-      serviceOf(track) === 'spotify'
+      service === 'spotify'
         ? {
             spotifyContextUri: src?.service === 'spotify' ? src.contextUri : undefined,
             spotifyAlbumId: track.album?.spotifyId,
             spotifyUid: track.spotifyUid,
+            spotifyTitle: track.title,
+            spotifyDuration: track.duration,
           }
         : undefined
-    engine.load(track.url, startAt, intent.autoplay, scSource ? { drm: scSource.drm, waveformUrl: scSource.waveformUrl } : spotifyOptions)
-    if (intent.autoplay && serviceOf(track) === 'sc') watchScStart(token, track)
+    if (intent.autoplay && overlapSec > 0) engine.prepareCrossfade(overlapSec)
+    intent.attached = true
+    try {
+      engine.load(track.url, intent.startAt, intent.autoplay, scSource ? { drm: scSource.drm, waveformUrl: scSource.waveformUrl } : spotifyOptions)
+    } catch {
+      if (activeLoad !== intent) return
+      journal('player', `${service}: could not initialize audio source`)
+      onFailure(track, undefined, intent.autoplay)
+      return
+    }
+    if (activeLoad !== intent) return
+    if (service === 'sc') watchScStart(intent, track)
     void extendMixIfNeeded()
   }
 
   /** `autoplay`: false when the person paused while it loaded — the next track waits too. */
   const onFailure = (t: Track, reason?: string, autoplay = true) => {
-    currentFullyLoaded = false
-    clearPreload()
+    stopLoaded()
+    if (serviceOf(t) === 'spotify') {
+      toast(reason ?? 'Spotify не запустил трек. Нажмите «Воспроизвести», чтобы повторить попытку.', 'error')
+      return
+    }
     consecutiveFailures++
     if (consecutiveFailures >= 5) {
       journal('player', 'five tracks in a row failed, stopping')
       consecutiveFailures = 0
-      engine.stop()
-      loadedKey = null
-      set({ isPlaying: false, isLoading: false })
       toast(
         serviceOf(t) === 'sc'
           ? 'SoundCloud не отдаёт звук — без VPN он в России не играет'
-          : serviceOf(t) === 'spotify'
-            ? 'Spotify не отдаёт треки — проверьте вход в аккаунт и VPN'
-            : 'VK не отдаёт треки. Проверьте интернет и подписку',
+          : 'VK не отдаёт треки. Проверьте интернет и подписку',
         'error',
       )
       return
     }
     toast(reason ?? `Не получилось включить «${t.title}»`, 'error')
-    get().next(true, autoplay)
+    advance(true, autoplay)
+  }
+
+  const setPlayback = (autoplay: boolean) => {
+    const waitingNext = pendingAdvance?.session === queueSession ? pendingAdvance : null
+    if (waitingNext) waitingNext.autoplay = autoplay
+    const load = currentLoad()
+    if (load) load.autoplay = autoplay
+    if (!autoplay) {
+      stopScWatch()
+      engine.pause()
+      set({ isLoading: false })
+    } else if (load?.attached && (!waitingNext || engine.playing)) {
+      engine.play()
+      const cur = get().current
+      if (cur && activeLoad === load && serviceOf(cur) === 'sc') watchScStart(load, cur)
+    } else if ((load && !load.attached) || waitingNext) {
+      set({ isLoading: true })
+    } else {
+      void loadCurrent(true, get().position)
+    }
+  }
+
+  const advance = (manual: boolean, autoplay: boolean, overlapSec = 0) => {
+    const q = get().queue
+    if (!q || (manual && !allow('skip'))) return
+    const n = Q.next(q, isPlayable, manual)
+    if (!n) {
+      if (get().source?.kind === 'mix') {
+        if (!pendingAdvance || pendingAdvance.session !== queueSession) {
+          pendingAdvance = { session: queueSession, manual, autoplay }
+        } else {
+          if (manual) pendingAdvance.manual = true
+          if (!autoplay) pendingAdvance.autoplay = false
+        }
+        void extendMixIfNeeded()
+      } else if (engineLoad()) {
+        setPlayback(false)
+        engine.seek(0)
+      }
+      return
+    }
+    if (n === q) {
+      engine.seek(0)
+      setPlayback(autoplay)
+      return
+    }
+    if (n.pos === q.pos && !engineLoad()) return
+    pendingAdvance = null
+    set({ queue: n })
+    void loadCurrent(autoplay, 0, false, overlapSec)
   }
 
   // Engine → store
   engine.onSource = captureSource
-  let lastSpotifyMismatchToast = 0
   engine.onSpotifyMismatch = () => {
-    if (remote) return
-    const now = Date.now()
-    if (now - lastSpotifyMismatchToast < 30_000) return
-    lastSpotifyMismatchToast = now
-    toast('Spotify включил другой трек — похоже, на бесплатном аккаунте действует лимит выбора треков', 'info')
+    if (!engineLoad()) return
+    stopLoaded()
+    toast('Spotify запустил другой трек. Нажмите «Воспроизвести», чтобы повторить попытку.', 'error')
   }
   const addToHistory = (t: Track) => {
     if (get().history[0]?.key === t.key) return
@@ -386,7 +498,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
   }
 
   engine.on('time', () => {
-    if (remote) return
+    const load = engineLoad()
+    if (!load) return
     const position = engine.position
     const duration = engine.duration || get().current?.duration || 0
     set({ position, duration, buffered: engine.buffered })
@@ -398,12 +511,48 @@ export const usePlayer = create<PlayerState>((set, get) => {
       heard.recorded = true
       addToHistory(cur)
     }
+    const crossfade = useSettings.getState().crossfade ?? 0
+    const realDur = engine.duration
+    if (
+      crossfade > 0 &&
+      load.autoplay &&
+      engine.playing &&
+      serviceOf(cur) !== 'spotify' &&
+      get().repeat !== 'one' &&
+      realDur >= Math.max(15, crossfade * 2)
+    ) {
+      const rem = realDur - position
+      if (rem > 0.15 && rem <= crossfade) {
+        const nextTrack = nextPreloadTarget(get().queue)
+        if (nextTrack && serviceOf(nextTrack) !== 'spotify') {
+          // Keep current track on screen during the initial pre-fade tail; switch UI only in the final ~1.2s
+          const handoffSec = Math.min(1.5, Math.max(0.9, crossfade * 0.4))
+          if (rem > handoffSec) {
+            const t = Math.min(1, Math.max(0, (crossfade - rem) / Math.max(0.1, crossfade - handoffSec)))
+            const smooth = t * t * (3 - 2 * t)
+            engine.setPreFade?.(1 - smooth * 0.42)
+          } else {
+            const overlapSec = Math.min(2.4, Math.max(1.2, crossfade * 0.6))
+            advance(false, true, overlapSec)
+          }
+        } else {
+          engine.setPreFade?.(1)
+        }
+      } else {
+        engine.setPreFade?.(1)
+      }
+    } else {
+      engine.setPreFade?.(1)
+    }
   })
-  engine.on('state', () => !remote && set({ isPlaying: engine.playing }))
+  engine.on('state', () => {
+    if (engineLoad()) set({ isPlaying: engine.playing })
+  })
   engine.on('loading', () => {
-    if (remote) return
+    const load = engineLoad()
+    if (!load) return
     const waiting = engine.waiting
-    set({ isLoading: waiting })
+    set({ isLoading: load.autoplay && waiting })
     const cur = get().current
     if (!waiting && engine.playing && cur) {
       consecutiveFailures = 0
@@ -411,25 +560,41 @@ export const usePlayer = create<PlayerState>((set, get) => {
     }
   })
   engine.on('buffered', () => {
-    if (remote) return
+    if (!engineLoad()) return
     currentFullyLoaded = true
     syncPreload()
   })
-  engine.on('ended', () => !remote && get().next(false))
+  engine.on('ended', () => {
+    if (!engineLoad()?.autoplay) return
+    const { queue, source } = get()
+    if (source?.kind === 'mix' && queue && !Q.next(queue, isPlayable, false)) {
+      const wanted = pendingAdvance
+      stopLoaded()
+      set({ position: 0, buffered: 0 })
+      pendingAdvance = wanted
+    }
+    advance(false, true)
+  })
   engine.on('error', () => {
-    if (remote) return
+    const load = engineLoad()
     const t = get().current
-    if (!t) return
-    journal('player', `playback error: ${engine.lastError || 'unknown'}${retried.has(t.key) ? ', skipping track' : ', retrying with a fresh link'}`)
-    if (!retried.has(t.key)) {
-      retried.add(t.key)
-      currentFullyLoaded = false
-      clearPreload()
-      replaceTrack({ ...t, urlFetchedAt: 0 })
-      void loadCurrent(true, engine.position)
+    if (!t || !load) return
+    const service = serviceOf(t)
+    const detail = (engine.lastError || 'unknown').replace(/\b(?:https?|blob|data):\S+/gi, '[url]')
+    const blocked = engine.lastErrorKind === 'blocked'
+    const outcome = blocked || (load.retried && service === 'spotify') ? 'kept selection' : load.retried ? 'advance after failure' : 'retrying current track'
+    journal('player', `${service}: playback error at queue position ${(get().queue?.pos ?? 0) + 1}: ${detail} (${outcome})`)
+    if (blocked) {
+      stopLoaded()
+      toast('Воспроизведение не запустилось. Нажмите «Воспроизвести», чтобы повторить попытку.', 'error')
       return
     }
-    onFailure(t)
+    if (!load.retried) {
+      clearPreload()
+      void loadCurrent(load.autoplay, engine.position, true)
+      return
+    }
+    onFailure(t, undefined, load.autoplay)
   })
 
   return {
@@ -454,9 +619,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       if (!tracks.length || !allow('pick')) return
       const shuffle = opts?.shuffle ?? get().shuffle
       const start = opts?.shuffle ? Math.floor(Math.random() * tracks.length) : index
-      const queue = Q.createQueue(tracks, start, shuffle, get().repeat)
-      consecutiveFailures = 0
-      set({ queue, shuffle, source: opts?.source ?? { kind: 'list' } })
+      let queue = Q.createQueue(tracks, start, shuffle, get().repeat)
       const first = Q.current(queue)
       if (first && !first.playable) {
         const n = Q.next(queue, isPlayable, true)
@@ -464,31 +627,41 @@ export const usePlayer = create<PlayerState>((set, get) => {
           toast('В этом списке нет доступных треков', 'error')
           return
         }
-        set({ queue: n })
+        queue = n
       }
+      selectionToken++
+      queueSession++
+      pendingAdvance = null
+      extendInFlight = null
+      consecutiveFailures = 0
+      set({ queue, shuffle, source: opts?.source ?? { kind: 'list' } })
       void loadCurrent(!opts?.paused, opts?.startAt ?? 0)
     },
 
     async playMix(service: 'vk' | 'spotify' = 'vk') {
       if (remote) return remote.playMix()
+      const token = ++selectionToken
       if (service === 'spotify') {
         try {
           const sp = await import('../spotify/api')
           const tracks = await sp.getSpotifyMix()
+          if (token !== selectionToken) return
           if (!tracks.length) {
             toast('Не удалось подобрать треки для Spotify Микс', 'error')
             return
           }
           get().playList(tracks, 0, { shuffle: false, source: { kind: 'mix', label: 'Spotify Микс', service: 'spotify' } })
         } catch (e) {
-          toast(e instanceof Error ? e.message : 'Не удалось запустить Spotify Микс', 'error')
+          if (token === selectionToken) toast(e instanceof Error ? e.message : 'Не удалось запустить Spotify Микс', 'error')
         }
         return
       }
       try {
         const tracks = await vk.getStreamMix(20)
+        if (token !== selectionToken) return
         get().playList(tracks, 0, { shuffle: false, source: { kind: 'mix', label: 'VK Микс', service: 'vk' } })
       } catch (e) {
+        if (token !== selectionToken) return
         const { describeError } = await import('../vk/errors')
         toast(describeError(e), 'error')
       }
@@ -501,106 +674,56 @@ export const usePlayer = create<PlayerState>((set, get) => {
         await get().playMix('vk')
         return
       }
+      const token = ++selectionToken
       try {
         const sp = await import('../spotify/api')
         const radio = await sp.getTrackRadio(`spotify:track:${id}`)
+        if (token !== selectionToken) return
         const list = dedupeAppend([track], radio)
         get().playList([track, ...list], 0, {
           shuffle: false,
           source: { kind: 'mix', label: `Радио · ${track.title}`, service: 'spotify', seed: `spotify:track:${id}` },
         })
       } catch (e) {
-        toast(e instanceof Error ? e.message : 'Не удалось запустить радио по треку', 'error')
+        if (token === selectionToken) toast(e instanceof Error ? e.message : 'Не удалось запустить радио по треку', 'error')
       }
     },
 
     toggle() {
       if (remote) return remote.toggle()
-      const cur = get().current
-      if (!cur) return
-      const pending = currentLoad()
-      if (!allow((pending ? pending.autoplay : loadedKey === cur.key && engine.playing) ? 'pause' : 'resume')) return
-      if (pending) {
-        pending.autoplay = !pending.autoplay
-        set({ isLoading: pending.autoplay })
-        if (!pending.autoplay) engine.pause()
-        return
-      }
-      if (loadedKey !== cur.key) {
-        void loadCurrent(true, get().position)
-        return
-      }
-      if (engine.playing) {
-        stopScWatch()
-        engine.pause()
-      } else engine.play()
+      if (!get().current) return
+      const waitingNext = pendingAdvance?.session === queueSession ? pendingAdvance : null
+      const playing = (waitingNext && !engine.playing ? waitingNext.autoplay : currentLoad()?.autoplay) ?? false
+      if (allow(playing ? 'pause' : 'resume')) setPlayback(!playing)
     },
 
     play() {
       if (remote) return remote.play()
-      const cur = get().current
-      if (!cur || !allow('resume')) return
-      const pending = currentLoad()
-      if (pending) {
-        pending.autoplay = true
-        set({ isLoading: true })
-        return
-      }
-      if (loadedKey !== cur.key) void loadCurrent(true, get().position)
-      else engine.play()
+      if (get().current && allow('resume')) setPlayback(true)
     },
 
     pause() {
       if (remote) return remote.pause()
-      if (!allow('pause')) return
-      const pending = currentLoad()
-      if (pending) pending.autoplay = false
-      stopScWatch()
-      engine.pause()
-      set({ isLoading: false })
+      if (allow('pause')) setPlayback(false)
     },
 
     next(manual = true, autoplay = true) {
       if (remote) return remote.next()
-      const q = get().queue
-      if (!q || (manual && !allow('skip'))) return
-      const n = Q.next(q, isPlayable, manual)
-      if (!n) {
-        if (get().source?.kind === 'mix') {
-          void extendMixIfNeeded().then(() => {
-            const q2 = get().queue
-            const n2 = q2 && Q.next(q2, isPlayable, true)
-            if (n2) {
-              set({ queue: n2 })
-              void loadCurrent(true)
-            }
-          })
-          return
-        }
-        engine.pause()
-        engine.seek(0)
-        return
-      }
-      if (n === q) {
-        engine.seek(0)
-        engine.play()
-        return
-      }
-      set({ queue: n })
-      void loadCurrent(autoplay)
+      advance(manual, autoplay)
     },
 
     prev(always = false) {
       if (remote) return remote.prev(always)
       const q = get().queue
       if (!q || !allow('skip')) return
-      if (!always && prevAction(engine.position) === 'restart') {
-        engine.seek(0)
+      pendingAdvance = null
+      if (!always && prevAction(livePosition()) === 'restart') {
+        get().seek(0)
         return
       }
       const p = Q.prev(q, isPlayable)
       if (!p) {
-        engine.seek(0)
+        get().seek(0)
         return
       }
       set({ queue: p })
@@ -608,17 +731,17 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     seek(sec) {
+      if (!Number.isFinite(sec)) return
+      sec = Math.max(0, sec)
       if (remote) {
         set({ position: sec })
         return remote.seek(sec)
       }
       const cur = get().current
       if (!cur || !allow('seek')) return
-      if (loadedKey !== cur.key) {
-        set({ position: sec })
-        return
-      }
-      engine.seek(sec)
+      const load = currentLoad()
+      if (load?.attached) engine.seek(sec)
+      else if (load) load.startAt = sec
       set({ position: sec })
     },
 
@@ -628,6 +751,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
 
     setVolume(v) {
+      if (!Number.isFinite(v)) return
       const volume = Math.min(1, Math.max(0, v))
       if (remote) {
         set({ volume })
@@ -690,9 +814,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const q = get().queue
       if (!q) return
       const wasCurrent = orderPos === q.pos
+      const autoplay = currentLoad()?.autoplay ?? false
       const n = Q.removeAt(q, orderPos)
       set({ queue: n })
-      if (wasCurrent) void loadCurrent(engine.playing)
+      if (wasCurrent) {
+        pendingAdvance = null
+        void loadCurrent(autoplay)
+      }
       else syncPreload()
     },
 
@@ -718,6 +846,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
       if (remote) return
       const q = get().queue
       if (!q || orderPos < 0 || orderPos >= q.order.length || !allow('pick')) return
+      pendingAdvance = null
       set({ queue: { ...q, pos: orderPos } })
       void loadCurrent(true)
     },
@@ -756,18 +885,22 @@ function snapshot(): SavedSession | null {
 export async function initPlayer() {
   const [saved, history] = await Promise.all([loadJSON<SavedSession>('session'), loadJSON<Track[]>('history')])
   const st = usePlayer.getState()
-  if (history?.length) usePlayer.setState({ history })
-  if (saved?.tracks?.length) {
-    const queue = Q.createQueue(saved.tracks, saved.pos, false, saved.repeat)
+  if (Array.isArray(history) && history.length) usePlayer.setState({ history })
+  // The app can already accept playback commands while the persisted state is being read.
+  if (!st.queue && !st.current && !remote && Array.isArray(saved?.tracks) && saved.tracks.length) {
+    const repeat = saved.repeat === 'one' || saved.repeat === 'all' ? saved.repeat : 'off'
+    const index = Number.isFinite(saved.pos) ? Math.trunc(saved.pos) : 0
+    const queue = Q.createQueue(saved.tracks, index, false, repeat)
+    const track = Q.current(queue)
     usePlayer.setState({
-      queue: { ...queue, shuffle: saved.shuffle },
-      current: Q.current(queue),
-      position: saved.position,
-      duration: Q.current(queue)?.duration ?? 0,
-      volume: saved.volume,
-      muted: saved.muted,
-      shuffle: saved.shuffle,
-      repeat: saved.repeat,
+      queue: { ...queue, shuffle: saved.shuffle === true },
+      current: track,
+      position: Number.isFinite(saved.position) ? Math.max(0, saved.position) : 0,
+      duration: track?.duration ?? 0,
+      volume: Number.isFinite(saved.volume) ? Math.min(1, Math.max(0, saved.volume)) : st.volume,
+      muted: saved.muted === true,
+      shuffle: saved.shuffle === true,
+      repeat,
       source: saved.source,
     })
   }
@@ -779,17 +912,16 @@ export async function initPlayer() {
     // what another device plays is never saved as this device's session
     if (remote) return
     const now = Date.now()
-    const important = s.current?.key !== lastKey || s.isPlaying !== prev.isPlaying || s.queue !== prev.queue || s.volume !== prev.volume || s.repeat !== prev.repeat
+    const important = s.current?.key !== lastKey || s.isPlaying !== prev.isPlaying || s.queue !== prev.queue || s.volume !== prev.volume || s.muted !== prev.muted || s.repeat !== prev.repeat
     if (important || now - lastSave > 15000) {
       lastKey = s.current?.key ?? ''
       lastSave = now
       const snap = snapshot()
-      if (snap) sessionSaver.save(snap)
+      if (snap || prev.current) sessionSaver.save(snap)
     }
   })
   window.addEventListener('beforeunload', () => {
-    const snap = snapshot()
-    if (snap) sessionSaver.save(snap)
+    if (!remote) sessionSaver.save(snapshot())
     sessionSaver.flush()
     historySaver.flush()
   })

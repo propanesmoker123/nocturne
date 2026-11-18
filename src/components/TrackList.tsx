@@ -4,10 +4,12 @@ import type { MenuItem } from '../app/menu'
 import { artistRoute, useRouter } from '../app/router'
 import { ServiceLogo } from './ServiceLogo'
 import { useScroller } from '../app/scroller'
+import { useSession } from '../app/session'
 import { openTrackMenu } from '../app/trackActions'
 import { formatTime } from '../lib/format'
 import { usePlayer, type QueueSource } from '../player/store'
 import { unplayableHint, useScSession } from '../sc/session'
+import { useSpotifySession } from '../spotify/session'
 import { serviceOf, type Playlist, type Track } from '../vk/models'
 import { Artwork } from './Artwork'
 import { EqualizerBars, IconButton } from './controls'
@@ -64,7 +66,16 @@ interface RowProps {
 
 const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlbum, note, markService, onPlay, onMenu, onDrop }: RowProps) {
   const push = useRouter((r) => r.push)
+  const vkPhase = useSession((x) => x.phase)
   const scPhase = useScSession((x) => x.phase)
+  const spPhase = useSpotifySession((x) => x.phase)
+  const disabledHint = (() => {
+    if (track.playable) return undefined
+    const svc = serviceOf(track)
+    if (svc === 'sc') return unplayableHint(track, scPhase)
+    if (svc === 'spotify') return spPhase === 'signed-out' ? 'Войдите в Spotify, чтобы слушать' : 'Трек сейчас недоступен'
+    return vkPhase === 'none' ? 'Войдите в VK, чтобы слушать' : 'Трек сейчас недоступен'
+  })()
   return (
     <div
       className={s.row}
@@ -73,7 +84,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
       tabIndex={0}
       data-current={isCurrent || undefined}
       data-disabled={!track.playable || undefined}
-      title={unplayableHint(track, scPhase)}
+      title={disabledHint}
       onClick={(e) => playClick(e) && track.playable && onPlay(index)}
       onKeyDown={(e) => {
         if (enterPlays(e) && track.playable) onPlay(index)
@@ -112,7 +123,7 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
             <span className="truncate">{track.title}</span>
             {track.subtitle && <span className="truncate" style={{ color: 'var(--label-3)', flexShrink: 2 }}>{track.subtitle}</span>}
             {track.explicit && <span className={s.explicit} aria-label="Нецензурное">E</span>}
-            {markService && serviceOf(track) !== 'vk' && <ServiceLogo id={serviceOf(track)} size={14} />}
+            {markService && <ServiceLogo id={serviceOf(track)} size={14} />}
           </div>
           <div className={s.artists}>
             <ArtistLinks track={track} />

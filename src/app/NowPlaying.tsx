@@ -1,5 +1,5 @@
-import { ChevronDown, CircleAlert, Maximize2, Minimize2 } from 'lucide-react'
-import { AnimatePresence, motion, useIsPresent } from 'motion/react'
+import { ChevronDown, CircleAlert, Maximize2, Minimize2, X } from 'lucide-react'
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton, Segmented, Spinner } from '../components/controls'
@@ -162,6 +162,7 @@ function BigScrubber() {
 function CoverArt({ track, playing }: { track: Track; playing: boolean }) {
   const [full, setFull] = useState(false)
   const close = useCallback(() => setFull(false), [])
+  const reduced = useReducedMotion()
   const big = track.cover?.l
   return (
     <>
@@ -171,8 +172,8 @@ function CoverArt({ track, playing }: { track: Track; playing: boolean }) {
         aria-label="Открыть обложку"
         disabled={!big}
         onClick={() => setFull(true)}
-        animate={{ scale: playing ? 1 : 0.86 }}
-        transition={{ type: 'spring', stiffness: 220, damping: 20 }}
+        animate={{ scale: reduced || playing ? 1 : 0.86 }}
+        transition={reduced ? { duration: 0 } : { type: 'spring', stiffness: 220, damping: 20 }}
       >
         <Artwork src={track.cover?.l} size="100%" radius={14} seed={track.key} />
       </motion.button>
@@ -202,18 +203,32 @@ export function NowPlaying() {
   const controlledBy = useControlledBy()
   const push = useRouter((r) => r.push)
   const particlesOn = useSettings((st) => st.lyrics.particles)
-  const [sideOpen, setSideOpen] = useState(false)
+  const fullscreen = useUi((u) => u.fullscreen)
+  const sideOpen = useUi((u) => u.sideOpen)
+  const setSideOpen = useUi.getState().setSideOpen
+  const reduced = useReducedMotion()
+  const [lyricsTheater, setLyricsTheater] = useState(false)
 
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') useUi.getState().closeNowPlaying()
+      if (e.key === 'Escape') {
+        const { fullscreen: isFs, sideOpen: isSideOpen } = useUi.getState()
+        if (isFs) {
+          e.preventDefault()
+          void useUi.getState().setFullscreen(false)
+        } else if (isSideOpen && window.matchMedia('(max-width: 1080px)').matches) {
+          e.preventDefault()
+          useUi.getState().setSideOpen(false)
+        } else {
+          useUi.getState().closeNowPlaying()
+        }
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
-  const [lyricsTheater, setLyricsTheater] = useState(false)
   const setTab = (t: NowPlayingTab) => useUi.getState().setTab(t)
   const toggleSide = (t: NowPlayingTab) => {
     if (sideOpen && tab === t) setSideOpen(false)
@@ -229,11 +244,12 @@ export function NowPlaying() {
         <motion.section
           key="now-playing"
           className={s.sheet}
+          data-fullscreen={fullscreen || undefined}
           aria-label="Сейчас играет"
-          initial={{ y: '100%' }}
-          animate={{ y: 0 }}
-          exit={{ y: '100%' }}
-          transition={{ type: 'spring', stiffness: 240, damping: 32, mass: 0.9 }}
+          initial={reduced ? { opacity: 0 } : { opacity: 0, y: 36 }}
+          animate={reduced ? { opacity: 1 } : { opacity: 1, y: 0 }}
+          exit={reduced ? { opacity: 0 } : { opacity: 0, y: 36 }}
+          transition={reduced ? { duration: 0.01 } : { duration: 0.19, ease: [0.22, 1, 0.36, 1] }}
         >
           <PointerGate />
           <Backdrop src={current.cover?.m} />
@@ -247,13 +263,15 @@ export function NowPlaying() {
             className={s.particles}
           />
           <div className={s.chrome} data-tauri-drag-region>
-            <IconButton label="Свернуть" onClick={() => useUi.getState().closeNowPlaying()}>
-              <ChevronDown size={22} strokeWidth={2.2} />
-            </IconButton>
+            <div className={s.chromeLeft}>
+              <IconButton label="Свернуть" onClick={() => useUi.getState().closeNowPlaying()}>
+                <ChevronDown size={22} strokeWidth={2.2} />
+              </IconButton>
+            </div>
             <WindowControls />
           </div>
 
-          <div className={s.layout} data-theater={(tab === 'lyrics' && lyricsTheater) || undefined}>
+          <div className={s.layout} data-theater={lyricsTheater || undefined} data-fullscreen={fullscreen || undefined}>
             <div className={s.stage}>
               <CoverArt track={current} playing={isPlaying} />
 
@@ -317,6 +335,7 @@ export function NowPlaying() {
               </div>
             </div>
 
+            {sideOpen && <div className={s.sideBackdrop} aria-hidden="true" onClick={() => setSideOpen(false)} />}
             <aside className={s.side} data-forced={sideOpen || undefined}>
               <div className={s.sideHeader}>
                 <Segmented
@@ -329,24 +348,25 @@ export function NowPlaying() {
                   ]}
                 />
                 {tab === 'lyrics' && (
-                  <>
-                    <LyricsSyncHint
-                      onOpenSettings={() => {
-                        push({ name: 'settings' })
-                        useUi.getState().closeNowPlaying()
-                      }}
-                    />
-                    <IconButton
-                      size={32}
-                      className={s.theaterBtn}
-                      data-active={lyricsTheater || undefined}
-                      label={lyricsTheater ? 'Компактный текст' : 'Широкий экран текста'}
-                      onClick={() => setLyricsTheater((v) => !v)}
-                    >
-                      {lyricsTheater ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-                    </IconButton>
-                  </>
+                  <LyricsSyncHint
+                    onOpenSettings={() => {
+                      push({ name: 'settings' })
+                      useUi.getState().closeNowPlaying()
+                    }}
+                  />
                 )}
+                <IconButton
+                  size={32}
+                  className={s.theaterBtn}
+                  data-active={lyricsTheater || undefined}
+                  label={lyricsTheater ? 'Компактная панель' : 'Широкая панель'}
+                  onClick={() => setLyricsTheater((v) => !v)}
+                >
+                  {lyricsTheater ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                </IconButton>
+                <IconButton size={32} className={s.sideCloseBtn} label="Закрыть панель" onClick={() => setSideOpen(false)}>
+                  <X size={16} />
+                </IconButton>
               </div>
               <div className={s.sidePanel}>{tab === 'queue' ? <QueuePanel /> : <LyricsPanel theater={lyricsTheater} />}</div>
             </aside>

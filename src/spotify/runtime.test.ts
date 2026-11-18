@@ -3,7 +3,7 @@ import type { PlayerCommand } from '../lib/events'
 
 const h = vi.hoisted(() => {
   const listeners = new Set<(state: { isPlaying: boolean }, previous: { isPlaying: boolean }) => void>()
-  const player = { isPlaying: false, toggle: vi.fn(), play: vi.fn(), pause: vi.fn(), next: vi.fn(), prev: vi.fn(), seekBy: vi.fn(), nudgeVolume: vi.fn() }
+  const player = { current: null as { service: 'spotify' } | null, isPlaying: false, toggle: vi.fn(), play: vi.fn(), pause: vi.fn(), next: vi.fn(), prev: vi.fn(), seekBy: vi.fn(), nudgeVolume: vi.fn() }
   const invoke = vi.fn(async () => true)
   return { player, listeners, invoke }
 })
@@ -12,7 +12,7 @@ vi.mock('../lib/tauri', () => ({ isTauri: () => true, invoke: h.invoke }))
 import { claimSpotifyPlayback, readSpotifyTrack, releaseSpotifyPlayback, spotifyOwnsPlayback, spotifyPosition, startSpotifyBridge, useSpotify } from './runtime'
 import { runCommand } from '../player/commands'
 
-beforeEach(() => { vi.useFakeTimers(); vi.clearAllTimers(); releaseSpotifyPlayback(); h.listeners.clear(); h.player.isPlaying = false; vi.clearAllMocks() })
+beforeEach(() => { vi.useFakeTimers(); vi.clearAllTimers(); releaseSpotifyPlayback(); h.listeners.clear(); h.player.current = null; h.player.isPlaying = false; vi.clearAllMocks() })
 test('all shared transport commands target the active Spotify player, including after browsing away', () => {
   claimSpotifyPlayback()
   expect(spotifyOwnsPlayback()).toBe(true)
@@ -36,6 +36,14 @@ test('every shared command reaches Spotify, never the previous VK or SoundCloud 
     { action: 'like' }, { action: 'shuffle' }, { action: 'repeat' }, { action: 'mute' },
     { action: 'seek', value: 40 }, { action: 'seek', value: 200 }, { action: 'volume', value: 0.6 }, { action: 'volume', value: 1 },
   ])
+})
+test('Next uses the app queue when a native Spotify track was selected after web playback', () => {
+  claimSpotifyPlayback()
+  h.player.current = { service: 'spotify' }
+  runCommand({ type: 'next' }, { toggleLike() {}, showWindow() {} })
+
+  expect(h.player.next).toHaveBeenCalledOnce()
+  expect(h.invoke).not.toHaveBeenCalled()
 })
 test('the page is a remote site: only well-formed display fields and Spotify artwork are kept', () => {
   expect(readSpotifyTrack({ title: '  Song\n name ', artist: 'Band', cover: 'https://i.scdn.co/image/ab67', coverLarge: 'https://evil.test/x.jpg', position: 400, duration: 200, buffered: 250, liked: 'yes', repeat: 'one', shuffle: 1, volume: 7 })).toEqual({

@@ -107,7 +107,7 @@
 .card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   scroll-snap-align: start;
   text-align: left;
   min-width: 0;
@@ -158,21 +158,21 @@
 }
 .cardTitle {
   width: 100%;
+  min-height: 18px;
   text-align: left;
   font: 500 14px/18px var(--font);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cardSub {
+  height: 17px;
   font: 400 13px/17px var(--font);
   color: var(--label-2);
-  margin-top: -5px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  margin-top: -2px;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* plays, under the subtitle */
 .cardPlays {
@@ -180,7 +180,8 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
-  margin-top: -5px;
+  height: 16px;
+  margin-top: -2px;
   font: 400 12px/16px var(--font);
   color: var(--label-3);
   font-variant-numeric: tabular-nums;
@@ -208,22 +209,29 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border-radius: var(--r-xl);
+  border-radius: 18px;
   overflow: hidden;
-  background: var(--fill-4);
-  box-shadow: var(--shadow-1), inset 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+  background: rgba(24, 24, 28, 0.78);
+  box-shadow: var(--shadow-1), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
   scroll-snap-align: start;
+  transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+}
+.rec:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.18);
 }
 .recHead {
   position: relative;
   isolation: isolate;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-height: 132px;
-  padding: 14px 16px 14px;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 136px;
+  padding: 12px 14px 14px;
   color: #fff;
-  background: var(--rec);
+  background: color-mix(in srgb, var(--rec) 38%, #14151a);
   cursor: pointer;
 }
 .recHead::after {
@@ -231,7 +239,12 @@
   position: absolute;
   inset: 0;
   z-index: -1;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.26), transparent 65%);
+  background: linear-gradient(
+    to bottom,
+    rgba(10, 11, 15, 0.28) 0%,
+    rgba(12, 13, 18, 0.52) 52%,
+    rgba(22, 22, 26, 0.92) 100%
+  );
 }
 .recBg {
   position: absolute;
@@ -240,73 +253,132 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform var(--dur-3) var(--ease-out);
+  opacity: 0.84;
+  filter: blur(18px) saturate(1.24) brightness(0.84);
+  transform: scale(1.16);
+  transition: transform var(--dur-3) var(--ease-out), opacity var(--dur-2) var(--ease-out);
 }
 .recHead:hover .recBg {
-  transform: scale(1.04);
+  transform: scale(1.22);
+  opacity: 0.92;
+}
+.recTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
 .recMatch {
-  font: 500 13px/17px var(--font);
-  color: rgba(255, 255, 255, 0.86);
-  margin-bottom: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 9px 3px 4px;
+  border-radius: 999px;
+  background: rgba(8, 9, 13, 0.44);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 0.5px solid rgba(255, 255, 255, 0.16);
+  font: 500 11.5px/15px var(--font);
+  color: rgba(255, 255, 255, 0.9);
 }
 .recMatch b {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
   font-weight: 700;
-  font-size: 15px;
+  font-size: 11px;
+  line-height: 15px;
   color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.recMain {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.recCover {
+  flex: none;
+  border-radius: 10px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.46), inset 0 0 0 0.5px rgba(255, 255, 255, 0.2);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.recHead:hover .recCover {
+  transform: scale(1.035);
+}
+.recMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
 }
 .recTitle {
-  font: 700 19px/23px var(--font);
-  letter-spacing: -0.02em;
-  margin-top: 14px;
-  padding-right: 44px;
+  font: 700 15.5px/19.5px var(--font);
+  letter-spacing: -0.018em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
 }
 .recOwner {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding-right: 44px;
-  font: 500 13px/17px var(--font);
-  color: rgba(255, 255, 255, 0.9);
+  font: 500 12.5px/16px var(--font);
+  color: rgba(255, 255, 255, 0.84);
 }
 .recOwner > :first-child {
   flex: none;
 }
 .recPlay {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  opacity: 0;
-  transform: translateY(4px);
-  transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+  flex: none;
+  width: 30px;
+  height: 30px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  border: 0.5px solid rgba(255, 255, 255, 0.22);
+  opacity: 0.78;
+  transition:
+    opacity var(--dur-1) var(--ease-out),
+    transform var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out);
 }
 .recHead:hover .recPlay,
 .recHead:focus-within .recPlay {
   opacity: 1;
-  transform: none;
+  background: var(--accent);
+  border-color: transparent;
+  transform: scale(1.05);
 }
 .recTracks {
   display: flex;
   flex-direction: column;
-  padding: 6px;
+  gap: 1px;
+  padding: 7px 8px 8px;
+  border-top: 0.5px solid rgba(255, 255, 255, 0.08);
 }
 .recRow {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  padding: 6px;
+  padding: 5px 6px;
   border-radius: 10px;
   cursor: default;
+  transition: background-color var(--dur-1) var(--ease-out);
 }
 .recRow:hover {
-  background: var(--fill-4);
+  background: rgba(255, 255, 255, 0.07);
 }
 .recRow[aria-disabled] {
   opacity: 0.38;
@@ -320,9 +392,10 @@
   display: grid;
   place-items: center;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.42);
+  background: rgba(0, 0, 0, 0.46);
   color: #fff;
   opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
 }
 .recRow:hover .recArtPlay,
 .recArtPlay[data-on] {
@@ -332,17 +405,17 @@
   min-width: 0;
 }
 .recTrack {
-  font: 500 14px/18px var(--font);
+  font: 500 13.5px/17.5px var(--font);
 }
 .recRow[data-current] .recTrack {
   color: var(--accent-text);
 }
 .recArtist {
-  font: 400 13px/17px var(--font);
+  font: 400 12.5px/16.5px var(--font);
   color: var(--label-2);
 }
 .recTime {
-  font: 400 13px/17px var(--font);
+  font: 400 12.5px/16.5px var(--font);
   font-variant-numeric: tabular-nums;
   color: var(--label-3);
 }
@@ -588,9 +661,18 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .rec,
   .recBg,
+  .recCover,
+  .recPlay,
   .mixCover {
     transition: none;
+  }
+  .rec:hover,
+  .recHead:hover .recBg,
+  .recHead:hover .recCover,
+  .recHead:hover .recPlay {
+    transform: none;
   }
   .mixAura i,
   .skeleton {

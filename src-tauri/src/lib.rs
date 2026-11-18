@@ -18,6 +18,135 @@ mod vk;
 
 use tauri::{Emitter, Manager, WindowEvent};
 
+#[derive(Default)]
+struct FullscreenInner {
+    active: bool,
+    was_maximized: bool,
+    #[cfg(windows)]
+    saved_normal_rect: Option<windows_sys::Win32::Foundation::RECT>,
+}
+
+struct FullscreenState(std::sync::Mutex<FullscreenInner>);
+
+impl FullscreenState {
+    fn new() -> Self {
+        Self(std::sync::Mutex::new(FullscreenInner::default()))
+    }
+}
+
+#[tauri::command]
+async fn window_fullscreen(app: tauri::AppHandle, fullscreen: Option<bool>) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let app_clone = app.clone();
+    app.run_on_main_thread(move || {
+        let res = (|| -> Result<bool, String> {
+            let w = app_clone.get_window("main").ok_or("main window not found")?;
+            let st = app_clone.state::<FullscreenState>();
+            let mut g = st.0.lock().map_err(|_| "lock poisoned")?;
+            let current_fs = w.is_fullscreen().unwrap_or(g.active);
+            let target = fullscreen.unwrap_or(!current_fs);
+            if target == g.active && target == current_fs {
+                return Ok(g.active);
+            }
+
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::Foundation::{POINT, RECT};
+                use windows_sys::Win32::Graphics::Gdi::{
+                    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+                    MONITOR_DEFAULTTOPRIMARY,
+                };
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetWindowPlacement, IsZoomed, SetWindowPlacement, SetWindowPos, HWND_TOP, SWP_FRAMECHANGED,
+                    SWP_NOOWNERZORDER, SWP_SHOWWINDOW, SW_SHOWMAXIMIZED, WINDOWPLACEMENT,
+                };
+
+                let hwnd = w.hwnd().map_err(|e| e.to_string())?.0 as windows_sys::Win32::Foundation::HWND;
+                unsafe {
+                    let mut mi: MONITORINFO = std::mem::zeroed();
+                    mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                    let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                    if GetMonitorInfoW(mon, &mut mi) == 0 {
+                        return Err("GetMonitorInfoW failed".into());
+                    }
+
+                    if target {
+                        let is_max = IsZoomed(hwnd) != 0 || w.is_maximized().unwrap_or(false);
+                        g.was_maximized = is_max;
+                        if is_max {
+                            let mut wp: WINDOWPLACEMENT = std::mem::zeroed();
+                            wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+                            if GetWindowPlacement(hwnd, &mut wp) != 0 {
+                                g.saved_normal_rect = Some(wp.rcNormalPosition);
+                                let mut pmi: MONITORINFO = std::mem::zeroed();
+                                pmi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                                let pmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+                                let (dx, dy) = if GetMonitorInfoW(pmon, &mut pmi) != 0 && mon == pmon {
+                                    (pmi.rcWork.left - pmi.rcMonitor.left, pmi.rcWork.top - pmi.rcMonitor.top)
+                                } else {
+                                    (mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top)
+                                };
+                                let wk = mi.rcWork;
+                                wp.rcNormalPosition = RECT {
+                                    left: wk.left - dx,
+                                    top: wk.top - dy,
+                                    right: wk.right - dx,
+                                    bottom: wk.bottom - dy,
+                                };
+                                wp.flags = 0;
+                                wp.showCmd = SW_SHOWMAXIMIZED as u32;
+                                SetWindowPlacement(hwnd, &wp);
+                            }
+                            let _ = w.unmaximize();
+                        }
+                        w.set_fullscreen(true).map_err(|e| e.to_string())?;
+                        let m = mi.rcMonitor;
+                        SetWindowPos(
+                            hwnd,
+                            HWND_TOP,
+                            m.left,
+                            m.top,
+                            m.right - m.left,
+                            m.bottom - m.top,
+                            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+                        );
+                        g.active = true;
+                    } else {
+                        w.set_fullscreen(false).map_err(|e| e.to_string())?;
+                        if g.was_maximized {
+                            let _ = w.maximize();
+                            if let Some(normal_rect) = g.saved_normal_rect.take() {
+                                let mut wp: WINDOWPLACEMENT = std::mem::zeroed();
+                                wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+                                if GetWindowPlacement(hwnd, &mut wp) != 0 {
+                                    wp.rcNormalPosition = normal_rect;
+                                    wp.flags = 0;
+                                    wp.showCmd = SW_SHOWMAXIMIZED as u32;
+                                    SetWindowPlacement(hwnd, &wp);
+                                }
+                            }
+                        }
+                        g.active = false;
+                    }
+                }
+            }
+
+            #[cfg(not(windows))]
+            {
+                w.set_fullscreen(target).map_err(|e| e.to_string())?;
+                g.active = target;
+            }
+
+            journal::write("app", &format!("fullscreen -> {}", g.active));
+            Ok(g.active)
+        })();
+        let _ = tx.send(res);
+    })
+    .map_err(|e| e.to_string())?;
+
+    rx.await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn app_quit(app: tauri::AppHandle) {
     spotify::shutdown(&app);
@@ -62,6 +191,7 @@ pub fn run() {
         .manage(sc::ScState::new())
         .manage(spotify::SpotifyState::new())
         .manage(island::IslandState::new())
+        .manage(FullscreenState::new())
         .manage(media_state())
         .invoke_handler(tauri::generate_handler![
             vk::vk_api,
@@ -105,6 +235,7 @@ pub fn run() {
             journal::journal_open_dir,
             feedback::send_feedback,
             feedback::fetch_notifications,
+            window_fullscreen,
             app_quit,
         ])
         .on_window_event(|window, event| match event {

@@ -40,29 +40,31 @@ export function Artwork({ src, mosaic, size, radius, seed = '', alt = '', classN
   const dim = typeof size === 'number' ? `${size}px` : size
   const rad = radius === undefined ? undefined : typeof radius === 'number' ? `${radius}px` : radius
   const showImg = !!src && failed !== src
-  const tiles = !showImg && mosaic && mosaic.length >= 4 ? mosaic.slice(0, 4) : null
+  const mosaicFallback = !showImg && mosaic && mosaic.length > 0 && mosaic.length < 4 && failed !== mosaic[0] ? mosaic[0] : undefined
+  const activeSrc = showImg ? src : mosaicFallback
+  const tiles = !activeSrc && mosaic && mosaic.length >= 4 ? mosaic.slice(0, 4) : null
 
   return (
     <div
       className={[s.art, className].filter(Boolean).join(' ')}
       style={{ ...style, ['--size' as string]: dim, ...(rad ? { ['--radius' as string]: rad } : null) }}
     >
-      {showImg ? (
+      {activeSrc ? (
         <img
-          src={src}
+          src={activeSrc}
           alt={alt}
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
           draggable={false}
-          data-loaded={loaded === src || undefined}
-          onLoad={() => setLoaded(src)}
-          onError={() => setFailed(src)}
+          data-loaded={loaded === activeSrc || undefined}
+          onLoad={() => setLoaded(activeSrc)}
+          onError={() => setFailed(activeSrc)}
         />
       ) : tiles ? (
         <div className={s.artMosaic}>
-          {tiles.map((t) => (
-            <img key={t} src={t} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" draggable={false} />
+          {tiles.map((t, idx) => (
+            <img key={`${t}-${idx}`} src={t} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" draggable={false} />
           ))}
         </div>
       ) : (

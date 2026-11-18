@@ -71,7 +71,7 @@ export function normalizePlaylist(raw: RawPlaylist, meId: number, ownerNames?: M
     title: decodeEntities(raw.title ?? ''),
     description: raw.description?.trim() ? decodeEntities(raw.description.trim()) : undefined,
     count: raw.count ?? 0,
-    cover: pick(raw.photo, ['photo_600', 'photo_300', 'photo_1200', 'photo_270', 'photo_135']),
+    cover: pick(raw.photo, ['photo_600', 'photo_300', 'photo_1200', 'photo_270', 'photo_135', 'photo_68']),
     covers,
     isOwn: raw.owner_id === meId && !isFollowed,
     isFollowed,

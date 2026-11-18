@@ -58,12 +58,15 @@ export function artistRoute(t: Track, a: { id?: string; name: string } | undefin
 
 interface RouterState {
   stack: Route[]
+  scrolls: number[]
   index: number
   route: Route
   push(r: Route): void
   replace(r: Route): void
   back(): void
   forward(): void
+  saveScroll(top: number): void
+  currentScroll(): number
   canBack: boolean
   canForward: boolean
 }
@@ -72,15 +75,17 @@ const same = (a: Route, b: Route) => JSON.stringify(a) === JSON.stringify(b)
 
 export const useRouter = create<RouterState>((set, get) => ({
   stack: [{ name: 'home' }],
+  scrolls: [0],
   index: 0,
   route: { name: 'home' },
   canBack: false,
   canForward: false,
   push(r) {
-    const { stack, index } = get()
+    const { stack, scrolls, index } = get()
     if (same(stack[index], r)) return
     const next = [...stack.slice(0, index + 1), r].slice(-50)
-    set({ stack: next, index: next.length - 1, route: r, canBack: next.length > 1, canForward: false })
+    const nextScrolls = [...scrolls.slice(0, index + 1), 0].slice(-50)
+    set({ stack: next, scrolls: nextScrolls, index: next.length - 1, route: r, canBack: next.length > 1, canForward: false })
   },
   replace(r) {
     const { stack, index } = get()
@@ -97,5 +102,13 @@ export const useRouter = create<RouterState>((set, get) => ({
     const { stack, index } = get()
     if (index >= stack.length - 1) return
     set({ index: index + 1, route: stack[index + 1], canBack: true, canForward: index + 1 < stack.length - 1 })
+  },
+  saveScroll(top) {
+    const { scrolls, index } = get()
+    scrolls[index] = Math.max(0, Math.round(top))
+  },
+  currentScroll() {
+    const { scrolls, index } = get()
+    return scrolls[index] ?? 0
   },
 }))

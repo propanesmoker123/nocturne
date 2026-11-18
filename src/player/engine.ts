@@ -10,21 +10,33 @@ export interface StreamOptions extends Pick<ScPlaybackSource, 'drm' | 'waveformU
   spotifyContextUri?: string
   spotifyAlbumId?: string
   spotifyUid?: string
+  spotifyTitle?: string
+  spotifyDuration?: number
 }
 export interface EngineSource extends Pick<ScPlaybackSource, 'drm' | 'waveformUrl'> { url: string; rawUrl?: string; hls: Hls | null }
 
 export type EngineEvent = 'time' | 'state' | 'ended' | 'error' | 'loading' | 'buffered'
 
 type Listener = () => void
+type AudioLoad = { autoplay: boolean; ready: boolean }
+const SPOTIFY_START_TIMEOUT_MS = 25_000
 
 /** Owns the single <audio> element and the hls.js instance for the current stream. */
 class Engine {
-  readonly audio: HTMLAudioElement
+  audio: HTMLAudioElement
+  private audioLoad: AudioLoad | null = null
   private hls: Hls | null = null
   private listeners = new Map<EngineEvent, Set<Listener>>()
   private recovered = false
   private fullBufferEmitted = false
   private objectUrl: string | null = null
+  private baseVolume = 0.8
+  private isMuted = false
+  private preFadeFactor = 1
+  private fadingOut: { audio: HTMLAudioElement; hls: Hls | null; objectUrl: string | null; startVolume: number } | null = null
+  private fadeTimer: ReturnType<typeof setInterval> | null = null
+  private fadeWaitCleanup: (() => void) | null = null
+  private pendingCrossfadeSec = 0
   private audioSeekAt = 0
   private audioSeekTarget: number | null = null
   private audioSeekSrc = ''
@@ -34,6 +46,8 @@ class Engine {
   private spotifyContextUri: string | undefined = undefined
   private spotifyAlbumId: string | undefined = undefined
   private spotifyUid: string | undefined = undefined
+  private spotifyExpectedTitle = ''
+  private spotifyExpectedDuration = 0
   private spotifyRetriedWithContext = false
   private spotifyMismatchLogged = false
   private spotifyLastLoggedErr = ''
@@ -44,11 +58,18 @@ class Engine {
   private spotifyWaiting = false
   private spotifyStarted = false
   private spotifyConfirmedPlaying = false
+  private spotifyUserPaused = false
+  private spotifyUnexpectedPauseCount = 0
+  private spotifyAutoResumeTried = false
+  private spotifyLastPlaybackErr = ''
   private spotifyPlayGen = 0
-  private spotifyMatchedId = false
   private spotifyActualId: string | null = null
   private spotifyPlayStartedAt = 0
+  private spotifyLastPollAt = 0
+  private spotifyEndStallAt = 0
+  private spotifyEndStallPos = -1
   private spotifySeekTarget: number | null = null
+  private spotifySeekBackward = false
   private spotifySeekAt = 0
   private spotifyLastTickAt = 0
   seekSerial = 0
@@ -58,44 +79,49 @@ class Engine {
   private spotifyLastVolumeSentAt = 0
   private spotifySeekTimer: ReturnType<typeof setTimeout> | null = null
   private spotifyLastSeekSentAt = 0
-  private spotifyPolling = false
+  private spotifyPolling: number | null = null
   lastError = ''
+  lastErrorKind: 'media' | 'blocked' = 'media'
   /** Told about every new source, so the waveform can tap the same stream. */
   onSource: ((src: EngineSource) => void) | null = null
   /** Called when Spotify started playing a different track than requested (e.g. Free shuffle/pick cap). */
   onSpotifyMismatch: ((info: { requestedId: string; actualId: string }) => void) | null = null
 
   constructor() {
-    this.audio = new Audio()
-    this.audio.preload = 'auto'
-    const a = this.audio
-    a.addEventListener('timeupdate', () => !this.spotifyTrackId && this.emit('time'))
-    a.addEventListener('durationchange', () => !this.spotifyTrackId && this.emit('time'))
+    this.audio = this.createAudio()
+  }
+
+  private createAudio(): HTMLAudioElement {
+    const a = new Audio()
+    a.preload = 'auto'
+    const active = () => this.audio === a && this.audioLoad !== null
+    a.addEventListener('timeupdate', () => active() && this.emit('time'))
+    a.addEventListener('durationchange', () => active() && this.emit('time'))
     a.addEventListener('progress', () => {
-      if (this.spotifyTrackId) return
+      if (!active()) return
       this.emit('time')
       this.maybeEmitBuffered()
     })
-    a.addEventListener('canplaythrough', () => !this.spotifyTrackId && this.maybeEmitBuffered())
-    a.addEventListener('play', () => !this.spotifyTrackId && this.emit('state'))
-    a.addEventListener('pause', () => !this.spotifyTrackId && this.emit('state'))
+    a.addEventListener('canplaythrough', () => active() && this.maybeEmitBuffered())
+    a.addEventListener('play', () => active() && this.emit('state'))
+    a.addEventListener('pause', () => active() && this.emit('state'))
     a.addEventListener('seeking', () => {
-      if (this.spotifyTrackId) return
+      if (!active()) return
       if (this.audioSeekTarget !== null && a.src === this.audioSeekSrc) this.audioSeekingPending = true
     })
     a.addEventListener('seeked', () => {
-      if (this.spotifyTrackId) return
+      if (!active()) return
       this.audioSeekingPending = false
       this.emit('time')
     })
-    a.addEventListener('playing', () => !this.spotifyTrackId && this.emit('loading'))
-    a.addEventListener('waiting', () => !this.spotifyTrackId && this.emit('loading'))
-    a.addEventListener('canplay', () => !this.spotifyTrackId && this.emit('loading'))
-    a.addEventListener('ended', () => !this.spotifyTrackId && this.emit('ended'))
+    a.addEventListener('playing', () => active() && this.emit('loading'))
+    a.addEventListener('waiting', () => active() && this.emit('loading'))
+    a.addEventListener('canplay', () => active() && this.emit('loading'))
+    a.addEventListener('ended', () => active() && a.ended && this.emit('ended'))
     a.addEventListener('error', () => {
-      if (this.hls || this.spotifyTrackId) return
-      this.fail(a.error?.message || 'media error')
+      if (active() && !this.hls && a.error) this.fail(a.error.message || 'media error')
     })
+    return a
   }
 
   on(ev: EngineEvent, fn: Listener): () => void {
@@ -109,9 +135,27 @@ class Engine {
     this.listeners.get(ev)?.forEach((fn) => fn())
   }
 
-  private fail(message: string) {
+  private fail(message: string, kind: 'media' | 'blocked' = 'media') {
+    if (this.lastError) return
     this.lastError = message
+    this.lastErrorKind = kind
     this.emit('error')
+  }
+
+  private playAudio(load: AudioLoad) {
+    if (!load.autoplay || !load.ready) return
+    const a = this.audio
+    void a.play().catch((error: unknown) => {
+      if (this.audioLoad !== load || !load.autoplay) return
+      const name = error instanceof Error ? error.name : ''
+      if (name === 'AbortError') return
+      if (name === 'NotAllowedError') {
+        load.autoplay = false
+        this.fail('WebView blocked automatic playback', 'blocked')
+      } else {
+        this.fail(a.error?.message || name || 'media error')
+      }
+    })
   }
 
   private isBufferedAt(sec: number): boolean {
@@ -129,7 +173,10 @@ class Engine {
       if (dur <= 1) return
       const settled =
         this.spotifyBuffered >= dur - 1 ||
-        (this.spotifyPlaying && !this.spotifyWaiting && this.spotifyBuffered >= Math.min(dur - 1, this.spotifyPos + 15))
+        (this.spotifyPlaying &&
+          !this.spotifyWaiting &&
+          (this.spotifyBuffered >= Math.min(dur - 1, this.spotifyPos + 8) ||
+            (this.spotifyConfirmedPlaying && this.spotifyPos >= 2)))
       if (force || settled) {
         this.fullBufferEmitted = true
         this.emit('buffered')
@@ -144,7 +191,123 @@ class Engine {
     }
   }
 
-  private teardown(keepSpotify = false) {
+  setPreFade(factor: number) {
+    const clamped = Math.min(1, Math.max(0.15, Number.isFinite(factor) ? factor : 1))
+    this.preFadeFactor = clamped
+    if (!this.fadeTimer && !this.fadingOut && !this.spotifyTrackId) {
+      this.audio.volume = volumeToGain(this.baseVolume) * this.preFadeFactor
+    }
+  }
+
+  prepareCrossfade(seconds: number) {
+    const clamped = Math.min(12, Math.max(0.5, seconds))
+    if (!this.spotifyTrackId && !this.audio.paused && (this.audio.currentTime || 0) > 0) {
+      this.pendingCrossfadeSec = clamped
+    }
+  }
+
+  private stopCrossfade(restoreMainVolume = true) {
+    if (this.fadeWaitCleanup) {
+      this.fadeWaitCleanup()
+      this.fadeWaitCleanup = null
+    }
+    if (this.fadeTimer) {
+      clearInterval(this.fadeTimer)
+      this.fadeTimer = null
+    }
+    this.pendingCrossfadeSec = 0
+    this.preFadeFactor = 1
+    if (this.fadingOut) {
+      const old = this.fadingOut
+      this.fadingOut = null
+      old.audio.pause()
+      if (old.hls) old.hls.destroy()
+      if (old.objectUrl) URL.revokeObjectURL(old.objectUrl)
+      old.audio.removeAttribute('src')
+      old.audio.load()
+    }
+    if (restoreMainVolume) {
+      this.audio.volume = volumeToGain(this.baseVolume)
+      this.audio.muted = this.isMuted
+    }
+  }
+
+  private startCrossfadeRamp(fadeSec: number) {
+    if (this.fadeWaitCleanup) {
+      this.fadeWaitCleanup()
+      this.fadeWaitCleanup = null
+    }
+    if (this.fadeTimer) {
+      clearInterval(this.fadeTimer)
+      this.fadeTimer = null
+    }
+    const fading = this.fadingOut
+    if (!fading) {
+      this.audio.volume = volumeToGain(this.baseVolume)
+      this.audio.muted = this.isMuted
+      return
+    }
+    const startMs = Date.now()
+    const totalMs = Math.max(200, fadeSec * 1000)
+    const startOutVol = Math.max(0.05, fading.startVolume)
+    const tick = () => {
+      if (!this.fadingOut || this.fadingOut !== fading) {
+        if (this.fadeTimer) {
+          clearInterval(this.fadeTimer)
+          this.fadeTimer = null
+        }
+        return
+      }
+      const p = Math.min(1, (Date.now() - startMs) / totalMs)
+      // Hermite S-curve (zero slope at start and end) so incoming audio enters imperceptibly
+      const smooth = p * p * (3 - 2 * p)
+      const outCurve = (1 - p) * (1 - smooth)
+      const targetGain = volumeToGain(this.baseVolume)
+      this.audio.volume = targetGain * smooth
+      this.audio.muted = this.isMuted
+      fading.audio.volume = Math.min(targetGain, startOutVol) * outCurve
+      fading.audio.muted = this.isMuted
+      if (p >= 1) {
+        this.stopCrossfade(true)
+      }
+    }
+    tick()
+    this.fadeTimer = setInterval(tick, 32)
+  }
+
+  private scheduleCrossfadeWhenPlaying(fadeSec: number) {
+    if (this.fadeWaitCleanup) {
+      this.fadeWaitCleanup()
+      this.fadeWaitCleanup = null
+    }
+    const a = this.audio
+    if (!a.paused) {
+      this.startCrossfadeRamp(fadeSec)
+      return
+    }
+    let started = false
+    const begin = () => {
+      if (started) return
+      started = true
+      cleanup()
+      if (this.audio === a && this.fadingOut) {
+        this.startCrossfadeRamp(fadeSec)
+      }
+    }
+    const timer = setTimeout(begin, 450)
+    const cleanup = () => {
+      clearTimeout(timer)
+      a.removeEventListener?.('play', begin)
+      a.removeEventListener?.('playing', begin)
+      if (this.fadeWaitCleanup === cleanup) this.fadeWaitCleanup = null
+    }
+    this.fadeWaitCleanup = cleanup
+    a.addEventListener('play', begin, { once: true })
+    a.addEventListener('playing', begin, { once: true })
+  }
+
+  private teardown(keepSpotify = false, crossfadeSec = 0) {
+    this.audioLoad = null
     if (this.spotifyPoll) {
       clearInterval(this.spotifyPoll)
       this.spotifyPoll = null
@@ -168,10 +331,25 @@ class Engine {
     if (this.spotifyTrackId && !keepSpotify && isTauri()) {
       void invoke('spotify_control', { action: 'pause', value: null }).catch(() => {})
     }
-    if (this.objectUrl) {
-      URL.revokeObjectURL(this.objectUrl)
+
+    const canCrossfade = crossfadeSec > 0 && !keepSpotify && !this.spotifyTrackId && !this.audio.paused
+    if (canCrossfade) {
+      const currentVol = this.audio.volume || volumeToGain(this.baseVolume)
+      this.stopCrossfade(false)
+      this.fadingOut = { audio: this.audio, hls: this.hls, objectUrl: this.objectUrl, startVolume: currentVol }
+      this.hls = null
       this.objectUrl = null
+      this.audio = this.createAudio()
+      this.audio.muted = this.isMuted
+      this.audio.volume = 0
+    } else {
+      this.stopCrossfade(false)
+      if (this.objectUrl) {
+        URL.revokeObjectURL(this.objectUrl)
+        this.objectUrl = null
+      }
     }
+
     this.fullBufferEmitted = false
     this.audioSeekAt = 0
     this.audioSeekTarget = null
@@ -180,6 +358,8 @@ class Engine {
     this.spotifyContextUri = undefined
     this.spotifyAlbumId = undefined
     this.spotifyUid = undefined
+    this.spotifyExpectedTitle = ''
+    this.spotifyExpectedDuration = 0
     this.spotifyRetriedWithContext = false
     this.spotifyMismatchLogged = false
     this.spotifyLastLoggedErr = ''
@@ -190,20 +370,30 @@ class Engine {
     this.spotifyWaiting = false
     this.spotifyStarted = false
     this.spotifyConfirmedPlaying = false
+    this.spotifyUserPaused = false
+    this.spotifyUnexpectedPauseCount = 0
+    this.spotifyAutoResumeTried = false
+    this.spotifyLastPlaybackErr = ''
     this.spotifyPlayGen += 1
-    this.spotifyMatchedId = false
     this.spotifyActualId = null
     this.spotifyPlayStartedAt = 0
+    this.spotifyLastPollAt = 0
+    this.spotifyEndStallAt = 0
+    this.spotifyEndStallPos = -1
     this.spotifySeekTarget = null
+    this.spotifySeekBackward = false
     this.spotifySeekAt = 0
     this.spotifyLastTickAt = 0
-    this.spotifyPolling = false
-    if (this.hls) {
-      this.hls.destroy()
+    this.spotifyPolling = null
+    if (!canCrossfade) {
+      const hls = this.hls
       this.hls = null
+      hls?.destroy()
+      this.audio.removeAttribute('src')
+      this.audio.load()
+      this.audio.volume = volumeToGain(this.baseVolume)
+      this.audio.muted = this.isMuted
     }
-    this.audio.removeAttribute('src')
-    this.audio.load()
   }
 
   private async startSpotifyTrack(id: string, startAt: number, preferContext = false) {
@@ -211,14 +401,18 @@ class Engine {
     const gen = ++this.spotifyPlayGen
     this.spotifyWaiting = true
     this.spotifyConfirmedPlaying = false
-    this.spotifyMatchedId = false
+    this.spotifyUserPaused = false
+    this.spotifyUnexpectedPauseCount = 0
+    this.spotifyAutoResumeTried = false
+    this.spotifyLastPlaybackErr = ''
     this.spotifyActualId = null
     this.spotifyPlayStartedAt = Date.now()
     this.spotifyLastTickAt = Date.now()
-    if (startAt > 0) {
-      this.spotifySeekTarget = startAt
-      this.spotifySeekAt = Date.now()
-    }
+    this.spotifyEndStallAt = 0
+    this.spotifyEndStallPos = -1
+    this.spotifySeekTarget = startAt > 0 ? startAt : null
+    this.spotifySeekBackward = false
+    this.spotifySeekAt = startAt > 0 ? Date.now() : 0
     this.emit('loading')
     try {
       const res = await invoke<{ ok?: boolean }>('spotify_status', {
@@ -235,22 +429,52 @@ class Engine {
         },
       })
       if (this.spotifyTrackId !== id || this.spotifyPlayGen !== gen) return
-      if (res?.ok) {
-        this.spotifyPlaying = true
-        this.spotifyStarted = true
-        this.spotifyLastTickAt = Date.now()
-        this.emit('state')
-        this.emit('loading')
+      if (res?.ok !== true) {
+        this.failSpotify('Spotify не принял команду воспроизведения')
+        return
       }
+      this.spotifyPlaying = true
+      this.spotifyStarted = true
+      this.spotifyPlayStartedAt = Date.now()
+      this.spotifyLastTickAt = Date.now()
+      this.emit('state')
     } catch (e) {
       if (this.spotifyTrackId !== id || this.spotifyPlayGen !== gen) return
-      this.spotifyWaiting = false
-      this.emit('loading')
-      this.fail(typeof e === 'string' ? e : 'Не удалось запустить трек в Spotify')
+      this.failSpotify(typeof e === 'string' ? e : 'Не удалось запустить трек в Spotify')
     }
   }
 
+  private finishSpotifyPlayback() {
+    this.spotifyPlayGen++
+    this.spotifyUserPaused = true
+    this.spotifyStarted = false
+    this.spotifyConfirmedPlaying = false
+    this.spotifyPlaying = false
+    this.spotifyWaiting = false
+    this.emit('state')
+    this.emit('loading')
+  }
+
+  private failSpotify(message: string) {
+    this.finishSpotifyPlayback()
+    this.fail(message)
+  }
+
+  private reportSpotifyMismatch(id: string, actualId: string) {
+    if (this.spotifyMismatchLogged) return
+    this.spotifyMismatchLogged = true
+    journal('spotify', 'the web player started a different track')
+    this.finishSpotifyPlayback()
+    this.onSpotifyMismatch?.({ requestedId: id, actualId })
+  }
+
   private tickSpotify() {
+    const startTimedOut = this.spotifyTrackId && !this.spotifyUserPaused && this.spotifyWaiting &&
+      !this.spotifyConfirmedPlaying && Date.now() - this.spotifyPlayStartedAt >= SPOTIFY_START_TIMEOUT_MS
+    if (startTimedOut) {
+      this.failSpotify('Spotify не начал воспроизведение за отведённое время')
+      return
+    }
     if (!this.spotifyTrackId || !this.spotifyPlaying || this.spotifyWaiting) {
       this.spotifyLastTickAt = Date.now()
       return
@@ -267,15 +491,61 @@ class Engine {
       this.spotifyPos = this.spotifyDur > 0 ? Math.min(this.spotifyDur, next) : next
       this.emit('time')
     }
+    const pollDur = this.spotifyDur > 0 ? this.spotifyDur : this.spotifyExpectedDuration
+    if (
+      this.spotifyConfirmedPlaying &&
+      pollDur > 5 &&
+      pollDur - this.spotifyPos <= 3.0 &&
+      now - this.spotifyLastPollAt >= 300
+    ) {
+      void this.pollSpotify()
+    }
+  }
+
+  private checkSpotifyEndStall(
+    rawPlaying: boolean,
+    sameOrCleared: boolean,
+    startPending: boolean,
+    effectiveDur: number,
+    rawPos: number,
+  ): boolean {
+    if (
+      !this.spotifyConfirmedPlaying ||
+      !this.spotifyStarted ||
+      this.spotifyUserPaused ||
+      startPending ||
+      this.spotifySeekTarget !== null ||
+      !rawPlaying ||
+      !sameOrCleared ||
+      effectiveDur <= 15 ||
+      rawPos < effectiveDur - 1.5
+    ) {
+      this.spotifyEndStallAt = 0
+      this.spotifyEndStallPos = -1
+      return false
+    }
+    const now = Date.now()
+    if (this.spotifyEndStallAt === 0 || rawPos > this.spotifyEndStallPos + 0.08) {
+      this.spotifyEndStallAt = now
+      this.spotifyEndStallPos = rawPos
+      return false
+    }
+    if (now - this.spotifyEndStallAt >= 2200) {
+      journal('spotify', 'ending stalled track at duration boundary')
+      return true
+    }
+    return false
   }
 
   private async pollSpotify() {
     const id = this.spotifyTrackId
-    if (!id || !isTauri() || this.spotifyPolling) return
-    this.spotifyPolling = true
+    const gen = this.spotifyPlayGen
+    if (!id || !isTauri() || this.spotifyUserPaused || this.spotifyPolling === gen) return
+    this.spotifyPolling = gen
+    this.spotifyLastPollAt = Date.now()
     try {
       const raw = await invoke<Record<string, unknown>>('spotify_status')
-      if (this.spotifyTrackId !== id) return
+      if (this.spotifyPlayGen !== gen) return
       const np = raw?.nowPlaying && typeof raw.nowPlaying === 'object' ? (raw.nowPlaying as Record<string, unknown>) : null
       const startPending = raw?.startPending === true
       const startAge = Date.now() - this.spotifyPlayStartedAt
@@ -284,6 +554,7 @@ class Engine {
       const prevWaiting = this.spotifyWaiting
 
       if (isAd) {
+        this.spotifyPlayStartedAt = Date.now()
         this.spotifyWaiting = true
         this.spotifyPlaying = false
         if (prevPlaying !== this.spotifyPlaying) this.emit('state')
@@ -291,50 +562,83 @@ class Engine {
         return
       }
 
-      const npTrackId = typeof np?.trackId === 'string' ? np.trackId : null
-      // While switching tracks or connecting the Spotify web device, ignore stale metadata from the previous track.
-      const staleSwitch = !this.spotifyConfirmedPlaying && npTrackId !== null && npTrackId !== id && (startPending || startAge < 3500)
-      const activeNp = staleSwitch ? null : np
-      const rawPlaying = activeNp ? activeNp.paused === false : (staleSwitch ? false : raw?.playing === true)
+      const npTrackId =
+        typeof np?.trackId === 'string' && np.trackId
+          ? np.trackId
+          : typeof raw?.actualTrackId === 'string' && raw.actualTrackId
+            ? raw.actualTrackId
+            : null
+      const npLinkedFromId = typeof np?.linkedFromTrackId === 'string' ? np.linkedFromTrackId : null
+      const npTitle = typeof np?.title === 'string' ? np.title.replace(/\s+/g, ' ').trim().toLowerCase() : ''
+      const npDuration = Number(np?.duration) || 0
+      const stripTag = (s: string) => s.replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s*\[[^\]]*\]\s*/g, ' ').replace(/\s+/g, ' ').trim()
+      const titleMatched =
+        Boolean(npTitle && this.spotifyExpectedTitle) &&
+        (npTitle === this.spotifyExpectedTitle ||
+          (stripTag(npTitle) !== '' && stripTag(npTitle) === stripTag(this.spotifyExpectedTitle)))
+      const relinkedTitleMatch =
+        titleMatched &&
+        this.spotifyExpectedDuration > 0 &&
+        npDuration > 0 &&
+        Math.abs(npDuration - this.spotifyExpectedDuration) <= 6
+      const matchesRequested = npTrackId === id || npLinkedFromId === id || relinkedTitleMatch
+      const rawPlaying = np ? np.paused === false : raw?.playing === true
+      const rawEnded = np?.trackEnded === true || raw?.trackEnded === true
+      const endedTrackId =
+        typeof np?.endedTrackId === 'string' && np.endedTrackId
+          ? np.endedTrackId
+          : typeof raw?.endedTrackId === 'string' && raw.endedTrackId
+            ? raw.endedTrackId
+            : null
+      const endedMatchesCurrent = rawEnded && (!endedTrackId || endedTrackId === id || endedTrackId === this.spotifyActualId)
+      const prevPos = this.spotifyPos
 
       const playErr = typeof raw?.lastPlayError === 'string' && raw.lastPlayError ? raw.lastPlayError : ''
       if (!startPending && playErr && playErr !== this.spotifyLastLoggedErr) {
         this.spotifyLastLoggedErr = playErr
-        journal('spotify', `playback warning req=${id} err=${playErr}`)
+        journal('spotify', `playback warning: ${playErr}`)
+      }
+      const playbackErr = typeof raw?.lastPlaybackError === 'string' && raw.lastPlaybackError ? raw.lastPlaybackError : ''
+      if (!startPending && playbackErr && playbackErr !== this.spotifyLastPlaybackErr) {
+        this.spotifyLastPlaybackErr = playbackErr
+        journal('spotify', `web player playback error: ${playbackErr}`)
+      } else if (!playbackErr && rawPlaying) {
+        this.spotifyLastPlaybackErr = ''
       }
 
-      if (npTrackId === id) {
-        this.spotifyMatchedId = true
-        this.spotifyActualId = npTrackId
-      } else if (!staleSwitch && rawPlaying && !startPending && npTrackId && startAge > 3500 && !this.spotifyActualId) {
+      // The status can still describe the outgoing track while the web player connects.
+      if (!this.spotifyConfirmedPlaying && !matchesRequested) {
+        if (!rawPlaying || startPending || !npTrackId || startAge < 3500) return
+        if (typeof raw?.expectedTrackId === 'string' && raw.expectedTrackId && raw.expectedTrackId !== id) return
         if ((this.spotifyContextUri || this.spotifyAlbumId) && !this.spotifyRetriedWithContext) {
           this.spotifyRetriedWithContext = true
-          journal('spotify', `retrying with context after mismatch req=${id} actual=${npTrackId}`)
-          void this.startSpotifyTrack(id, this.spotifyPos || 0, true)
-          return
+          journal('spotify', 'retrying playback with context after track mismatch')
+          void this.startSpotifyTrack(id, this.spotifyPos, true)
+        } else {
+          this.reportSpotifyMismatch(id, npTrackId)
         }
-        this.spotifyMatchedId = true
-        this.spotifyActualId = npTrackId
-        if (!this.spotifyMismatchLogged) {
-          this.spotifyMismatchLogged = true
-          journal(
-            'spotify',
-            `track mismatch req=${id} actual=${npTrackId} method=${String(raw?.lastPlayMethod ?? '')} shuffle=${String(raw?.lastShuffle ?? '')} capped=${String(raw?.capped === true)}`,
-          )
-          this.onSpotifyMismatch?.({ requestedId: id, actualId: npTrackId })
-        }
-      }
-      if (this.spotifyMatchedId && this.spotifyActualId && npTrackId && npTrackId !== this.spotifyActualId && this.spotifyDur > 15 && this.spotifyPos >= this.spotifyDur - 8) {
-        this.spotifyStarted = false
-        this.emit('ended')
         return
       }
+      if (this.spotifyConfirmedPlaying && this.spotifyActualId && npTrackId && npTrackId !== this.spotifyActualId && !matchesRequested) {
+        if (startPending || (this.spotifySeekTarget !== null && Date.now() - this.spotifySeekAt < 2400)) return
+        if (
+          this.spotifyStarted &&
+          (endedMatchesCurrent || (this.spotifyDur > 0 && prevPos >= this.spotifyDur - Math.min(8, this.spotifyDur / 2)))
+        ) {
+          this.finishSpotifyPlayback()
+          this.emit('ended')
+        } else {
+          this.reportSpotifyMismatch(id, npTrackId)
+        }
+        return
+      }
+      if (matchesRequested && rawPlaying) this.spotifyActualId = npTrackId ?? id
 
-      if (activeNp) {
-        const pos = Number(activeNp.position)
-        const dur = Number(activeNp.duration)
-        if (Number.isFinite(dur) && dur >= 15) this.spotifyDur = dur
-        const buf = Number(activeNp.buffered)
+      if (np) {
+        const pos = Number(np.position)
+        const dur = Number(np.duration)
+        if (Number.isFinite(dur) && dur > 0) this.spotifyDur = dur
+        const buf = Number(np.buffered)
         if (Number.isFinite(buf) && buf >= 0) {
           this.spotifyBuffered = this.spotifyDur > 0 ? Math.min(this.spotifyDur, buf) : buf
         }
@@ -342,9 +646,11 @@ class Engine {
           const now = Date.now()
           const seekTarget = this.spotifySeekTarget
           const seekAge = now - this.spotifySeekAt
+          const seekUpper = Math.min(2.5, Math.max(1.25, seekAge / 1000 + 0.4))
           if (seekTarget !== null && seekAge < 2400) {
-            if (seekAge >= 250 && pos >= seekTarget - 0.04 && pos <= seekTarget + 1.25) {
+            if (seekAge >= 250 && pos >= seekTarget - 0.04 && (!this.spotifySeekBackward || pos <= seekTarget + seekUpper)) {
               this.spotifySeekTarget = null
+              this.spotifySeekBackward = false
               this.spotifyPos = Math.max(seekTarget, this.spotifyPos - 0.05, pos)
               this.spotifyLastTickAt = now
             } else if (seekAge >= 250 && pos >= seekTarget - 0.35 && pos < seekTarget - 0.04) {
@@ -353,6 +659,7 @@ class Engine {
             }
           } else {
             this.spotifySeekTarget = null
+            this.spotifySeekBackward = false
             if (!rawPlaying) {
               this.spotifyPos = pos
               this.spotifyLastTickAt = now
@@ -385,16 +692,68 @@ class Engine {
         }
       }
 
-      const graceMs = startPending ? 12_000 : 6000
-      const inStartGrace = !this.spotifyConfirmedPlaying && startAge < graceMs
+      const dur = this.spotifyDur
+      const effectiveDur = dur > 0 ? dur : this.spotifyExpectedDuration
+      const sameTrack = matchesRequested || (npTrackId !== null && npTrackId === this.spotifyActualId)
+      const rawPos = np && Number.isFinite(Number(np.position)) ? Number(np.position) : this.spotifyPos
+      const nearEndStopped =
+        !rawPlaying &&
+        !this.spotifyUserPaused &&
+        sameTrack &&
+        effectiveDur > 15 &&
+        rawPos >= effectiveDur - 1.5 &&
+        prevPos >= effectiveDur - 3
+      const nearEndStalled = this.checkSpotifyEndStall(
+        rawPlaying,
+        sameTrack || (np === null && npTrackId === null && effectiveDur > 15 && prevPos >= effectiveDur - 1.5),
+        startPending,
+        effectiveDur,
+        rawPos,
+      )
+      const finishEnded =
+        this.spotifyConfirmedPlaying &&
+        this.spotifyStarted &&
+        !startPending &&
+        this.spotifySeekTarget === null &&
+        (endedMatchesCurrent ||
+          nearEndStalled ||
+          (!rawPlaying &&
+            sameTrack &&
+            (nearEndStopped || (dur > 0 && prevPos >= dur - Math.min(3, dur / 2) && this.spotifyPos <= 1.5))))
+      if (finishEnded) {
+        this.finishSpotifyPlayback()
+        this.emit('ended')
+        return
+      }
+
       if (rawPlaying) {
         this.spotifyConfirmedPlaying = true
         this.spotifyStarted = true
         this.spotifyWaiting = false
         this.spotifyPlaying = true
-      } else if (this.spotifyPlaying && inStartGrace) {
+        this.spotifyUnexpectedPauseCount = 0
+        this.spotifyAutoResumeTried = false
+      } else if (!this.spotifyConfirmedPlaying) {
         this.spotifyWaiting = true
       } else {
+        if (this.spotifyConfirmedPlaying && this.spotifyStarted && !this.spotifyUserPaused) {
+          this.spotifyUnexpectedPauseCount += 1
+          if (this.spotifyUnexpectedPauseCount >= 2 && !this.spotifyAutoResumeTried) {
+            this.spotifyAutoResumeTried = true
+            const posNow = this.spotifyPos || 0
+            journal('spotify', 'resuming after unexpected pause')
+            void invoke<boolean>('spotify_control', { action: 'play', value: null })
+              .then((ok) => {
+                if (!ok && this.spotifyPlayGen === gen) {
+                  void this.startSpotifyTrack(id, posNow)
+                }
+              })
+              .catch(() => {})
+          } else if (this.spotifyAutoResumeTried && this.spotifyUnexpectedPauseCount >= 6) {
+            this.failSpotify(this.spotifyLastPlaybackErr || 'Воспроизведение Spotify прервалось')
+            return
+          }
+        }
         this.spotifyPlaying = false
         this.spotifyWaiting = false
       }
@@ -402,32 +761,33 @@ class Engine {
       if (prevPlaying !== this.spotifyPlaying) this.emit('state')
       if (prevWaiting !== this.spotifyWaiting) this.emit('loading')
       this.maybeEmitBuffered()
-
-      if (this.spotifyConfirmedPlaying && this.spotifyStarted && !rawPlaying && this.spotifyDur > 15 && this.spotifyPos >= this.spotifyDur - 1.5) {
-        this.spotifyStarted = false
-        this.emit('ended')
-      }
     } catch {
       // ignore transient eval timeouts while the hidden webview navigates
     } finally {
-      this.spotifyPolling = false
+      if (this.spotifyPolling === gen) this.spotifyPolling = null
     }
   }
 
   /** Loads a stream URL (HLS through the Rust proxy, Spotify via hidden webview, anything else directly). */
   load(url: string, startAt = 0, autoplay = true, options?: StreamOptions) {
     const isSpotify = url.startsWith('spotify:track:')
-    this.teardown(isSpotify)
+    const fadeSec = !isSpotify && autoplay ? this.pendingCrossfadeSec : 0
+    this.pendingCrossfadeSec = 0
+    this.teardown(isSpotify, fadeSec)
     this.recovered = false
     this.lastError = ''
+    this.lastErrorKind = 'media'
     if (isSpotify) {
       const id = url.slice('spotify:track:'.length).trim()
       this.spotifyTrackId = id
       this.spotifyContextUri = options?.spotifyContextUri
       this.spotifyAlbumId = options?.spotifyAlbumId
       this.spotifyUid = options?.spotifyUid
+      this.spotifyExpectedTitle = options?.spotifyTitle ? options.spotifyTitle.replace(/\s+/g, ' ').trim().toLowerCase() : ''
+      this.spotifyExpectedDuration = options?.spotifyDuration ?? 0
       this.spotifyPos = startAt
       this.spotifyWaiting = autoplay
+      this.spotifyUserPaused = !autoplay
       this.onSource?.({ url, hls: null, drm: options?.drm, waveformUrl: options?.waveformUrl })
       this.emit('loading')
       this.emit('time')
@@ -439,7 +799,10 @@ class Engine {
       return
     }
     const a = this.audio
+    const load = { autoplay, ready: true }
+    this.audioLoad = load
     if (url.includes('.m3u8') && Hls.isSupported()) {
+      load.ready = false
       const hls = new Hls({
         ...(options?.drm ? drmConfig(options.drm) : {}),
         loader: isTauri() ? TauriLoader : Hls.DefaultConfig.loader,
@@ -455,7 +818,9 @@ class Engine {
       this.hls = hls
       this.onSource?.({ url, hls, ...options })
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (autoplay) void a.play().catch(() => {})
+        if (this.hls !== hls || this.audioLoad !== load) return
+        load.ready = true
+        this.playAudio(load)
       })
       hls.on(Hls.Events.BUFFER_EOS, () => {
         if (this.hls === hls) this.maybeEmitBuffered(true)
@@ -464,7 +829,7 @@ class Engine {
         if (this.hls === hls) this.maybeEmitBuffered()
       })
       hls.on(Hls.Events.ERROR, (_e, data: ErrorData) => {
-        if (!data.fatal) return
+        if (this.hls !== hls || !data.fatal) return
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !this.recovered) {
           this.recovered = true
           hls.recoverMediaError()
@@ -480,8 +845,11 @@ class Engine {
       const playUrl = blobUrl ?? url
       this.onSource?.({ url: playUrl, rawUrl: url, hls: null, ...options })
       a.src = playUrl
-      if (startAt > 0) a.addEventListener('loadedmetadata', () => (a.currentTime = startAt), { once: true })
-      if (autoplay) void a.play().catch(() => {})
+      if (startAt > 0) a.currentTime = startAt
+      this.playAudio(load)
+    }
+    if (fadeSec > 0 && this.fadingOut) {
+      this.scheduleCrossfadeWhenPlaying(fadeSec)
     }
     this.emit('loading')
   }
@@ -493,27 +861,52 @@ class Engine {
 
   play() {
     if (this.spotifyTrackId) {
+      if (!this.spotifyUserPaused && (this.spotifyWaiting || this.spotifyPlaying)) return
       const id = this.spotifyTrackId
-      if (!this.spotifyStarted || !this.spotifyConfirmedPlaying) {
-        void this.startSpotifyTrack(id, this.spotifyPos)
+      const pendingSeek = this.spotifySeekTarget
+      this.spotifyUserPaused = false
+      this.spotifyUnexpectedPauseCount = 0
+      this.spotifyAutoResumeTried = false
+      this.spotifyEndStallAt = 0
+      this.spotifyEndStallPos = -1
+      this.spotifyLastPlaybackErr = ''
+      this.lastError = ''
+      if (!this.spotifyStarted || !this.spotifyConfirmedPlaying || pendingSeek !== null) {
+        // A seek while paused may only have changed the web player's UI. Pair the position with the track ID on resume.
+        void this.startSpotifyTrack(id, pendingSeek ?? this.spotifyPos)
       } else {
+        const gen = ++this.spotifyPlayGen
         this.spotifyPlaying = true
         this.spotifyPlayStartedAt = Date.now()
         this.emit('state')
         if (isTauri()) {
           void invoke<boolean>('spotify_control', { action: 'play', value: null })
-            .then((ok) => { if (!ok && this.spotifyTrackId === id) void this.startSpotifyTrack(id, this.spotifyPos) })
+            .then((ok) => { if (!ok && this.spotifyPlayGen === gen) void this.startSpotifyTrack(id, this.spotifyPos) })
             .catch(() => {})
         }
       }
       return
     }
-    void this.audio.play().catch(() => {})
+    if (this.audioLoad) {
+      this.audioLoad.autoplay = true
+      this.playAudio(this.audioLoad)
+      this.emit('loading')
+    }
   }
 
   pause() {
+    this.stopCrossfade(true)
     if (this.spotifyTrackId) {
+      this.spotifyUserPaused = true
+      this.spotifyUnexpectedPauseCount = 0
+      this.spotifyAutoResumeTried = false
+      this.spotifyEndStallAt = 0
+      this.spotifyEndStallPos = -1
       this.spotifyPlayGen += 1
+      if (this.spotifySeekTimer) {
+        clearTimeout(this.spotifySeekTimer)
+        this.spotifySeekTimer = null
+      }
       this.spotifyPlaying = false
       this.spotifyWaiting = false
       this.emit('state')
@@ -521,23 +914,31 @@ class Engine {
       if (isTauri()) void invoke('spotify_control', { action: 'pause', value: null }).catch(() => {})
       return
     }
+    if (this.audioLoad) this.audioLoad.autoplay = false
     this.audio.pause()
+    this.emit('loading')
   }
 
   seek(sec: number) {
     if (!Number.isFinite(sec)) return
+    this.stopCrossfade(true)
     this.seekSerial += 1
     const target = Math.max(0, sec)
     if (this.spotifyTrackId) {
+      this.spotifySeekBackward = target < this.spotifyPos - 0.5
       this.spotifyPos = target
       this.spotifySeekTarget = target
       this.spotifySeekAt = Date.now()
       this.spotifyLastTickAt = Date.now()
+      this.spotifyUnexpectedPauseCount = 0
+      this.spotifyAutoResumeTried = false
+      this.spotifyEndStallAt = 0
+      this.spotifyEndStallPos = -1
       if (this.spotifyBuffered > 0 && target > this.spotifyBuffered + 0.5) {
         this.spotifyBuffered = 0
       }
       this.emit('time')
-      if (isTauri()) {
+      if (isTauri() && !this.spotifyUserPaused) {
         const sendSeek = () => {
           this.spotifySeekTimer = null
           this.spotifyLastSeekSentAt = Date.now()
@@ -566,15 +967,22 @@ class Engine {
   }
 
   setVolume(v: number, muted: boolean) {
+    this.baseVolume = v
+    this.isMuted = muted
     const gain = volumeToGain(v)
-    this.audio.volume = gain
+    if (!this.fadeTimer && !this.fadingOut) {
+      this.audio.volume = gain * this.preFadeFactor
+    }
     this.audio.muted = muted
+    if (this.fadingOut) {
+      this.fadingOut.audio.muted = muted
+    }
     if (this.spotifyTrackId && isTauri()) {
       const sendVolume = () => {
         this.spotifyVolumeTimer = null
         this.spotifyLastVolumeSentAt = Date.now()
         void invoke('spotify_status', {
-          request: { kind: 'volume', volume: this.audio.volume, muted: this.audio.muted },
+          request: { kind: 'volume', volume: gain, muted: this.audio.muted },
         }).catch(() => {})
       }
       const elapsed = Date.now() - this.spotifyLastVolumeSentAt
@@ -668,12 +1076,14 @@ class Engine {
 
   get playing() {
     if (this.spotifyTrackId) return this.spotifyPlaying
-    return !this.audio.paused
+    return this.audioLoad !== null && !this.audio.paused
   }
 
   get waiting() {
     if (this.spotifyTrackId) return this.spotifyWaiting
-    if (this.audio.readyState < 3 && !this.audio.paused) {
+    if (!this.audioLoad?.autoplay) return false
+    if (!this.audioLoad.ready) return true
+    if (this.audio.readyState < 3) {
       // Suppress transient Play/Pause loading flicker while seeking inside a buffered range.
       if (Date.now() - this.audioSeekAt < 350 && this.isBufferedAt(this.audio.currentTime)) return false
       return true

@@ -180,6 +180,15 @@ describe('SoundCloud tracks in the player', () => {
     expect(h.toasts).toEqual([])
   })
 
+  test('resuming a paused restore watches for a stalled start again', async () => {
+    usePlayer.getState().playList([sc(1), sc(2)], 0, { paused: true })
+    await flush()
+    usePlayer.getState().play()
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(h.toasts).toContain(SC_UNREACHABLE)
+    expect(usePlayer.getState().current?.key).toBe('sc_2')
+  })
+
   test('signed out of SoundCloud: the track says so and the player moves on', async () => {
     h.sc.fail = ScApiError.from({ kind: 'signedOut' })
     usePlayer.getState().playList([sc(1), sc(2)], 0)

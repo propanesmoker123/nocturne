@@ -2,12 +2,11 @@ import { Heart } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton } from '../components/controls'
-import { IconBackward, IconForward, IconPause, IconPlay, IconRepeat, IconShuffle, IconSpeaker } from '../components/Icons'
-import { Slider } from '../components/Slider'
+import { IconBackward, IconForward, IconPause, IconPlay, IconRepeat, IconShuffle } from '../components/Icons'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
 import { useRouter } from '../app/router'
-import { speakerLevel } from '../app/MiniPlayer'
+import { VolumeControl } from '../app/MiniPlayer'
 import s from '../app/MiniPlayer.module.css'
 import { ensureSpotifyWaveform } from '../player/waveform'
 import { spotifyControl, spotifyPosition, useSpotify } from './runtime'
@@ -70,13 +69,13 @@ export function SpotifyMiniPlayer() {
         </div>
         <div className={s.center}>
           <div className={s.transport}>
-            <IconButton size={32} plain active={track.shuffle} label={track.shuffle ? 'Выключить перемешивание' : 'Перемешать'} onClick={() => run('shuffle')}><IconShuffle size={17} /></IconButton>
+            <IconButton className={s.transportExtra} size={32} plain active={track.shuffle} label={track.shuffle ? 'Выключить перемешивание' : 'Перемешать'} onClick={() => run('shuffle')}><IconShuffle size={17} /></IconButton>
             <IconButton size={36} plain label="Предыдущий" onClick={() => run('previous')}><IconBackward size={22} /></IconButton>
             <IconButton className={s.play} size={40} plain label={playing ? 'Пауза' : 'Играть'} onClick={() => run('toggle')}>
               {playing ? <IconPause size={26} /> : <IconPlay size={26} />}
             </IconButton>
             <IconButton size={36} plain label="Следующий" onClick={() => run('next')}><IconForward size={22} /></IconButton>
-            <IconButton size={32} plain active={track.repeat !== 'off'} label={track.repeat === 'off' ? 'Повторять' : track.repeat === 'all' ? 'Повторять трек' : 'Не повторять'} onClick={() => run('repeat')}>
+            <IconButton className={s.transportExtra} size={32} plain active={track.repeat !== 'off'} label={track.repeat === 'off' ? 'Повторять' : track.repeat === 'all' ? 'Повторять трек' : 'Не повторять'} onClick={() => run('repeat')}>
               <IconRepeat size={17} one={track.repeat === 'one'} />
             </IconButton>
           </div>
@@ -100,14 +99,16 @@ export function SpotifyMiniPlayer() {
           </div>
         </div>
         <div className={s.right}>
-          <IconButton size={32} label="Звук Spotify" onClick={() => run('mute')}>
-            <IconSpeaker size={19} level={speakerLevel(vol, muted)} />
-          </IconButton>
-          {track.volume !== null && (
-            <div className={s.volume}>
-              <Slider size="sm" label="Громкость Spotify" value={track.volume} wheelStep={0.05} valueText={v => `${Math.round(v * 100)}%`} onChange={v => run('volume', v)} onCommit={v => run('volume', v)} />
-            </div>
-          )}
+          <VolumeControl
+            volume={vol}
+            muted={muted}
+            label="Громкость Spotify"
+            muteLabel="Звук Spotify"
+            showSlider={track.volume !== null}
+            onToggleMute={() => run('mute')}
+            onChange={(v) => run('volume', v)}
+            onCommit={(v) => run('volume', v)}
+          />
         </div>
       </div>
     </div>

@@ -199,7 +199,37 @@ describe('what readers accept', () => {
     expect((parseRecord(JSON.parse(JSON.stringify({ ...bucket, entries: [bad, good] }))) as BucketRecord).entries).toEqual([good])
   })
 
-  test('a cover from anywhere but VK or SoundCloud is dropped, the track kept', () => {
+  test('a Spotify entry requires a canonical provider ID', () => {
+    const d = addTracks(newAlbum('Mix', 1, DEV), [vk(1)], 2, DEV).doc
+    const bucket = splitDoc(d).buckets.find((b) => b.entries.length)!
+    const [e] = bucket.entries
+    const read = (spotifyId: unknown) => parseRecord({ ...bucket, entries: [{ ...e, track: { ...e.track, service: 'spotify', spotifyId } }] })
+    expect(read('4cOdK2wGLETKBW3PvgPWqT')).toMatchObject({ entries: [{ track: { service: 'spotify', spotifyId: '4cOdK2wGLETKBW3PvgPWqT' } }] })
+    for (const invalid of [undefined, 123, '4cOdK2wGLETKBW3PvgPWq/', '4cOdK2wGLETKBW3PvgPWqT\n']) {
+      expect(read(invalid)).toEqual({ ...bucket, entries: [] })
+    }
+  })
+
+  test('a Spotify track keeps artwork only from the approved CDN origins', () => {
+    const d = addTracks(newAlbum('Mix', 1, DEV), [vk(1)], 2, DEV).doc
+    const bucket = splitDoc(d).buckets.find((b) => b.entries.length)!
+    const [e] = bucket.entries
+    const coverOf = (cover: string) => {
+      const raw = { ...bucket, entries: [{ ...e, track: { ...e.track, cover, service: 'spotify', spotifyId: '4cOdK2wGLETKBW3PvgPWqT' } }] }
+      const record = parseRecord(raw) as BucketRecord
+      expect(record.entries).toHaveLength(1)
+      return record.entries[0].track?.cover
+    }
+    for (const host of ['i.scdn.co', 'mosaic.scdn.co', 'image-cdn-ak.spotifycdn.com', 'image-cdn-fa.spotifycdn.com']) {
+      const cover = `https://${host}/image/cover`
+      expect(coverOf(cover)).toBe(cover)
+    }
+    for (const cover of ['http://i.scdn.co/image/cover', 'https://i.scdn.co.tracker.example/a.jpg', 'https://i.scdn.co@tracker.example/a.jpg', 'https://p.scdn.co/mp3-preview/a', 'https://tracker.example/pixel.gif']) {
+      expect(coverOf(cover)).toBeUndefined()
+    }
+  })
+
+  test('legacy entries keep VK and SoundCloud artwork', () => {
     const d = addTracks(newAlbum('Обложки', 1, DEV), [vk(1)], 2, DEV).doc
     const bucket = splitDoc(d).buckets.find((b) => b.entries.length)!
     const e = bucket.entries[0]

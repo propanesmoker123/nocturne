@@ -25,7 +25,7 @@ function fixture(reply: unknown = machine(), origin = 'https://open.spotify.com'
   const response = new Response(JSON.stringify(reply), { headers: { 'Content-Type': 'application/json', 'X-Fixture': 'kept' } })
   const fetch = async (_input: unknown, _init?: unknown) => { requests++; if (failure) throw failure; return response.clone() }
   const win = { location: { origin }, fetch, WebSocket: Socket, ...extra } as unknown as Window & { WebSocket: typeof WebSocket; __nocturneSpotifyLab: { configure(enabled: boolean): void; playing(): boolean | null; control(action: string): boolean; stats(): { enabled: boolean; removed: number; unsupported: number; intercepted: number } } }
-  const context = { window: win, URL, Request, Response, Headers, MessageEvent, Event, structuredClone, setTimeout, clearTimeout, ...extra }
+  const context = { window: win, URL, URLSearchParams, Request, Response, Headers, MessageEvent, Event, structuredClone, setTimeout, clearTimeout, ...extra }
   runInNewContext(source, context)
   return { win, requests: () => requests }
 }
@@ -1115,18 +1115,65 @@ describe('bounded Spotify ad experiment', () => {
     expect((fallbackRes.data?.tracks as unknown[])?.length).toBeGreaterThan(0)
   })
 
-  test('routes DELETE playlist tracks, PUT/DELETE playlist followers, and /artists/{id}/related-artists', async () => {
+  test('uses the current Spotify Web API for library writes when the web player rejects them', async () => {
+    const requests: Array<[string | undefined, string | null]> = []
+    const { win } = fixture({}, undefined, undefined, {
+      fetch: async (input: unknown, init?: RequestInit) => {
+        const url = new URL(String(input))
+        if (url.pathname === '/v1/me/library') {
+          requests.push([init?.method, url.searchParams.get('uris')])
+          return new Response(null, { status: 200 })
+        }
+        if (url.pathname === '/pathfinder/v2/query') {
+          const body = JSON.parse(String(init?.body ?? '{}'))
+          if (body.operationName === 'profileAttributes') return Response.json({ data: {} })
+          return new Response(null, { status: 400 })
+        }
+        return new Response(null, { status: 404 })
+      },
+    })
+    await win.fetch('https://open.spotify.com/ping', {
+      headers: { authorization: 'Bearer ' + 't'.repeat(40), 'client-token': 'c'.repeat(30) },
+    })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      startJob(key: string, spec: Record<string, unknown>): boolean
+      pollJob(key: string): { done: boolean; ok: boolean }
+    }
+    for (const [method, path] of [
+      ['PUT', '/me/tracks?ids=3333333333333333333333'],
+      ['DELETE', '/playlists/1111111111111111111111/followers'],
+    ]) {
+      lab.startJob(method, { kind: 'api', method, path })
+      await vi.waitFor(() => {
+        const result = lab.pollJob(method)
+        expect(result.done).toBe(true)
+        expect(result.ok).toBe(true)
+      })
+    }
+    expect(requests).toEqual([
+      ['PUT', 'spotify:track:3333333333333333333333'],
+      ['DELETE', 'spotify:playlist:1111111111111111111111'],
+    ])
+  })
+
+  test('routes DELETE playlist tracks, PUT/DELETE playlist followers via Rootlist, PUT/DELETE /me/tracks & /me/albums via addToLibrary/removeFromLibrary, and /artists/{id}/related-artists', async () => {
     const authHeaders = {
       authorization: 'Bearer ' + 't'.repeat(40),
       'client-token': 'c'.repeat(30),
     }
     const seenPf: Array<{ op: string; vars: Record<string, unknown> }> = []
+    const seenRootlist: Array<{ url: string; method: string; body: Record<string, unknown> }> = []
     const { win } = fixture({}, undefined, undefined, {
       fetch: async (input: unknown, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { operationName?: string; variables?: Record<string, unknown> } : {}
-        if (url.includes('/pathfinder/v2/query') && body.operationName) {
-          seenPf.push({ op: body.operationName, vars: body.variables ?? {} })
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {}
+        if (url.includes('/pathfinder/v2/query') && typeof body.operationName === 'string') {
+          seenPf.push({ op: body.operationName, vars: (body.variables ?? {}) as Record<string, unknown> })
+          if (body.operationName === 'profileAttributes') {
+            return new Response(JSON.stringify({
+              data: { me: { profile: { username: 'tester123', uri: 'spotify:user:tester123' } } },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+          }
           if (body.operationName === 'queryArtistRelated') {
             return new Response(JSON.stringify({
               data: {
@@ -1139,6 +1186,10 @@ describe('bounded Spotify ad experiment', () => {
             }), { status: 200, headers: { 'Content-Type': 'application/json' } })
           }
           return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        if (url.includes('spclient.wg.spotify.com/playlist/v2/user/') && url.includes('/rootlist/changes')) {
+          seenRootlist.push({ url, method: (init?.method || 'GET').toUpperCase(), body })
+          return new Response(JSON.stringify({ revision: 'rev1' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
         }
         return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
       },
@@ -1165,16 +1216,47 @@ describe('bounded Spotify ad experiment', () => {
     expect(putFollow.ok).toBe(true)
     const delFollow = await run('del-follow', 'DELETE', '/playlists/1111111111111111111111/followers')
     expect(delFollow.ok).toBe(true)
+    const putLibTrack = await run('put-lib-track', 'PUT', '/me/tracks?ids=3333333333333333333333')
+    expect(putLibTrack.ok).toBe(true)
+    const delLibTrack = await run('del-lib-track', 'DELETE', '/me/tracks?ids=3333333333333333333333')
+    expect(delLibTrack.ok).toBe(true)
+    const putLibAlbum = await run('put-lib-album', 'PUT', '/me/albums?ids=4444444444444444444444')
+    expect(putLibAlbum.ok).toBe(true)
     const rel = await run('rel-artists', 'GET', '/artists/2222222222222222222222/related-artists')
     expect(rel.ok).toBe(true)
     expect((rel.data?.items as Array<{ profile?: { name?: string } }>)[0]?.profile?.name).toBe('Peer Artist')
 
     expect(seenPf).toEqual([
       { op: 'removeFromPlaylist', vars: { playlistUri: 'spotify:playlist:1111111111111111111111', uids: ['uidA', 'uidB'] } },
-      { op: 'addToLibrary', vars: { libraryItemUris: ['spotify:playlist:1111111111111111111111'] } },
-      { op: 'removeFromLibrary', vars: { libraryItemUris: ['spotify:playlist:1111111111111111111111'] } },
+      { op: 'profileAttributes', vars: {} },
+      { op: 'addToLibrary', vars: { libraryItemUris: ['spotify:track:3333333333333333333333'], interactionId: null } },
+      { op: 'removeFromLibrary', vars: { libraryItemUris: ['spotify:track:3333333333333333333333'] } },
+      { op: 'addToLibrary', vars: { libraryItemUris: ['spotify:album:4444444444444444444444'], interactionId: null } },
       { op: 'queryArtistRelated', vars: { uri: 'spotify:artist:2222222222222222222222' } },
     ])
+    expect(seenRootlist).toHaveLength(2)
+    expect(seenRootlist[0].url).toBe('https://spclient.wg.spotify.com/playlist/v2/user/tester123/rootlist/changes')
+    expect(seenRootlist[0].method).toBe('POST')
+    expect((seenRootlist[0].body.deltas as Array<{ ops: Array<Record<string, unknown>>; info: unknown }>)[0]).toMatchObject({
+      ops: [{
+        kind: 'ADD',
+        add: {
+          addFirst: true,
+          items: [{ uri: 'spotify:playlist:1111111111111111111111' }],
+        },
+      }],
+      info: { source: { client: 'WEBPLAYER' } },
+    })
+    expect((seenRootlist[1].body.deltas as Array<{ ops: Array<Record<string, unknown>>; info: unknown }>)[0]).toMatchObject({
+      ops: [{
+        kind: 'REM',
+        rem: {
+          itemsAsKey: true,
+          items: [{ uri: 'spotify:playlist:1111111111111111111111' }],
+        },
+      }],
+      info: { source: { client: 'WEBPLAYER' } },
+    })
 
     // Verify frontend helpers issue matching Tauri IPC requests.
     const tauri = await import('../lib/tauri')
@@ -1783,5 +1865,326 @@ describe('bounded Spotify ad experiment', () => {
     const npAnchor = lab.nowPlaying()
     expect(npAnchor?.position).toBeGreaterThanOrEqual(80.1)
     expect(npAnchor?.position).toBeLessThan(80.5)
+  })
+
+  test('harmony trackEnded detects end-of-track pause and snap-to-zero and resets on seek or resume', () => {
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    const mediaSession = { playbackState: 'playing', metadata: { title: 'End Check', artist: 'Artist', album: 'Single', artwork: [] } }
+    const doc = { querySelector: () => null, querySelectorAll: () => [] }
+    const { win } = fixture({}, undefined, undefined, { document: doc, navigator: { mediaSession } })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): Record<string, unknown>
+      nowPlaying(): { trackEnded?: boolean } | null
+      control(action: string, value?: number): boolean
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    const hState = {
+      duration: 180000,
+      position: 177500,
+      timestamp: Date.now(),
+      paused: false,
+      loading: false,
+      playback_speed: 1,
+      track_window: { current_track: { uri: 'spotify:track:2gk9ByA1PmGJxdCs5s4kyQ' } },
+    }
+    host._harmony = {
+      playTracks: async () => {},
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      _controller: { _state: hState, seek: () => {} },
+    }
+
+    const emitState = (patch: Partial<typeof hState>) => {
+      Object.assign(hState, patch)
+      for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    }
+
+    emitState({ position: 177500, paused: false })
+    expect(lab.stats().trackEnded).toBe(false)
+
+    emitState({ position: 179000, paused: true })
+    expect(lab.stats().trackEnded).toBe(false)
+    emitState({ position: 179500, paused: false })
+
+    // Spotify stops and snaps position back to 0 when track completes.
+    emitState({ position: 0, paused: true })
+    expect(lab.stats().trackEnded).toBe(true)
+    expect(lab.nowPlaying()?.trackEnded).toBe(true)
+
+    expect(lab.control('seek', 12)).toBe(true)
+    expect(lab.stats().trackEnded).toBe(false)
+  })
+
+  test('silences and pauses an unexpected auto-advanced track at desired track end, then restores sound on next playTrack', async () => {
+    class MockMedia extends EventTarget {
+      _vol = 1
+      _muted = false
+      paused = false
+      ended = false
+      loop = false
+      isConnected = false
+      tagName = 'AUDIO'
+      currentTime = 176
+      duration = 180
+      playbackRate = 1
+      mediaKeys: object | null = {}
+      buffered = { length: 1, start: () => 0, end: () => 180 }
+      get volume() { return this._vol }
+      set volume(v: number) { this._vol = v }
+      get muted() { return this._muted }
+      set muted(m: boolean) { this._muted = m }
+      play() { this.paused = false; return Promise.resolve() }
+      load() {}
+    }
+    const musicEl = new MockMedia()
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    let pauseCalls = 0
+    const doc = {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement: () => new MockMedia(),
+    }
+    const { win } = fixture({}, undefined, undefined, { document: doc, HTMLMediaElement: MockMedia })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): { trackEnded?: boolean; endedTrackId?: string; startPending?: boolean }
+      nowPlaying(): { trackEnded?: boolean; endedTrackId?: string | null } | null
+      playTrack(id: string, startAt?: number, vol?: number, muted?: boolean): boolean
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    const trackA = '13qpCQkqSTI37Um7UyOBBt'
+    const trackAutoplay = '9999999999999999999999'
+    const trackNext = '612QrhJo7loQ6s7qC7dMdF'
+    const hState = {
+      duration: 180000,
+      position: 176000,
+      timestamp: Date.now(),
+      paused: false,
+      loading: false,
+      playback_speed: 1,
+      track_window: { current_track: { uri: `spotify:track:${trackA}`, name: 'My Roots' }, previous_tracks: [] as Array<{ uri: string }> },
+    }
+    host._harmony = {
+      playTracks: async () => {},
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      playURI: async () => {},
+      pause: () => { pauseCalls++ },
+      _controller: { _state: hState, playURI: async () => {}, pause: () => { pauseCalls++ } },
+    }
+
+    musicEl.play()
+    expect(lab.playTrack(trackA, 0, 0.7, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+
+    // Desired track plays near end
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(lab.stats().trackEnded).toBe(false)
+    expect(musicEl._muted).toBe(false)
+
+    // Spotify's internal Web Player auto-advances to an unwanted track before poll runs
+    hState.track_window = {
+      current_track: { uri: `spotify:track:${trackAutoplay}`, name: 'Guitar Bleed' },
+      previous_tracks: [{ uri: `spotify:track:${trackA}` }],
+    }
+    hState.position = 120
+    hState.paused = false
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+
+    expect(pauseCalls).toBe(1)
+    expect(musicEl._muted).toBe(true)
+    expect(lab.stats().trackEnded).toBe(true)
+    expect(lab.stats().endedTrackId).toBe(trackA)
+
+    // Advancing to the queued track clears bleed mute and restores volume
+    expect(lab.playTrack(trackNext, 0, 0.7, false)).toBe(true)
+    expect(musicEl._muted).toBe(false)
+    expect(musicEl._vol).toBeCloseTo(0.7, 3)
+    expect(lab.stats().trackEnded).toBe(false)
+  })
+
+  test('retains active EME audio element across many canvas video creations and falls back to harmony track metadata', () => {
+    class MockMedia extends EventTarget {
+      _vol = 1
+      _muted = false
+      paused = true
+      ended = false
+      loop = false
+      isConnected = false
+      tagName = 'AUDIO'
+      currentTime = 14
+      duration = 202
+      playbackRate = 1
+      mediaKeys: object | null = null
+      buffered = { length: 1, start: () => 0, end: () => 60 }
+      get volume() { return this._vol }
+      set volume(v: number) { this._vol = v }
+      get muted() { return this._muted }
+      set muted(m: boolean) { this._muted = m }
+      play() { this.paused = false; return Promise.resolve() }
+      load() {}
+    }
+    const musicEl = new MockMedia()
+    musicEl.mediaKeys = {}
+    const doc = {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement: (tag: string) => {
+        const el = new MockMedia()
+        el.tagName = tag.toUpperCase()
+        el.loop = el.tagName === 'VIDEO'
+        el.duration = el.tagName === 'VIDEO' ? 7 : 0
+        return el
+      },
+    }
+    const { win } = fixture({}, undefined, undefined, {
+      document: doc,
+      HTMLMediaElement: MockMedia,
+      navigator: { mediaSession: { playbackState: 'none', metadata: null } },
+    })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): Record<string, unknown>
+      playing(): boolean | null
+      nowPlaying(): { trackId: string | null; title: string; artist: string; paused: boolean; position: number } | null
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    const hState = {
+      duration: 202000,
+      position: 14000,
+      timestamp: Date.now(),
+      paused: false,
+      loading: false,
+      playback_speed: 1,
+      track_window: {
+        current_track: {
+          uri: 'spotify:track:612QrhJo7loQ6s7qC7dMdF',
+          name: 'With Me',
+          artists: [{ name: 'weeklyn' }, { name: 'Jaysset' }],
+          album: { name: 'With Me', images: [{ url: 'https://i.scdn.co/image/abc', width: 300 }] },
+        },
+      },
+    }
+    host._harmony = { playTracks: async () => {}, _controller: { _state: hState } }
+
+    musicEl.play()
+    for (let i = 0; i < 60; i++) {
+      doc.createElement('video')
+    }
+
+    expect(lab.playing()).toBe(true)
+    const np = lab.nowPlaying()
+    expect(np).toMatchObject({
+      trackId: '612QrhJo7loQ6s7qC7dMdF',
+      title: 'With Me',
+      artist: 'weeklyn, Jaysset',
+      paused: false,
+    })
+    expect(np!.position).toBeGreaterThanOrEqual(14)
+  })
+
+  test('does not report playing when audio/harmony ended even if mediaSession stays playing, and preserves bleed end across follow-up frames or pause+resume', async () => {
+    class MockMedia extends EventTarget {
+      _vol = 1
+      _muted = false
+      paused = false
+      ended = false
+      loop = false
+      isConnected = false
+      tagName = 'AUDIO'
+      currentTime = 297
+      duration = 298
+      playbackRate = 1
+      mediaKeys: object | null = {}
+      buffered = { length: 1, start: () => 0, end: () => 298 }
+      get volume() { return this._vol }
+      set volume(v: number) { this._vol = v }
+      get muted() { return this._muted }
+      set muted(m: boolean) { this._muted = m }
+      play() { this.paused = false; this.ended = false; return Promise.resolve() }
+      load() {}
+    }
+    const musicEl = new MockMedia()
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    const mediaSession = { playbackState: 'playing', metadata: { title: 'My Roots', artist: 'Lil Bo Weep', album: 'SOLOS 2', artwork: [] } }
+    const doc = { querySelector: () => null, querySelectorAll: () => [] }
+    const { win } = fixture({}, undefined, undefined, {
+      document: doc,
+      HTMLMediaElement: MockMedia,
+      navigator: { mediaSession },
+    })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): { trackEnded?: boolean; endedTrackId?: string; startPending?: boolean }
+      playing(): boolean | null
+      nowPlaying(): { trackEnded?: boolean; endedTrackId?: string | null; paused?: boolean } | null
+      playTrack(id: string, startAt?: number, vol?: number, muted?: boolean): boolean
+      control(action: string, value?: number): boolean
+    }
+    const trackA = '13qpCQkqSTI37Um7UyOBBt'
+    const trackBleed = '9999999999999999999999'
+    const hState = {
+      duration: 298000,
+      position: 297000,
+      timestamp: Date.now(),
+      paused: false,
+      loading: false,
+      playback_speed: 1,
+      track_window: { current_track: { uri: `spotify:track:${trackA}`, name: 'My Roots' }, previous_tracks: [] as Array<{ uri: string }> },
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    host._harmony = {
+      playTracks: async () => {},
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      playURI: async () => {},
+      pause: () => {},
+      resume: () => { musicEl.paused = false; hState.paused = false },
+      _controller: { _state: hState, playURI: async () => {}, pause: () => {}, resume: () => {} },
+    }
+
+    musicEl.play()
+    expect(lab.playTrack(trackA, 0, 0.7, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+
+    // Pausing and resuming keeps trackA protected from end-of-track autoplay bleed.
+    expect(lab.control('pause')).toBe(true)
+    musicEl.paused = true
+    hState.paused = true
+    expect(lab.playing()).toBe(false)
+    expect(lab.control('play')).toBe(true)
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+
+    // If audio element hits EOF and pauses while mediaSession lags 'playing', playing() is false.
+    musicEl.paused = true
+    musicEl.ended = true
+    expect(lab.playing()).toBe(false)
+    expect(lab.nowPlaying()?.trackEnded).toBe(true)
+
+    // Reset ended and test follow-up advancing frames from an unwanted autoplay track.
+    expect(lab.control('seek', 295)).toBe(true)
+    musicEl.play()
+    hState.paused = false
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+
+    hState.track_window = {
+      current_track: { uri: `spotify:track:${trackBleed}`, name: 'Guitar Bleed' },
+      previous_tracks: [{ uri: `spotify:track:${trackA}` }],
+    }
+    hState.position = 100
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    hState.position = 250
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+
+    expect(lab.stats().trackEnded).toBe(true)
+    expect(lab.stats().endedTrackId).toBe(trackA)
+    expect(lab.playing()).toBe(false)
+    expect(lab.nowPlaying()?.paused).toBe(true)
   })
 })

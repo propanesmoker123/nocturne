@@ -6,7 +6,7 @@ import { showMenu } from '../../app/menu'
 import { playlistMenuItems } from '../../app/trackActions'
 import { Artwork } from '../../components/Artwork'
 import { Button, IconButton } from '../../components/controls'
-import { EmptyState, TrackListSkeleton } from '../../components/cards'
+import { EmptyState, TrackListSkeleton, usePlaylistCovers } from '../../components/cards'
 import { IconMore, IconPlay } from '../../components/Icons'
 import { TrackList } from '../../components/TrackList'
 import { formatLongDuration, pluralRu } from '../../lib/format'
@@ -41,10 +41,11 @@ function PlaylistBody({ id, urn, title }: { id: number; urn?: string; title?: st
   const count = tracks.length || p?.count || 0
   const playable = tracks.some((t) => t.playable)
   const source = { kind: 'list' as const, label: name }
+  const art = usePlaylistCovers(p, tracks)
   return (
     <>
       <div className={s.hero}>
-        <Artwork className={s.heroArt} src={p?.cover ?? tracks[0]?.cover?.l} size={232} radius={14} seed={name || String(id)} />
+        <Artwork className={s.heroArt} src={art.src ?? p?.cover ?? tracks[0]?.cover?.l} mosaic={art.mosaic} size={232} radius={14} seed={name || String(id)} />
         <div style={{ minWidth: 0 }}>
           <div className={s.heroKind}>{urn ? 'Подборка SoundCloud' : p?.type === 'album' ? 'Альбом' : 'Плейлист'}</div>
           <h1 className={s.heroTitle}>{name || '…'}</h1>

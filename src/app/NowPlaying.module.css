@@ -67,6 +67,11 @@
   padding: 0 6px 0 14px;
   z-index: 2;
 }
+.chromeLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
 .layout {
   position: relative;
@@ -247,14 +252,26 @@
   background: rgba(255, 255, 255, 0.22);
   color: #ffffff;
 }
-.theaterBtn {
+.sideHeader .theaterBtn {
   background: rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.78);
 }
-.theaterBtn:hover,
-.theaterBtn[data-active='true'] {
+.sideHeader .theaterBtn:hover,
+.sideHeader .theaterBtn[data-active='true'] {
   background: rgba(255, 255, 255, 0.2);
   color: #ffffff;
+}
+.sideHeader .sideCloseBtn {
+  display: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.78);
+}
+.sideHeader .sideCloseBtn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+.sideBackdrop {
+  display: none;
 }
 .sidePanel {
   flex: 1;
@@ -275,15 +292,37 @@
 .layout[data-theater] .controls {
   width: 100%;
 }
+.layout[data-fullscreen] {
+  max-width: 1680px;
+  padding: calc(var(--titlebar-h) + 28px) 64px 48px;
+}
+.layout[data-fullscreen]:not([data-theater]) {
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 480px);
+}
 
 @media (max-width: 1080px) {
-  .layout {
+  .layout,
+  .layout[data-theater],
+  .layout[data-fullscreen]:not([data-theater]) {
     grid-template-columns: 1fr;
     padding-left: 32px;
     padding-right: 32px;
   }
+  .sideBackdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.36);
+    z-index: 2;
+  }
   .side {
     display: none;
+  }
+  .sideHeader .theaterBtn {
+    display: none;
+  }
+  .sideHeader .sideCloseBtn {
+    display: inline-grid;
   }
   .side[data-forced] {
     display: flex;
@@ -292,9 +331,10 @@
     width: min(420px, calc(100% - 48px));
     padding: 12px;
     border-radius: 22px;
-    background: rgba(20, 20, 22, 0.72);
+    background: rgba(20, 20, 22, 0.82);
     backdrop-filter: var(--mat-blur-strong);
     -webkit-backdrop-filter: var(--mat-blur-strong);
+    box-shadow: var(--shadow-float), var(--mat-edge);
     z-index: 3;
   }
 }
