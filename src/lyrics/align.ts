@@ -21,23 +21,40 @@ function normWord(raw: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, '')
 }
 
+let simPrev = new Int32Array(64)
+let simCur = new Int32Array(64)
+
 function similarity(a: string, b: string): number {
   if (!a || !b) return 0
   if (a === b) return 1
   const m = a.length
   const n = b.length
-  const prev = new Array<number>(n + 1)
-  const cur = new Array<number>(n + 1)
+  const maxLen = m > n ? m : n
+  const minLen = m < n ? m : n
+  // Exact upper bound: edit distance >= maxLen - minLen, so similarity <= minLen / maxLen.
+  if (minLen / maxLen < 0.45) return 0
+
+  if (n + 1 > simPrev.length) {
+    const cap = Math.max(n + 1, simPrev.length * 2)
+    simPrev = new Int32Array(cap)
+    simCur = new Int32Array(cap)
+  }
+  const prev = simPrev
+  const cur = simCur
   for (let j = 0; j <= n; j++) prev[j] = j
   for (let i = 1; i <= m; i++) {
     cur[0] = i
+    const ai = a.charCodeAt(i - 1)
     for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+      const cost = ai === b.charCodeAt(j - 1) ? 0 : 1
+      const del = prev[j] + 1
+      const ins = cur[j - 1] + 1
+      const sub = prev[j - 1] + cost
+      cur[j] = del < ins ? (del < sub ? del : sub) : ins < sub ? ins : sub
     }
     for (let j = 0; j <= n; j++) prev[j] = cur[j]
   }
-  return 1 - prev[n] / Math.max(m, n)
+  return 1 - prev[n] / maxLen
 }
 
 function isSectionHeader(text: string): boolean {
@@ -65,8 +82,12 @@ export function alignWhisperToLines(plainLines: LyricsLine[], asrWords: WhisperW
   const A = cleanAsr.length
   const GAP = -0.32
   const stride = A + 1
+  const useBand = R * A > 250_000
+  const halfBand = useBand ? Math.max(160, Math.abs(R - A) + Math.ceil(Math.max(R, A) * 0.25)) : A + 1
   const dp = new Float32Array((R + 1) * stride)
   const dir = new Uint8Array((R + 1) * stride) // 1: diag, 2: up (skip ref), 3: left (skip asr)
+  if (useBand) dp.fill(-1e9)
+  dp[0] = 0
 
   for (let i = 1; i <= R; i++) {
     dp[i * stride] = dp[(i - 1) * stride] + GAP
@@ -79,13 +100,18 @@ export function alignWhisperToLines(plainLines: LyricsLine[], asrWords: WhisperW
 
   for (let i = 1; i <= R; i++) {
     const rn = refs[i - 1].norm
-    for (let j = 1; j <= A; j++) {
+    const center = useBand ? Math.round((i * A) / R) : 0
+    const jStart = useBand ? Math.max(1, center - halfBand) : 1
+    const jEnd = useBand ? Math.min(A, center + halfBand) : A
+    const rowOff = i * stride
+    const prevRowOff = (i - 1) * stride
+    for (let j = jStart; j <= jEnd; j++) {
       const sim = similarity(rn, cleanAsr[j - 1].norm)
       const matchScore = sim >= 0.45 ? sim * 2.2 : -0.8
-      const dScore = dp[(i - 1) * stride + (j - 1)] + matchScore
-      const uScore = dp[(i - 1) * stride + j] + GAP
-      const lScore = dp[i * stride + (j - 1)] + GAP
-      const idx = i * stride + j
+      const dScore = dp[prevRowOff + (j - 1)] + matchScore
+      const uScore = dp[prevRowOff + j] + GAP
+      const lScore = dp[rowOff + (j - 1)] + GAP
+      const idx = rowOff + j
       if (dScore >= uScore && dScore >= lScore) {
         dp[idx] = dScore
         dir[idx] = 1
@@ -120,7 +146,7 @@ export function alignWhisperToLines(plainLines: LyricsLine[], asrWords: WhisperW
     }
   }
 
-  // Interpolate unmatched spans monotonically
+  // Interpolate unmatched spans monotonically without overshooting nextBegin
   let i = 0
   while (i < refs.length) {
     if (refs[i].begin !== undefined) {
@@ -129,19 +155,28 @@ export function alignWhisperToLines(plainLines: LyricsLine[], asrWords: WhisperW
     }
     const start = i
     while (i < refs.length && refs[i].begin === undefined) i++
-    const prevEnd = start > 0 ? refs[start - 1].end! : Math.max(0, cleanAsr[0].beginMs - (i - start) * 350)
-    const nextBegin = i < refs.length ? Math.max(prevEnd + 80, refs[i].begin!) : prevEnd + (i - start) * 420
+    const count = i - start
+    const prevEnd = start > 0 ? refs[start - 1].end! : Math.max(0, cleanAsr[0].beginMs - count * 350)
+    const nextBegin = i < refs.length ? Math.max(prevEnd + 80, refs[i].begin!) : prevEnd + count * 420
     const span = Math.max(80, nextBegin - prevEnd)
+    const minStep = span >= count * 40 ? 40 : 0
     const weights = refs.slice(start, i).map((t) => Math.max(1, t.norm.length + 1))
     const totalW = weights.reduce((s, w) => s + w, 0)
     let acc = 0
     let cursor = prevEnd
     for (let k = start; k < i; k++) {
       acc += weights[k - start]
-      const end = k === i - 1 ? nextBegin : Math.max(cursor + 40, Math.round(prevEnd + (span * acc) / totalW))
+      const remaining = i - 1 - k
+      const idealEnd = k === i - 1 ? nextBegin : Math.round(prevEnd + (span * acc) / totalW)
+      const maxAllowedEnd = nextBegin - remaining * minStep
+      const end =
+        k === i - 1
+          ? Math.max(cursor, nextBegin)
+          : Math.min(maxAllowedEnd, Math.max(cursor + minStep, idealEnd))
+      const clampedEnd = Math.max(cursor, end)
       refs[k].begin = cursor
-      refs[k].end = end
-      cursor = end
+      refs[k].end = clampedEnd
+      cursor = clampedEnd
     }
   }
 

@@ -19,23 +19,21 @@ import { describeError } from '../vk/errors'
 import s from './SidePanels.module.css'
 import { openTrackMenu } from './trackActions'
 
-function minutesLabel(sec: number): string {
-  const m = Math.round(sec / 60)
+function minutesText(m: number): string {
   if (m < 60) return `${m} ${pluralRu(m, 'минута', 'минуты', 'минут')}`
   const h = Math.floor(m / 60)
   const rest = m % 60
   return rest ? `${h} ч ${rest} мин` : `${h} ч`
 }
 
-/** Separate so the playback clock re-renders only this line, not every queue row. */
+/** Separate so the playback clock re-renders this line only when the rounded minute changes. */
 function QueueHeader({ label, count }: { label: string; count: number }) {
-  const queue = usePlayer((p) => p.queue)
-  const position = usePlayer((p) => p.position)
+  const remainingMinutes = usePlayer((p) => Math.round(remainingSeconds(p.queue, p.position) / 60))
   return (
     <div className={s.header}>
       <span className={s.headerTitle}>{label}</span>
       <span className={s.headerMeta}>
-        {count} {pluralRu(count, 'трек', 'трека', 'треков')} · {minutesLabel(remainingSeconds(queue, position))}
+        {count} {pluralRu(count, 'трек', 'трека', 'треков')} · {minutesText(remainingMinutes)}
       </span>
     </div>
   )
@@ -83,6 +81,11 @@ export function QueuePanel() {
   const currentKey = queue ? currentInQueue(queue)?.key : undefined
 
   useEffect(() => () => cleanupDragRef.current?.(), [])
+
+  // Cancel any in-flight drag/settle if the queue mutates externally (e.g. track advance or remote sync)
+  useEffect(() => {
+    cleanupDragRef.current?.()
+  }, [queue])
 
   // Open on the current track (what played is above it); follow it when the playing track changes
   useEffect(() => {
@@ -419,7 +422,8 @@ export function QueuePanel() {
 export function LyricsPanel({ theater }: { theater?: boolean } = {}) {
   const track = usePlayer((p) => p.current)
   const fromVk = !!track && serviceOf(track) !== 'vk'
-  const [refreshing, setRefreshing] = useState(false)
+  const [refreshingKey, setRefreshingKey] = useState<string | null>(null)
+  const refreshing = refreshingKey === track?.key
 
   const q = useQuery({
     queryKey: ['lyrics', track?.key],
@@ -431,12 +435,15 @@ export function LyricsPanel({ theater }: { theater?: boolean } = {}) {
 
   const forceRefresh = async () => {
     if (!track || refreshing) return
-    setRefreshing(true)
+    const target = track
+    setRefreshingKey(target.key)
     try {
-      const fresh = await findLyrics(track, { force: true })
-      queryClient.setQueryData(['lyrics', track.key], fresh)
+      const fresh = await findLyrics(target, { force: true })
+      queryClient.setQueryData(['lyrics', target.key], fresh)
+    } catch {
+      /* keep previous lyrics or empty state on transient refresh error */
     } finally {
-      setRefreshing(false)
+      setRefreshingKey((cur) => (cur === target.key ? null : cur))
     }
   }
 
@@ -498,5 +505,5 @@ export function LyricsPanel({ theater }: { theater?: boolean } = {}) {
     </div>
   )
 
-  return <AnimatedLyrics track={track} lyrics={lyrics} fromVk={fromVk} theater={theater} footer={footer} />
+  return <AnimatedLyrics key={track.key} track={track} lyrics={lyrics} fromVk={fromVk} theater={theater} footer={footer} />
 }

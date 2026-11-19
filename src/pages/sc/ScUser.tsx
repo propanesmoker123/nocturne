@@ -14,7 +14,7 @@ import * as sc from '../../sc/api'
 import { describeScError } from '../../sc/errors'
 import { toggleFollow, useFollowing } from '../../sc/follow'
 import { openInSoundCloud } from '../../sc/open'
-import { canFollow, countsLine, openTab, TAB_LABEL, visibleTabs, type ProfileTab, type TabState } from '../../sc/profile'
+import { canFollow, countsLine, TAB_LABEL, TAB_ORDER, type ProfileTab, type TabState } from '../../sc/profile'
 import { scKeys } from '../../sc/queries'
 import { useScSession } from '../../sc/session'
 import type { Playlist, Track } from '../../vk/models'
@@ -35,9 +35,10 @@ export function ScUser(props: { id: number; title?: string }) {
 
 type MixedQuery = UseInfiniteQueryResult<InfiniteData<sc.ScMixedPage>>
 
-function useMixed(key: readonly unknown[], fetch: (cursor?: string) => Promise<sc.ScMixedPage>) {
+function useMixed(key: readonly unknown[], fetch: (cursor?: string) => Promise<sc.ScMixedPage>, enabled: boolean) {
   const q = useInfiniteQuery({
     queryKey: key,
+    enabled,
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => fetch(pageParam),
     getNextPageParam: (last) => last.next,
@@ -71,16 +72,23 @@ function More({ q }: { q: { hasNextPage: boolean; isFetchingNextPage: boolean; f
 function UserBody({ id, title }: { id: number; title?: string }) {
   const me = useScSession((x) => x.user?.id ?? 0)
   const user = useQuery({ queryKey: scKeys.user(id), queryFn: () => sc.getUser(id) })
-  const top = useQuery({ queryKey: scKeys.userTop(id), queryFn: () => sc.getUserTopTracks(id) })
+  const hasTracks = user.data?.trackCount === undefined || user.data.trackCount > 0
+  const [picked, setPicked] = useState<ProfileTab | null>(null)
+  const availableTabs: ProfileTab[] = hasTracks ? TAB_ORDER : ['reposts', 'likes', 'playlists']
+  const activeTab: ProfileTab = picked && availableTabs.includes(picked) ? picked : availableTabs[0]!
+
+  // Load only the profile + active tab on demand instead of firing all 6 endpoints on every profile view.
+  const top = useQuery({ queryKey: scKeys.userTop(id), queryFn: () => sc.getUserTopTracks(id), enabled: activeTab === 'popular' && hasTracks })
   const all = useInfiniteQuery({
     queryKey: scKeys.userTracks(id),
+    enabled: activeTab === 'tracks' && hasTracks,
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => sc.getUserTracks(id, pageParam),
     getNextPageParam: (last) => last.next,
   })
-  const reposts = useMixed(scKeys.userReposts(id), (cursor) => sc.getUserReposts(id, cursor))
-  const likes = useMixed(scKeys.userLikes(id), (cursor) => sc.getUserLikes(id, cursor))
-  const lists = useQuery({ queryKey: scKeys.userPlaylists(id), queryFn: () => sc.getUserPlaylists(id) })
+  const reposts = useMixed(scKeys.userReposts(id), (cursor) => sc.getUserReposts(id, cursor), activeTab === 'reposts')
+  const likes = useMixed(scKeys.userLikes(id), (cursor) => sc.getUserLikes(id, cursor), activeTab === 'likes')
+  const lists = useQuery({ queryKey: scKeys.userPlaylists(id), queryFn: () => sc.getUserPlaylists(id), enabled: activeTab === 'playlists' })
   const tracks = useMemo(() => all.data?.pages.flatMap((p) => p.items) ?? [], [all.data])
   const following = useFollowing(id)
   const name = user.data?.name || title || ''
@@ -95,15 +103,11 @@ function UserBody({ id, title }: { id: number; title?: string }) {
     likes: stateOf(likes.q, likes.tracks.length + likes.playlists.length),
     playlists: stateOf(lists, lists.data?.length ?? 0),
   }
-  const visible = visibleTabs(states)
-  // the person's own choice stays; until then the first tab with something
-  const [picked, setPicked] = useState<ProfileTab | null>(null)
-  const tab = picked && visible.includes(picked) ? picked : openTab(states)
-  const settled = !Object.values(states).includes('loading')
+  const tab = activeTab
 
   const tabTracks: Track[] = tab === 'popular' ? (top.data ?? []) : tab === 'tracks' ? tracks : tab === 'reposts' ? reposts.tracks : tab === 'likes' ? likes.tracks : []
   const playable = tabTracks.some((t) => t.playable)
-  const source = { kind: 'list' as const, label: tab ? `${name} · ${TAB_LABEL[tab]}` : name }
+  const source = { kind: 'list' as const, service: 'sc' as const, label: `${name} · ${TAB_LABEL[tab]}` }
   const own = me > 0 && id === me
 
   if (user.isError && top.isError) return <EmptyState title="Профиль недоступен" text={describeScError(user.error)} action={<Button onClick={() => void user.refetch()}>Повторить</Button>} />
@@ -165,14 +169,10 @@ function UserBody({ id, title }: { id: number; title?: string }) {
         </div>
       </div>
 
-      {visible.length > 0 && (
-        <div className={c.tabs}>
-          <Segmented id={`sc-user-${id}`} value={tab ?? visible[0]} options={visible.map((t) => ({ value: t, label: TAB_LABEL[t] }))} onChange={setPicked} />
-        </div>
-      )}
+      <div className={c.tabs}>
+        <Segmented id={`sc-user-${id}`} value={tab} options={availableTabs.map((t) => ({ value: t, label: TAB_LABEL[t] }))} onChange={setPicked} />
+      </div>
 
-      {!tab && !settled && <TrackListSkeleton rows={6} />}
-      {!tab && settled && <EmptyState title="Здесь пока пусто" text="У этого профиля нет ни треков, ни репостов, ни лайков." />}
       {tab === 'popular' && (
         <TabBody state={states.popular} error={top.error} retry={() => void top.refetch()}>
           <TrackList tracks={top.data ?? []} showAlbum={false} />
@@ -201,7 +201,9 @@ function UserBody({ id, title }: { id: number; title?: string }) {
 }
 
 function TabBody({ state, error, retry, children }: { state: TabState; error: unknown; retry(): void; children: React.ReactNode }) {
+  if (state === 'loading') return <TrackListSkeleton rows={6} />
   if (state === 'error') return <EmptyState title="Не загрузилось" text={describeScError(error)} action={<Button onClick={retry}>Повторить</Button>} />
+  if (state === 'empty') return <EmptyState title="Здесь пока пусто" />
   return <>{children}</>
 }
 

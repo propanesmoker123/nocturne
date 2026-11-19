@@ -131,8 +131,8 @@ export const clearTogetherError = () => useTogether.setState({ error: null })
 const myName = () => useSession.getState().user?.name?.trim().split(/\s+/)[0] || 'Слушатель'
 
 export function toWire(t: Track): WireTrack {
-  // a SoundCloud track is announced by name only (owner 0: no VK owner), its own id keeping two apart
-  if (serviceOf(t) === 'sc') return { owner: 0, id: t.id, title: t.title.slice(0, 200), artist: t.artist.slice(0, 200), duration: Math.min(Math.max(0, t.duration), 36_000) }
+  // Non-VK tracks (SoundCloud/Spotify) are announced by name only (owner 0: no VK owner), their id keeping two apart
+  if (serviceOf(t) !== 'vk') return { owner: 0, id: t.id, title: t.title.slice(0, 200), artist: t.artist.slice(0, 200), duration: Math.min(Math.max(0, t.duration), 36_000) }
   return {
     owner: t.ownerId,
     id: t.id,
@@ -208,6 +208,7 @@ export async function startHosting() {
             r.transport?.send({ v: 1, type: 'pong', t0: msg.t0, t1: Date.now() }, peer)
           } else if (msg.type === 'bye') {
             peers.delete(peer)
+            r.limits.forget(peer)
             publish()
           }
         },
@@ -224,17 +225,17 @@ export async function startHosting() {
   useTogether.setState({ phase: 'live' })
   journal('together', 'hosting started')
 
-  // listeners cannot hear SoundCloud yet: the host is told once per such track
+  // listeners cannot hear SoundCloud/Spotify yet: the host is told once per such track
   let warned: string | null = null
-  const warnSoundCloud = (t: Track | null) => {
-    if (!t || serviceOf(t) !== 'sc' || warned === t.key) return
+  const warnNonVk = (t: Track | null) => {
+    if (!t || serviceOf(t) === 'vk' || warned === t.key) return
     warned = t.key
     toast('В «Слушать вместе» пока только VK — слушатели этот трек не услышат', 'info')
   }
-  warnSoundCloud(usePlayer.getState().current)
+  warnNonVk(usePlayer.getState().current)
   r.cleanups.push(
     usePlayer.subscribe((p, prev) => {
-      if ((p.current?.key ?? null) !== (prev.current?.key ?? null)) warnSoundCloud(p.current)
+      if ((p.current?.key ?? null) !== (prev.current?.key ?? null)) warnNonVk(p.current)
       if ((p.current?.key ?? null) !== (prev.current?.key ?? null) || p.isPlaying !== prev.isPlaying) return broadcast()
       if (p.position === prev.position) return
       const expected = last.position + (last.playing ? (Date.now() - last.at) / 1000 : 0)
@@ -242,7 +243,11 @@ export async function startHosting() {
     }),
   )
   every(r, () => broadcast(), HEARTBEAT_MS)
-  const checkRelays = async () => useTogether.setState({ offline: !(await transport.relaysUp()) })
+  const checkRelays = async () => {
+    const up = await transport.relaysUp()
+    if (run !== r) return
+    useTogether.setState({ offline: !up })
+  }
   later(r, () => void checkRelays(), 8000)
   every(r, () => void checkRelays(), RELAY_CHECK_MS)
 }
@@ -268,6 +273,7 @@ export async function joinSession(input: string) {
   let lostTimer: ReturnType<typeof setTimeout> | null = null
   let lastHint = 0
   const samples: ClockSample[] = []
+  const pendingPings = new Set<number>()
   let offset = 0
   // what the listener has really heard: the position moved by playing, not by our own seeks
   let heardAt = Date.now()
@@ -377,7 +383,12 @@ export async function joinSession(input: string) {
     }
   }
 
-  const ping = () => send({ v: 1, type: 'ping', t0: Date.now() })
+  const ping = () => {
+    const t0 = Date.now()
+    pendingPings.add(t0)
+    if (pendingPings.size > 20) pendingPings.delete(pendingPings.values().next().value!)
+    send({ v: 1, type: 'ping', t0 })
+  }
 
   /** The sound should be coming and is not (a CDN node that never answers, a player stuck after an error): load the track again. */
   const watchSound = () => {
@@ -450,6 +461,7 @@ export async function joinSession(input: string) {
             host = { seq: msg.seq, track: msg.track, position: msg.position, playing: msg.playing, at: msg.at }
             apply()
           } else if (msg.type === 'pong') {
+            if (!pendingPings.delete(msg.t0)) return
             samples.push({ t0: msg.t0, t1: msg.t1, t2: Date.now() })
             if (samples.length > 10) samples.shift()
             offset = bestOffset(samples)
@@ -480,8 +492,10 @@ export async function joinSession(input: string) {
   later(
     r,
     async () => {
-      if (hostPeer) return
-      const error: TogetherError = !(await transport.relaysUp()) ? 'relays' : 'nobody'
+      if (hostPeer || run !== r) return
+      const up = await transport.relaysUp()
+      if (run !== r || hostPeer) return
+      const error: TogetherError = !up ? 'relays' : 'nobody'
       end(error)
     },
     NOBODY_MS,

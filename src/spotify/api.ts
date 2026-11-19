@@ -782,16 +782,20 @@ export async function getPlaylistTracksPage(
   kind: 'playlist' | 'album' = 'playlist',
   offset = 0,
   limit = 100,
-): Promise<{ tracks: Track[]; total: number }> {
+  opts?: { cover?: Track['cover']; album?: Track['album'] },
+): Promise<{ tracks: Track[]; total: number; rawCount: number }> {
   const path = kind === 'album' ? `/albums/${spotifyId}/tracks?offset=${offset}&limit=${limit}` : `/playlists/${spotifyId}/tracks?offset=${offset}&limit=${limit}`
   const data = await callSpotify<{ totalCount?: number; total?: number; items?: unknown[] }>({
     kind: 'api',
     method: 'GET',
     path,
   })
-  const tracks = (data?.items ?? []).map((item) => normalizeSpotifyTrack(item)).filter((t): t is Track => t !== null)
+  const rawItems = Array.isArray(data?.items) ? data.items : []
+  const tracks = rawItems
+    .map((item) => normalizeSpotifyTrack(item, false, opts?.cover, opts?.album))
+    .filter((t): t is Track => t !== null)
   const total = Number(data?.totalCount ?? data?.total) || tracks.length
-  return { tracks, total }
+  return { tracks, total, rawCount: rawItems.length }
 }
 
 const NON_MUSIC_BROWSE =
@@ -1004,9 +1008,16 @@ export async function setPlaylistSaved(playlistId: string, saved: boolean): Prom
 export async function warmSpotifyTrack(spotifyId: string): Promise<void> {
   if (!VALID_ID.test(spotifyId) || !isTauri()) return
   await callSpotify({
-    kind: 'api',
-    method: 'GET',
-    path: `/tracks/${spotifyId}`,
+    kind: 'warm',
+    id: spotifyId,
+  }).catch(() => {})
+}
+
+export async function clearWarmSpotifyTrack(): Promise<void> {
+  if (!isTauri()) return
+  await callSpotify({
+    kind: 'warm',
+    id: null,
   }).catch(() => {})
 }
 
@@ -1170,7 +1181,7 @@ export async function search(q: string): Promise<SpotifySearchResults> {
     }
     if (link.kind === 'artist') {
       const { artist, tracks, albums } = await getArtist(link.id)
-      return { tracks, artists: [artist], playlists: albums, albums }
+      return { tracks, artists: [artist], playlists: [], albums }
     }
   }
 
@@ -1189,7 +1200,7 @@ export async function search(q: string): Promise<SpotifySearchResults> {
   const artists = (data?.artists?.items ?? []).map(normalizeSpotifyUser).filter((u): u is SpotifyUser => u !== null)
   const albums = (data?.albums?.items ?? []).map((a) => normalizeSpotifyPlaylist(a, 'album')).filter((p): p is Playlist => p !== null)
   const playlists = (data?.playlists?.items ?? []).map((p) => normalizeSpotifyPlaylist(p, 'playlist')).filter((p): p is Playlist => p !== null)
-  return { tracks, artists, playlists: playlists.length ? playlists : albums, albums }
+  return { tracks, artists, playlists, albums }
 }
 
 /**
@@ -1219,7 +1230,7 @@ export function structuralPeaks(spotifyId: string): Float32Array {
     let base = 0.44
     if (pos < 0.06) base = 0.18 + (pos / 0.06) * 0.24 // intro build
     else if (pos >= c1Start && pos <= c1End) base = 0.86 // Chorus 1 ("припев 1")
-    else if (pos >= c1End - 0.03 && pos < c1Start) base = 0.65 // pre-chorus
+    else if (pos >= c1Start - 0.03 && pos < c1Start) base = 0.65 // pre-chorus
     else if (pos >= c2Start && pos <= c2End) base = 0.9 // Chorus 2 ("припев 2")
     else if (pos >= brStart && pos <= brEnd) base = 0.34 // Bridge breakdown
     else if (pos >= c3Start && pos <= c3End) base = 0.95 // Final Chorus ("финальный припев")

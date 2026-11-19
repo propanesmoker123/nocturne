@@ -24,7 +24,7 @@ interface Envelope {
 }
 
 export interface ConnectBus {
-  send(msg: ConnectMessage, to?: string): void
+  send(msg: ConnectMessage, to?: string): Promise<void> | void
   up(): boolean
   close(): void
 }
@@ -55,7 +55,7 @@ export async function openConnectBus(code: string, me: string, onMessage: (msg: 
     },
   })
   return {
-    send: (msg, to) => void bus.publish({ v: 1, from: me, at: serverNow(), ...(to ? { to } : {}), msg } satisfies Envelope),
+    send: (msg, to) => bus.publish({ v: 1, from: me, at: serverNow(), ...(to ? { to } : {}), msg } satisfies Envelope),
     up: () => bus.up(),
     close: () => bus.close(),
   }

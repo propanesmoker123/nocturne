@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, CSSProperties, ReactNode } from 'react'
 import { motion } from 'motion/react'
+import { useWindowVisibility } from '../lib/windowVisibility'
 import s from './controls.module.css'
 
 type Btn = ButtonHTMLAttributes<HTMLButtonElement>
@@ -106,10 +107,11 @@ export function EqualizerBars({
   gap?: number
   color?: string
 }) {
+  const visible = useWindowVisibility((x) => x.visible)
   return (
     <span
       className={s.eq}
-      data-playing={playing || undefined}
+      data-playing={(playing && visible) || undefined}
       aria-hidden="true"
       style={{
         ['--h' as string]: `${height}px`,

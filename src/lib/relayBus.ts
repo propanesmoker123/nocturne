@@ -41,6 +41,7 @@ export function openRelayBus(o: RelayBusOptions): RelayBus {
   const keys = schnorr.keygen()
   const subId = `n${randomHex(4)}`
   const sockets = new Set<WebSocket>()
+  const timers = new Set<ReturnType<typeof setTimeout>>()
   const seen = new Set<string>()
   let closed = false
 
@@ -49,10 +50,27 @@ export function openRelayBus(o: RelayBusOptions): RelayBus {
     if (seen.size > SEEN_LIMIT) seen.delete(seen.values().next().value!)
   }
 
+  const schedule = (fn: () => void, ms: number) => {
+    if (closed) return
+    const id = setTimeout(() => {
+      timers.delete(id)
+      if (!closed) fn()
+    }, ms)
+    timers.add(id)
+  }
+
+  const safeSend = (ws: WebSocket, frame: string) => {
+    try {
+      if (ws.readyState === OPEN) ws.send(frame)
+    } catch {
+      /* broken socket: remaining relays still receive the frame */
+    }
+  }
+
   // Only live events (`limit: 0`), and no `since`: relays hold live events to it too, so a clock a
   // little ahead of another device's would stop hearing that device while still being heard by it.
   // Freshness is the envelope's job, with its wide window.
-  const subscribe = (ws: WebSocket) => ws.send(JSON.stringify(['REQ', subId, { kinds: [KIND], '#x': [o.topic], limit: 0 }]))
+  const subscribe = (ws: WebSocket) => safeSend(ws, JSON.stringify(['REQ', subId, { kinds: [KIND], '#x': [o.topic], limit: 0 }]))
 
   const connect = (url: string, attempt = 0) => {
     if (closed) return
@@ -60,23 +78,29 @@ export function openRelayBus(o: RelayBusOptions): RelayBus {
     try {
       ws = new WebSocketImpl(url)
     } catch {
-      return void setTimeout(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
+      return void schedule(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
     }
+    sockets.add(ws)
     ws.addEventListener('open', () => {
+      if (closed) {
+        try { ws.close() } catch {}
+        sockets.delete(ws)
+        return
+      }
       attempt = 0
-      sockets.add(ws)
       subscribe(ws)
       o.onOpen?.()
     })
     ws.addEventListener('message', (e) => void onFrame(String((e as MessageEvent).data)))
     ws.addEventListener('close', () => {
       sockets.delete(ws)
-      if (!closed) setTimeout(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
+      if (!closed) schedule(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
     })
     ws.addEventListener('error', () => {})
   }
 
   const onFrame = async (raw: string) => {
+    if (closed) return
     let frame: unknown
     try {
       frame = JSON.parse(raw)
@@ -86,7 +110,7 @@ export function openRelayBus(o: RelayBusOptions): RelayBus {
     if (!Array.isArray(frame)) return
     if (frame[0] === 'CLOSED' && frame[1] === subId) {
       // The relay dropped our subscription (limits, restarts): ask again a bit later
-      return void setTimeout(() => {
+      return void schedule(() => {
         for (const ws of sockets) if (ws.readyState === OPEN) subscribe(ws)
       }, 5000)
     }
@@ -94,12 +118,14 @@ export function openRelayBus(o: RelayBusOptions): RelayBus {
     const event = frame[2] as { content?: unknown } | undefined
     const content = event?.content
     if (typeof content !== 'string' || content.length > MAX_CONTENT) return
-    // The same sealed message comes from every relay, and could be re-posted: one look only
+    // The same sealed message comes from every relay, and could be re-posted: one look only.
+    // Record the nonce ONLY after AES-GCM authentication succeeds so forged frames cannot poison `seen`.
     const nonce = content.slice(0, 16)
     if (seen.has(nonce)) return
-    remember(nonce)
     const data = await unseal(o.key, content)
     if (closed || data === null) return
+    if (seen.has(nonce)) return
+    remember(nonce)
     o.onData(data)
   }
 
@@ -107,14 +133,20 @@ export function openRelayBus(o: RelayBusOptions): RelayBus {
 
   return {
     publish: async (data) => {
+      if (closed) return
       const event = await signedEvent(keys, KIND, o.topic, await seal(o.key, data), Math.floor(serverNow() / 1000))
+      if (closed) return
       const frame = JSON.stringify(['EVENT', event])
-      for (const ws of sockets) if (ws.readyState === OPEN) ws.send(frame)
+      for (const ws of sockets) safeSend(ws, frame)
     },
     up: () => [...sockets].some((ws) => ws.readyState === OPEN),
     close: () => {
       closed = true
-      for (const ws of sockets) ws.close()
+      for (const t of timers) clearTimeout(t)
+      timers.clear()
+      for (const ws of sockets) {
+        try { ws.close() } catch {}
+      }
       sockets.clear()
     },
   }

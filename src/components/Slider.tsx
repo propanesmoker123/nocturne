@@ -7,6 +7,7 @@ interface SliderProps {
   buffered?: number
   onChange?: (v: number) => void
   onCommit?: (v: number) => void
+  onCancel?: () => void
   label: string
   valueText?: (v: number) => string
   step?: number
@@ -25,6 +26,7 @@ export function Slider({
   buffered,
   onChange,
   onCommit,
+  onCancel,
   label,
   valueText,
   step = 0.05,
@@ -41,8 +43,10 @@ export function Slider({
   const vertical = orientation === 'vertical'
 
   const fromEvent = (e: PointerEvent) => {
-    const r = ref.current!.getBoundingClientRect()
-    return vertical ? clamp((r.bottom - e.clientY) / r.height) : clamp((e.clientX - r.left) / r.width)
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return shown
+    if (vertical) return r.height > 0 ? clamp((r.bottom - e.clientY) / r.height) : shown
+    return r.width > 0 ? clamp((e.clientX - r.left) / r.width) : shown
   }
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
@@ -64,8 +68,14 @@ export function Slider({
     setDrag(null)
     onCommit?.(v)
   }
+  const cancel = () => {
+    if (drag === null) return
+    setDrag(null)
+    onCancel?.()
+  }
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return
     const map: Record<string, number> = {
       ArrowRight: value + step,
       ArrowUp: value + step,
@@ -108,7 +118,7 @@ export function Slider({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={finish}
-      onPointerCancel={finish}
+      onPointerCancel={cancel}
       onKeyDown={onKeyDown}
       onWheel={onWheel}
     >

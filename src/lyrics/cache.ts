@@ -4,6 +4,7 @@ const STORAGE_KEY = 'nocturne:lyrics:v4'
 const HIT_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const MISS_TTL_MS = 24 * 60 * 60 * 1000
 const MAX_ENTRIES = 400
+const FLUSH_DEBOUNCE_MS = 500
 
 interface CacheRecord {
   at: number
@@ -11,6 +12,12 @@ interface CacheRecord {
 }
 
 type CacheStore = Record<string, CacheRecord>
+
+let memStore: CacheStore | null = null
+let memStorage: Storage | null = null
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+let dirty = false
+let unloadHooked = false
 
 function storage(): Storage | null {
   try {
@@ -25,9 +32,7 @@ function isExpired(rec: CacheRecord, now: number): boolean {
   return now - rec.at > ttl
 }
 
-function readStore(now = Date.now()): CacheStore {
-  const ls = storage()
-  if (!ls) return {}
+function parseFromStorage(ls: Storage, now: number): CacheStore {
   try {
     const raw = ls.getItem(STORAGE_KEY)
     if (!raw) return {}
@@ -48,10 +53,57 @@ function readStore(now = Date.now()): CacheStore {
   }
 }
 
-function writeStore(store: CacheStore): void {
+function getStore(now = Date.now()): CacheStore | null {
   const ls = storage()
-  if (!ls) return
-  const entries = Object.entries(store).sort((a, b) => a[1].at - b[1].at)
+  if (!ls) {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    memStore = null
+    memStorage = null
+    dirty = false
+    return null
+  }
+  if (ls !== memStorage || !memStore) {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    dirty = false
+    memStorage = ls
+    memStore = parseFromStorage(ls, now)
+  }
+  return memStore
+}
+
+function trimStore(store: CacheStore, now: number): void {
+  const keys = Object.keys(store)
+  for (const k of keys) {
+    if (isExpired(store[k]!, now)) delete store[k]
+  }
+  const entries = Object.entries(store)
+  if (entries.length <= MAX_ENTRIES) return
+  entries.sort((a, b) => a[1].at - b[1].at)
+  const drop = entries.length - MAX_ENTRIES
+  for (let i = 0; i < drop; i++) {
+    delete store[entries[i]![0]]
+  }
+}
+
+export function flushLyricsCache(): void {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  if (!dirty || !memStore) return
+  const ls = storage()
+  if (!ls || ls !== memStorage) {
+    dirty = false
+    return
+  }
+  dirty = false
+  const entries = Object.entries(memStore).sort((a, b) => a[1].at - b[1].at)
   const trimmed = entries.length > MAX_ENTRIES ? entries.slice(entries.length - MAX_ENTRIES) : entries
   const payload = Object.fromEntries(trimmed)
   try {
@@ -66,24 +118,47 @@ function writeStore(store: CacheStore): void {
   }
 }
 
+function scheduleFlush(): void {
+  dirty = true
+  if (!unloadHooked && typeof window !== 'undefined') {
+    unloadHooked = true
+    window.addEventListener('pagehide', flushLyricsCache)
+    window.addEventListener('beforeunload', flushLyricsCache)
+  }
+  if (flushTimer !== null) clearTimeout(flushTimer)
+  flushTimer = setTimeout(flushLyricsCache, FLUSH_DEBOUNCE_MS)
+}
+
 export function readCachedLyrics(key: string): Lyrics | null | undefined {
   if (!key) return undefined
-  const store = readStore()
-  return key in store ? store[key].lyrics : undefined
+  const now = Date.now()
+  const store = getStore(now)
+  if (!store || !(key in store)) return undefined
+  const rec = store[key]!
+  if (isExpired(rec, now)) {
+    delete store[key]
+    scheduleFlush()
+    return undefined
+  }
+  return rec.lyrics
 }
 
 export function writeCachedLyrics(key: string, lyrics: Lyrics | null): void {
   if (!key) return
   const now = Date.now()
-  const store = readStore(now)
+  const store = getStore(now)
+  if (!store) return
   store[key] = { at: now, lyrics }
-  writeStore(store)
+  if (Object.keys(store).length > MAX_ENTRIES) {
+    trimStore(store, now)
+  }
+  scheduleFlush()
 }
 
 export function clearCachedLyrics(key: string): void {
   if (!key) return
-  const store = readStore()
-  if (!(key in store)) return
+  const store = getStore()
+  if (!store || !(key in store)) return
   delete store[key]
-  writeStore(store)
+  scheduleFlush()
 }

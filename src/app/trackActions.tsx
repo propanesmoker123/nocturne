@@ -163,8 +163,10 @@ export function trackMenuItems(track: Track, ctx: TrackMenuContext = {}): MenuIt
     label: 'Скопировать ссылку',
     icon: <Copy {...ic} />,
     onSelect: () => {
-      void copyTrackLink(track)
-      toast('Ссылка скопирована', 'info')
+      void copyTrackLink(track).then(
+        () => toast('Ссылка скопирована', 'info'),
+        () => toast('Не получилось скопировать', 'error'),
+      )
     },
   })
   return withExtra(items, ctx.extra)
@@ -201,8 +203,10 @@ function scTrackItems(track: Track, liked: boolean): MenuItem[] {
       label: 'Скопировать ссылку',
       icon: <Copy {...ic} />,
       onSelect: () => {
-        void copyTrackLink(track)
-        toast('Ссылка скопирована', 'info')
+        void copyTrackLink(track).then(
+          () => toast('Ссылка скопирована', 'info'),
+          () => toast('Не получилось скопировать', 'error'),
+        )
       },
     },
   ]
@@ -276,8 +280,10 @@ function spotifyTrackItems(track: Track, liked: boolean): MenuItem[] {
     label: 'Скопировать ссылку',
     icon: <Copy {...ic} />,
     onSelect: () => {
-      void copyTrackLink(track)
-      toast('Ссылка скопирована', 'info')
+      void copyTrackLink(track).then(
+        () => toast('Ссылка скопирована', 'info'),
+        () => toast('Не получилось скопировать', 'error'),
+      )
     },
   })
   return items
@@ -317,7 +323,7 @@ export function playlistMenuItems(p: Playlist, tracks: Track[] | undefined): Men
               if (isAlbum) await spotify.setAlbumSaved(id, next)
               else await spotify.setPlaylistSaved(id, next)
               void queryClient.invalidateQueries({ queryKey: isAlbum ? spKeys.albums() : spKeys.myPlaylists() })
-              void queryClient.invalidateQueries({ queryKey: ['playlist', p.ownerId, p.id] })
+              void queryClient.invalidateQueries({ queryKey: spKeys.playlist(id, isAlbum ? 'album' : 'playlist') })
               toast(next ? 'Добавлено в медиатеку Spotify' : 'Убрано из медиатеки Spotify', next ? 'added' : 'removed')
             } catch (e) {
               toast(e instanceof Error ? e.message : 'Не удалось обновить медиатеку Spotify', 'error')
@@ -333,8 +339,10 @@ export function playlistMenuItems(p: Playlist, tracks: Track[] | undefined): Men
           label: 'Скопировать ссылку',
           icon: <Copy {...ic} />,
           onSelect: () => {
-            void navigator.clipboard.writeText(link)
-            toast('Ссылка скопирована', 'info')
+            void navigator.clipboard.writeText(link).then(
+              () => toast('Ссылка скопирована', 'info'),
+              () => toast('Не получилось скопировать', 'error'),
+            )
           },
         },
       )

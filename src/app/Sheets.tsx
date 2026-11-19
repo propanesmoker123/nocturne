@@ -85,8 +85,8 @@ function NotesBody({ req }: { req: Extract<SheetRequest, { kind: 'notes' }> }) {
     <>
       <h2 className={s.sheetTitle}>{req.title}</h2>
       <ul className={s.notes}>
-        {splitNotes(req.notes).map((p) => (
-          <li key={p}>{p}</li>
+        {splitNotes(req.notes).map((p, i) => (
+          <li key={`${i}:${p}`}>{p}</li>
         ))}
       </ul>
       <div className={s.sheetActions}>
@@ -221,7 +221,10 @@ function SendTrackBody({ req }: { req: Extract<SheetRequest, { kind: 'send-track
       <div className={s.sheetActions}>
         <Button
           onClick={() => {
-            void copyTrackLink(t).then(() => toast('Ссылка скопирована', 'info'))
+            void copyTrackLink(t).then(
+              () => toast('Ссылка скопирована', 'info'),
+              () => toast('Не получилось скопировать', 'error'),
+            )
             close()
           }}
         >

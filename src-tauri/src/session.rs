@@ -5,17 +5,17 @@
 //! lives only in Rust memory.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Notify};
 use url::Url;
 
 pub const SESSION_LABEL: &str = "vk-session";
-const IDLE_URL: &str = "https://vk.ru/robots.txt";
+pub const IDLE_URL: &str = "https://vk.ru/robots.txt";
 const LOGIN_URL: &str = "https://vk.ru/";
 /// Covers the parked page (robots.txt) while VK's login page is still loading.
 const LOADING_SCRIPT: &str = r#"document.documentElement.innerHTML = '<body style="margin:0;height:100vh;display:grid;place-items:center;background:#1c1c1e;color:#98989f;font:15px/1.4 Segoe UI,sans-serif">Открываем страницу входа VK…</body>'"#;
@@ -24,8 +24,16 @@ const WEB_APP_ID: u32 = 6287487;
 const PAGE_RECHECK: Duration = Duration::from_secs(4);
 /// Hard floor between two web_token requests, whatever triggers them.
 const REFRESH_SPACING: Duration = Duration::from_secs(2);
-const POLL_EVERY: Duration = Duration::from_millis(50);
+const POLL_BACKOFF: [Duration; 3] = [
+    Duration::from_millis(50),
+    Duration::from_millis(150),
+    Duration::from_millis(300),
+];
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn poll_delay(attempt: usize) -> Duration {
+    POLL_BACKOFF.get(attempt).copied().unwrap_or(POLL_BACKOFF[POLL_BACKOFF.len() - 1])
+}
 /// How long one script round trip into the session page may take.
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Fallback lifetime when VK omits `expires` (VK's own web client treats missing/zero `expires` as unbounded).
@@ -187,6 +195,33 @@ fn describe_field(v: &serde_json::Value, depth: usize) -> String {
     }
 }
 
+fn is_safe_error_text(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 80 {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    !lower.contains("http")
+        && !lower.contains("token")
+        && !lower.contains("sid")
+        && !lower.contains("hash")
+        && !trimmed.contains('=')
+        && !trimmed.contains('&')
+        && !trimmed.chars().any(char::is_control)
+}
+
+fn redacted_rejection(body: &serde_json::Value) -> String {
+    for key in ["error_info", "error"] {
+        if let Some(s) = body.get(key).and_then(|v| v.as_str()) {
+            let trimmed = s.trim();
+            if is_safe_error_text(trimmed) {
+                return trimmed.to_string();
+            }
+        }
+    }
+    describe_field(body, 2)
+}
+
 /// Parses what the poll script returned: `None` while the request is still in flight.
 pub fn parse_poll_result(raw: &str) -> Option<Result<WebToken, SessionMsgError>> {
     parse_poll_result_at(raw, now_secs())
@@ -226,8 +261,7 @@ pub fn parse_poll_result_at(raw: &str, now: i64) -> Option<Result<WebToken, Sess
         if body.get("error_info").and_then(|v| v.as_str()) == Some(VK_TRY_AGAIN) {
             return Some(Err(SessionMsgError::Busy(VK_TRY_AGAIN.to_string())));
         }
-        let info = body.get("error_info").or_else(|| body.get("error")).map(|v| v.to_string()).unwrap_or_else(|| body.to_string());
-        return Some(Err(SessionMsgError::Rejected(info)));
+        return Some(Err(SessionMsgError::Rejected(redacted_rejection(&body))));
     }
     let body_uid = positive_uid(body.get("user_id"));
     for candidate in [body.get("data"), body.get("response"), Some(&body)] {
@@ -295,26 +329,38 @@ pub struct SessionStatus {
     pub user_id: Option<i64>,
 }
 
+struct SessionInner {
+    token: Option<WebToken>,
+    phase: Phase,
+    epoch: u64,
+    logging_out: bool,
+}
+
 pub struct SessionState {
-    token: Mutex<Option<WebToken>>,
-    phase: Mutex<Phase>,
+    inner: Mutex<SessionInner>,
     gate: Mutex<PageLoadGate>,
     last_refresh: tokio::sync::Mutex<Option<Instant>>,
+    cancel_patient: Arc<Notify>,
 }
 
 impl SessionState {
     pub fn new() -> Self {
         Self {
-            token: Mutex::new(None),
-            phase: Mutex::new(Phase::Pending),
+            inner: Mutex::new(SessionInner {
+                token: None,
+                phase: Phase::Pending,
+                epoch: 0,
+                logging_out: false,
+            }),
             gate: Mutex::new(PageLoadGate::default()),
             last_refresh: tokio::sync::Mutex::new(None),
+            cancel_patient: Arc::new(Notify::new()),
         }
     }
 
     fn valid_web_token(&self, margin_secs: i64) -> Option<WebToken> {
-        let g = self.token.lock().ok()?;
-        let t = g.as_ref()?;
+        let g = self.inner.lock().ok()?;
+        let t = g.token.as_ref()?;
         (t.expires - now_secs() > margin_secs).then(|| t.clone())
     }
 
@@ -322,22 +368,75 @@ impl SessionState {
         self.valid_web_token(margin_secs).map(|t| t.access_token)
     }
 
-    pub fn invalidate(&self) {
-        if let Ok(mut g) = self.token.lock() {
-            *g = None;
+    fn cached_user_id(&self) -> Option<i64> {
+        self.inner.lock().ok()?.token.as_ref().map(|t| t.user_id).filter(|&id| id > 0)
+    }
+
+    pub fn invalidate_if_matches(&self, failed_token: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            if g.token.as_ref().is_some_and(|t| t.access_token == failed_token) {
+                g.token = None;
+            }
         }
     }
 
-    fn set_phase(&self, p: Phase) {
-        if let Ok(mut g) = self.phase.lock() {
-            *g = p;
+    fn epoch(&self) -> u64 {
+        self.inner.lock().map(|g| g.epoch).unwrap_or(0)
+    }
+
+    fn begin_logout(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.token = None;
+            g.phase = Phase::None;
+            g.epoch = g.epoch.wrapping_add(1);
+            g.logging_out = true;
         }
+        self.cancel_patient.notify_waiters();
+    }
+
+    fn clear_logging_out(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.logging_out = false;
+        }
+    }
+
+    fn is_logging_out(&self) -> bool {
+        self.inner.lock().map(|g| g.logging_out).unwrap_or(false)
+    }
+
+    fn set_signed_out_if_epoch(&self, expected_epoch: u64) -> bool {
+        if let Ok(mut g) = self.inner.lock() {
+            if g.epoch == expected_epoch {
+                g.token = None;
+                g.phase = Phase::None;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Atomically stores a token and marks the session `Ready` if `epoch` has not changed.
+    /// Returns `Some(was_ready)` when stored, or `None` if discarded due to a concurrent logout.
+    fn store_token_if_epoch(&self, expected_epoch: u64, tok: WebToken) -> Option<bool> {
+        let mut g = self.inner.lock().ok()?;
+        if g.epoch != expected_epoch {
+            return None;
+        }
+        let was_ready = g.phase == Phase::Ready;
+        g.token = Some(tok);
+        g.phase = Phase::Ready;
+        g.logging_out = false;
+        Some(was_ready)
     }
 
     pub fn status(&self) -> SessionStatus {
-        let state = self.phase.lock().map(|g| *g).unwrap_or(Phase::None);
-        let user_id = self.token.lock().ok().and_then(|g| g.as_ref().map(|t| t.user_id));
-        SessionStatus { state, user_id }
+        match self.inner.lock() {
+            Ok(g) => SessionStatus {
+                state: g.phase,
+                user_id: g.token.as_ref().map(|t| t.user_id),
+            },
+            Err(_) => SessionStatus { state: Phase::None, user_id: None },
+        }
     }
 }
 
@@ -350,6 +449,7 @@ fn token_script(nonce: &str) -> String {
     format!(
         r#"(() => {{
   const box = (window.__nocturne = window.__nocturne || {{}});
+  setTimeout(() => {{ try {{ delete window.__nocturne['{nonce}']; }} catch {{}} }}, 20000);
   const num = (v) => {{
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
@@ -444,6 +544,13 @@ fn poll_script(nonce: &str) -> String {
     )
 }
 
+fn cleanup_script(nonce: &str) -> String {
+    format!(
+        r#"(() => {{ try {{ if (window.__nocturne) delete window.__nocturne['{nonce}']; }} catch {{}} }})()"#,
+        nonce = nonce
+    )
+}
+
 /// Creates the hidden session window. Called once from setup.
 pub fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let load_app = app.clone();
@@ -480,19 +587,40 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
         return;
     }
     let st = app.state::<SessionState>();
+    if st.is_logging_out() {
+        if url.as_str() == IDLE_URL {
+            st.clear_logging_out();
+            trace!("ignoring idle page load after logout");
+        }
+        return;
+    }
     if st.valid_token(120).is_some() && url.as_str() == IDLE_URL {
         return;
     }
+    let start_epoch = st.epoch();
+    let cancel = Arc::clone(&st.cancel_patient);
     let app = app.clone();
     let visible = window.is_visible().unwrap_or(false);
     tauri::async_runtime::spawn(async move {
-        let mut result = refresh_with_retries(&app).await;
+        let mut result = refresh_with_retries(&app, start_epoch, &cancel).await;
         // VK keeps asking to try again, or the network is down: the session is not gone, so keep
         // trying for a while (one such loop at a time) instead of showing the login screen
-        if matches!(&result, Err(e) if !is_signed_out(e)) && !BEING_PATIENT.swap(true, Ordering::SeqCst) {
+        let should_be_patient = matches!(&result, Err(e) if !is_signed_out(e) && e != "session window missing" && e != "session changed")
+            && app.state::<SessionState>().epoch() == start_epoch
+            && app.state::<SessionState>().status().state != Phase::None
+            && app.get_webview_window(SESSION_LABEL).is_some();
+        if should_be_patient && !BEING_PATIENT.swap(true, Ordering::SeqCst) {
             let mut round = 0;
             while let Err(e) = &result {
-                if is_signed_out(e) || app.state::<SessionState>().valid_token(120).is_some() {
+                let st = app.state::<SessionState>();
+                if is_signed_out(e)
+                    || e == "session window missing"
+                    || e == "session changed"
+                    || st.epoch() != start_epoch
+                    || st.status().state == Phase::None
+                    || st.valid_token(120).is_some()
+                    || app.get_webview_window(SESSION_LABEL).is_none()
+                {
                     break;
                 }
                 let wait = patience(round);
@@ -502,7 +630,25 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
                     trace!("no token yet ({why}), trying again in {}s", wait.as_secs());
                 }
                 let _ = app.emit("session:busy", true);
-                tokio::time::sleep(wait).await;
+                let notified = cancel.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if st.epoch() != start_epoch || st.status().state == Phase::None {
+                    break;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = &mut notified => {
+                        trace!("patient retry cancelled");
+                        break;
+                    }
+                }
+                if st.epoch() != start_epoch
+                    || st.status().state == Phase::None
+                    || app.get_webview_window(SESSION_LABEL).is_none()
+                {
+                    break;
+                }
                 round += 1;
                 // one request a round: when VK means «too many requests», a burst would keep it so
                 result = refresh(&app).await;
@@ -511,6 +657,9 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
             let _ = app.emit("session:busy", false);
         }
         let st = app.state::<SessionState>();
+        if st.epoch() != start_epoch {
+            return;
+        }
         // another check got the token meanwhile
         let result = match result {
             Err(_) if st.valid_token(120).is_some() => Ok(()),
@@ -528,14 +677,17 @@ fn on_page_loaded(app: &AppHandle, window: &WebviewWindow, url: &Url) {
                         let _ = w.navigate(IDLE_URL.parse().expect("idle url"));
                     }
                 }
-                if let Some(m) = app.get_window("main") {
-                    let _ = m.set_focus();
+                if !still_hidden {
+                    if let Some(m) = app.get_window("main") {
+                        let _ = m.set_focus();
+                    }
                 }
             }
             Err(e) if still_hidden && is_signed_out(&e) => {
                 trace!("no VK session ({e}), showing the login screen");
-                st.set_phase(Phase::None);
-                let _ = app.emit("session:logged-out", ());
+                if st.set_signed_out_if_epoch(start_epoch) {
+                    let _ = app.emit("session:logged-out", ());
+                }
             }
             // a patient loop is already waiting for VK: this check leaves it to that one
             Err(e) if still_hidden => trace!("still waiting for VK ({e})"),
@@ -561,12 +713,25 @@ async fn eval_value(window: &WebviewWindow, script: String) -> Result<String, St
 /// misbehaving trigger can never hammer login.vk.ru.
 /// A refresh, and a few more tries after a failure that is not VK saying "unauthorized" (a busy
 /// WebView can miss the eval deadline at app start; VK sometimes asks to try again).
-async fn refresh_with_retries(app: &AppHandle) -> Result<WebToken, String> {
+async fn refresh_with_retries(app: &AppHandle, start_epoch: u64, cancel: &Notify) -> Result<WebToken, String> {
     let mut result = refresh(app).await;
     for delay in TRANSIENT_RETRIES {
         match &result {
-            Err(e) if !is_signed_out(e) => {
-                tokio::time::sleep(delay).await;
+            Err(e) if !is_signed_out(e) && e != "session window missing" && e != "session changed" => {
+                let st = app.state::<SessionState>();
+                let notified = cancel.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if st.epoch() != start_epoch {
+                    return Err("session changed".to_string());
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = &mut notified => return Err("session changed".to_string()),
+                }
+                if st.epoch() != start_epoch {
+                    return Err("session changed".to_string());
+                }
                 result = refresh(app).await;
             }
             _ => break,
@@ -598,13 +763,20 @@ async fn resolve_user_id(app: &AppHandle, access_token: &str) -> Result<Option<i
 
 pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
     let st = app.state::<SessionState>();
+    let start_epoch = st.epoch();
     let mut last = st.last_refresh.lock().await;
+    if st.epoch() != start_epoch {
+        return Err("session changed".to_string());
+    }
     if let Some(tok) = st.valid_web_token(90) {
         return Ok(tok);
     }
     let wait = crate::vk::wait_before(*last, Instant::now(), REFRESH_SPACING);
     if !wait.is_zero() {
         tokio::time::sleep(wait).await;
+        if st.epoch() != start_epoch {
+            return Err("session changed".to_string());
+        }
     }
     *last = Some(Instant::now());
 
@@ -614,14 +786,24 @@ pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
         Err(e) => Err(e),
         Ok(_) => {
             let deadline = Instant::now() + REFRESH_TIMEOUT;
+            let mut attempt = 0usize;
             loop {
-                tokio::time::sleep(POLL_EVERY).await;
+                tokio::time::sleep(poll_delay(attempt)).await;
+                attempt = attempt.saturating_add(1);
+                if st.epoch() != start_epoch {
+                    let _ = window.eval(cleanup_script(&nonce));
+                    break Err("session changed".to_string());
+                }
                 if Instant::now() > deadline {
+                    let _ = window.eval(cleanup_script(&nonce));
                     break Err("timeout".to_string());
                 }
                 let raw = match eval_value(&window, poll_script(&nonce)).await {
                     Ok(raw) => raw,
-                    Err(e) => break Err(e),
+                    Err(e) => {
+                        let _ = window.eval(cleanup_script(&nonce));
+                        break Err(e);
+                    }
                 };
                 if let Some(r) = parse_poll_result(&raw) {
                     break r.map_err(|e| format!("{e:?}"));
@@ -629,12 +811,12 @@ pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
             }
         }
     };
-    drop(last);
 
     let res = match res {
         Ok(mut tok) if tok.user_id <= 0 => {
-            let cached = st.token.lock().ok().and_then(|g| g.as_ref().map(|t| t.user_id)).filter(|&id| id > 0);
-            if let Some(id) = cached {
+            if st.epoch() != start_epoch {
+                Err("session changed".to_string())
+            } else if let Some(id) = st.cached_user_id() {
                 tok.user_id = id;
                 Ok(tok)
             } else {
@@ -651,21 +833,30 @@ pub async fn refresh(app: &AppHandle) -> Result<WebToken, String> {
         other => other,
     };
 
-    match &res {
-        Ok(t) => trace!("token ok (expires in {}s)", t.expires - now_secs()),
-        Err(e) => trace!("token failed: {e}"),
-    }
-    if let Ok(tok) = &res {
-        let was_ready = st.status().state == Phase::Ready;
-        if let Ok(mut g) = st.token.lock() {
-            *g = Some(tok.clone());
+    match res {
+        Ok(tok) => {
+            let stored = st.store_token_if_epoch(start_epoch, tok.clone());
+            drop(last);
+            match stored {
+                Some(was_ready) => {
+                    trace!("token ok (expires in {}s)", tok.expires - now_secs());
+                    if !was_ready {
+                        let _ = app.emit("session:ready", serde_json::json!({ "userId": tok.user_id }));
+                    }
+                    Ok(tok)
+                }
+                None => {
+                    trace!("token discarded: session epoch changed");
+                    Err("session changed".to_string())
+                }
+            }
         }
-        st.set_phase(Phase::Ready);
-        if !was_ready {
-            let _ = app.emit("session:ready", serde_json::json!({ "userId": tok.user_id }));
+        Err(e) => {
+            drop(last);
+            trace!("token failed: {e}");
+            Err(e)
         }
     }
-    res
 }
 
 /// Returns a token valid for at least 90 more seconds, refreshing if needed.
@@ -677,12 +868,11 @@ pub async fn get_token(app: &AppHandle) -> Result<String, String> {
     if st.status().state == Phase::None {
         return Err("not logged in".to_string());
     }
+    let start_epoch = st.epoch();
     match refresh(app).await {
         Ok(t) => Ok(t.access_token),
         Err(e) => {
-            if is_signed_out(&e) {
-                st.invalidate();
-                st.set_phase(Phase::None);
+            if is_signed_out(&e) && st.set_signed_out_if_epoch(start_epoch) {
                 let _ = app.emit("session:logged-out", ());
             }
             Err(e)
@@ -698,6 +888,7 @@ pub fn session_status(st: tauri::State<'_, SessionState>) -> SessionStatus {
 #[tauri::command]
 pub fn session_login(app: AppHandle) -> Result<(), String> {
     trace!("login requested");
+    app.state::<SessionState>().clear_logging_out();
     let w = app.get_webview_window(SESSION_LABEL).ok_or("session window missing")?;
     let _ = w.eval(LOADING_SCRIPT);
     w.navigate(LOGIN_URL.parse().expect("login url")).map_err(|e| e.to_string())?;
@@ -711,11 +902,17 @@ pub fn session_login(app: AppHandle) -> Result<(), String> {
 pub async fn session_logout(app: AppHandle) -> Result<(), String> {
     trace!("signing out and clearing VK cookies");
     let st = app.state::<SessionState>();
-    st.invalidate();
-    st.set_phase(Phase::None);
+    st.begin_logout();
     if let Some(w) = app.get_webview_window(SESSION_LABEL) {
-        w.clear_all_browsing_data().map_err(|e| e.to_string())?;
-        let _ = w.navigate(IDLE_URL.parse().expect("idle url"));
+        if let Err(e) = w.clear_all_browsing_data() {
+            st.clear_logging_out();
+            return Err(e.to_string());
+        }
+        if w.navigate(IDLE_URL.parse().expect("idle url")).is_err() {
+            st.clear_logging_out();
+        }
+    } else {
+        st.clear_logging_out();
     }
     let _ = app.emit("session:logged-out", ());
     Ok(())
@@ -912,5 +1109,64 @@ mod tests {
         assert!(g.finished("https://vk.ru/", t0));
         g.started("https://vk.ru/feed");
         assert!(g.finished("https://vk.ru/feed", t0 + Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn rejected_error_payloads_redact_urls_tokens_and_secrets() {
+        let with_url = r#"{"ok":true,"body":{"type":"error","error_info":"https://vk.ru/auth?sid=secret123&hash=deadbeef"}}"#;
+        let SessionMsgError::Rejected(msg) = parse_poll_result(with_url).unwrap().unwrap_err() else { panic!("expected Rejected") };
+        assert!(!msg.contains("secret123") && !msg.contains("deadbeef") && !msg.contains("https://"), "leaked URL/params: {msg}");
+
+        let with_token = r#"{"ok":true,"body":{"type":"error","error_info":"bad access_token vk1.a.SECRET_VALUE"}}"#;
+        let SessionMsgError::Rejected(msg) = parse_poll_result(with_token).unwrap().unwrap_err() else { panic!("expected Rejected") };
+        assert!(!msg.contains("SECRET_VALUE"), "leaked token: {msg}");
+
+        let nested_obj = r#"{"ok":true,"body":{"type":"error","error":{"redirect_uri":"https://evil","secret":"s3cr3t"}}}"#;
+        let SessionMsgError::Rejected(msg) = parse_poll_result(nested_obj).unwrap().unwrap_err() else { panic!("expected Rejected") };
+        assert!(!msg.contains("s3cr3t") && !msg.contains("https://evil"), "leaked nested object: {msg}");
+
+        let raw_body = r#"{"ok":true,"body":{"type":"other","access_token":"vk1.a.NEVER"}}"#;
+        let SessionMsgError::Rejected(msg) = parse_poll_result(raw_body).unwrap().unwrap_err() else { panic!("expected Rejected") };
+        assert!(!msg.contains("NEVER"), "leaked raw body: {msg}");
+
+        let safe = r#"{"ok":true,"body":{"type":"error","error_info":"unauthorized"}}"#;
+        assert_eq!(parse_poll_result(safe), Some(Err(SessionMsgError::Rejected("unauthorized".into()))));
+    }
+
+    #[test]
+    fn session_state_epoch_invalidation_and_backoff() {
+        let st = SessionState::new();
+        let future = now_secs() + 3600;
+        let e0 = st.epoch();
+        let tok1 = WebToken { access_token: "tok_old".into(), expires: future, user_id: 10 };
+        assert_eq!(st.store_token_if_epoch(e0, tok1), Some(false));
+        assert_eq!(st.status().state, Phase::Ready);
+        assert_eq!(st.status().user_id, Some(10));
+
+        // Stale invalidation with non-matching token must not evict current token.
+        st.invalidate_if_matches("tok_other");
+        assert_eq!(st.valid_token(90).as_deref(), Some("tok_old"));
+
+        // Matching invalidation clears only the matching token.
+        st.invalidate_if_matches("tok_old");
+        assert_eq!(st.valid_token(90), None);
+
+        // Logout increments epoch and discards an in-flight refresh from the old epoch.
+        let tok2 = WebToken { access_token: "tok_stale".into(), expires: future, user_id: 10 };
+        st.begin_logout();
+        assert!(st.is_logging_out());
+        assert_eq!(st.status().state, Phase::None);
+        assert_eq!(st.store_token_if_epoch(e0, tok2), None);
+        assert_eq!(st.status().state, Phase::None);
+        assert_eq!(st.valid_token(90), None);
+
+        st.clear_logging_out();
+        assert!(!st.is_logging_out());
+
+        assert_eq!(poll_delay(0), Duration::from_millis(50));
+        assert_eq!(poll_delay(1), Duration::from_millis(150));
+        assert_eq!(poll_delay(2), Duration::from_millis(300));
+        assert_eq!(poll_delay(10), Duration::from_millis(300));
+        assert!(token_script("abc123").contains("delete window.__nocturne['abc123']"));
     }
 }

@@ -23,32 +23,54 @@ const setIsland = (patch: Partial<IslandSettings>) => void emitTo('main', EV.isl
 
 let dragArmed = false
 let moveTimer: ReturnType<typeof setTimeout> | undefined
+let dragClearTimer: ReturnType<typeof setTimeout> | undefined
 
 /** Drag the island by any empty spot; the new place is saved once the window stops moving. */
 async function startDrag() {
   if (!isTauri()) return
   const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  clearTimeout(dragClearTimer)
   dragArmed = true
-  await getCurrentWindow().startDragging().catch(() => (dragArmed = false))
+  try {
+    await getCurrentWindow().startDragging()
+  } catch {
+    dragArmed = false
+    return
+  }
+  // If the user clicked without moving, onMoved never fires; disarm after a short grace window so later programmatic moves aren't saved as a drag.
+  clearTimeout(dragClearTimer)
+  dragClearTimer = setTimeout(() => {
+    if (!moveTimer) dragArmed = false
+  }, 450)
 }
 
 async function watchMoves() {
   if (!isTauri()) return () => {}
   const { getCurrentWindow } = await import('@tauri-apps/api/window')
-  return getCurrentWindow().onMoved(({ payload }) => {
+  const off = await getCurrentWindow().onMoved(({ payload }) => {
     if (!dragArmed) return
+    clearTimeout(dragClearTimer)
     clearTimeout(moveTimer)
     moveTimer = setTimeout(() => {
+      moveTimer = undefined
       dragArmed = false
       setIsland({ position: { x: payload.x, y: payload.y } })
     }, 350)
   })
+  return () => {
+    clearTimeout(moveTimer)
+    clearTimeout(dragClearTimer)
+    moveTimer = undefined
+    dragClearTimer = undefined
+    dragArmed = false
+    off()
+  }
 }
 
 /** What the player is doing right now: loading, playing (live bars) or paused. */
-function StatusGlyph({ st, accent, size }: { st: PlayerSnapshot; accent: string; size: number }) {
+function StatusGlyph({ st, accent, size, animate = true }: { st: PlayerSnapshot; accent: string; size: number; animate?: boolean }) {
   if (st.isLoading && st.isPlaying) return <Spinner size={size} />
-  if (st.isPlaying) return <EqualizerBars playing height={size} width={size > 15 ? 3.5 : 3} color={accent} />
+  if (st.isPlaying) return <EqualizerBars playing={animate} height={size} width={size > 15 ? 3.5 : 3} color={accent} />
   return (
     <span className={s.paused} aria-label="Пауза">
       <IconPause size={size} />
@@ -76,9 +98,9 @@ const PILL_PATH = roundedPath(0.75, 0.75, PILL.w - 1.5, PILL.h - 1.5, PILL.h / 2
 const RING_PATH = roundedPath(1, 1, 26, 26, 9)
 
 /** The compact pill: cover, status and the track position in the chosen style; ticks on its own so the island stays still. */
-function CompactBody({ st, accent, style, duration }: { st: PlayerSnapshot; accent: string; style: IslandProgress; duration: number }) {
+function CompactBody({ st, accent, style, duration, visible }: { st: PlayerSnapshot; accent: string; style: IslandProgress; duration: number; visible: boolean }) {
   const t = st.track!
-  const live = useLivePosition(st, style !== 'off')
+  const live = useLivePosition(st, visible && style !== 'off')
   const p = duration ? Math.min(1, live / duration) : 0
   const dash = { strokeDasharray: `${(p * 100).toFixed(2)} 100`, opacity: p > 0 ? 1 : 0 }
   const ring = style === 'ring'
@@ -109,16 +131,17 @@ function CompactBody({ st, accent, style, duration }: { st: PlayerSnapshot; acce
       )}
       <span className={s.compactEnd}>
         {st.together && <Users size={13} strokeWidth={2.4} className={s.togetherIcon} aria-label="Слушаете вместе" />}
-        <StatusGlyph st={st} accent={accent} size={14} />
+        <StatusGlyph st={st} accent={accent} size={14} animate={visible} />
       </span>
     </>
   )
 }
 
-function Expanded({ st, accent, locked, moved, waveColor }: { st: PlayerSnapshot; accent: string; locked: boolean; moved: boolean; waveColor: string | null }) {
+function Expanded({ st, accent, locked, moved, waveColor, visible }: { st: PlayerSnapshot; accent: string; locked: boolean; moved: boolean; waveColor: string | null; visible: boolean }) {
   const t = st.track!
-  const live = useLivePosition(st, true)
+  const live = useLivePosition(st, visible)
   const [drag, setDrag] = useState<number | null>(null)
+  useEffect(() => setDrag(null), [t.key])
   const pos = drag ?? live
   const d = st.duration || t.duration
   return (
@@ -165,7 +188,7 @@ function Expanded({ st, accent, locked, moved, waveColor }: { st: PlayerSnapshot
           <IconButton className={s.round} size={30} label={t.liked ? 'Убрать из Моей музыки' : 'Добавить в Мою музыку'} onClick={() => send({ type: 'toggleLike' })}>
             {t.liked ? <IconCheck size={16} /> : <IconPlus size={16} />}
           </IconButton>
-          <StatusGlyph st={st} accent={accent} size={16} />
+          <StatusGlyph st={st} accent={accent} size={16} animate={visible} />
         </div>
       </div>
       <div className={s.time}>
@@ -184,6 +207,7 @@ function Expanded({ st, accent, locked, moved, waveColor }: { st: PlayerSnapshot
             setDrag(null)
             send({ type: 'seek', value: v * d })
           }}
+          onCancel={() => setDrag(null)}
         />
         <span>-{formatTime(Math.max(0, d - pos))}</span>
       </div>
@@ -224,6 +248,7 @@ export function IslandApp() {
   const [flashFor] = useState(() => moment<'added' | 'removed'>(setFlash))
   const [volumeHud, setVolumeHud] = useState(false)
   const [waveColor, setWaveColor] = useState<string | null>(null)
+  const [docVisible, setDocVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden))
   const volumeTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const prevVolume = useRef<{ volume: number; muted: boolean } | null>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -232,6 +257,12 @@ export function IslandApp() {
   const prevLiked = useRef<boolean | null>(null)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+
+  useEffect(() => {
+    const onVis = () => setDocVisible(!document.hidden)
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
 
   const onHover = useCallback((inside: boolean) => {
     clearTimeout(hoverTimer.current)
@@ -256,7 +287,12 @@ export function IslandApp() {
     ]
     offs.push(watchMoves())
     void emitTo('main', EV.requestState)
-    return () => offs.forEach((p) => void p.then((off) => off()))
+    return () => {
+      clearTimeout(volumeTimer.current)
+      clearTimeout(hoverTimer.current)
+      clearTimeout(leaveTimer.current)
+      offs.forEach((p) => void p.then((off) => off()))
+    }
   }, [onHover])
 
   // Browser dev only: island.html#demo plays a fake track, #demo-open shows it expanded (dropped from release builds)
@@ -324,7 +360,7 @@ export function IslandApp() {
     if (st?.accent) document.documentElement.style.setProperty('--accent', st.accent)
   }, [st?.accent])
 
-  if (!st?.track) return null
+  if (!settings.enabled || !st?.track) return null
   const t = st.track
   const accent = st.accent ?? '#ff375f'
   const size = SHAPES[shape]
@@ -346,7 +382,7 @@ export function IslandApp() {
         <AnimatePresence initial={false} mode="popLayout">
           {shape === 'compact' && (
             <motion.div key="compact" className={s.compact} {...fade}>
-              <CompactBody st={st} accent={accent} style={settings.progress} duration={duration} />
+              <CompactBody st={st} accent={accent} style={settings.progress} duration={duration} visible={docVisible} />
             </motion.div>
           )}
           {shape === 'volume' && (
@@ -370,11 +406,11 @@ export function IslandApp() {
                   {flash === 'added' ? <IconCheck size={15} /> : <Minus size={15} strokeWidth={2.6} />}
                 </span>
               ) : (
-                <StatusGlyph st={st} accent={accent} size={18} />
+                <StatusGlyph st={st} accent={accent} size={18} animate={docVisible} />
               )}
             </motion.div>
           )}
-          {shape === 'expanded' && <Expanded key="expanded" st={st} accent={accent} locked={settings.locked} moved={!!settings.position} waveColor={waveColor} />}
+          {shape === 'expanded' && <Expanded key="expanded" st={st} accent={accent} locked={settings.locked} moved={!!settings.position} waveColor={waveColor} visible={docVisible} />}
         </AnimatePresence>
       </motion.div>
     </div>

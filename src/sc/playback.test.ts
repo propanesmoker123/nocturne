@@ -26,8 +26,13 @@ describe('authorized SoundCloud DRM playback', () => {
   })
 })
 
-test('provider waveform metadata supplies normalized peaks without decoding protected audio', () => {
+test('provider waveform metadata supplies normalized peaks without decoding protected audio and downsamples large arrays to 240 bins', () => {
   expect(Array.from(providerPeaks({ height: 100, samples: [0, 25, 100, 50] })!)).toEqual([0, 0.25, 1, 0.5])
+  const largeSamples = Array.from({ length: 1800 }, (_, i) => (i % 100) + 1)
+  const downsampled = providerPeaks({ height: 100, samples: largeSamples })
+  expect(downsampled).not.toBeNull()
+  expect(downsampled!.length).toBe(240)
+  expect(downsampled!.every((v) => v >= 0 && v <= 1)).toBe(true)
   for (const bad of [null, {}, { height: 0, samples: [1] }, { height: 100, samples: [] }, { height: 100, samples: [NaN] }]) {
     expect(providerPeaks(bad)).toBeNull()
   }

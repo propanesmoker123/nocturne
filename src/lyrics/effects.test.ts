@@ -232,5 +232,22 @@ describe('lyrics kinetic effects & method summary', () => {
       syncLabel: 'Без таймингов',
       fxLabel: 'Кинематограф',
     })
+
+    expect(
+      describeLyricsMethod(
+        {
+          synced: true,
+          source: 'ai',
+          credits: 'Тайминг: Whisper AI (локально)',
+          lines: [{ begin: 1000, text: 'строка', words: [{ begin: 1000, end: 1400, text: 'строка' }] }],
+        },
+        true,
+        false,
+      ),
+    ).toEqual({
+      sourceLabel: 'Whisper AI',
+      syncLabel: 'По словам',
+      fxLabel: 'Кинематограф',
+    })
   })
 })

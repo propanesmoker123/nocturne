@@ -36,17 +36,20 @@ export function hslToRgb(h: number, s: number, l: number): RGB {
 
 const BINS = 24
 
-/**
- * Picks a vivid accent from RGBA pixels: hue histogram weighted by saturation and
- * mid-lightness, ignoring gray/black/white, then lifted into a readable range.
- */
-export function pickAccent(data: Uint8ClampedArray): RGB | null {
+function pickFromHistogram(
+  data: Uint8ClampedArray,
+  minSat: number,
+  minLight: number,
+  maxLight: number,
+  minWeight: number,
+  liftSat: number,
+): RGB | null {
   const bins = Array.from({ length: BINS }, () => ({ w: 0, r: 0, g: 0, b: 0 }))
   for (let i = 0; i + 3 < data.length; i += 4) {
     if (data[i + 3] < 128) continue
     const px = { r: data[i], g: data[i + 1], b: data[i + 2] }
     const { h, s, l } = rgbToHsl(px)
-    if (s < 0.25 || l < 0.1 || l > 0.92) continue
+    if (s < minSat || l < minLight || l > maxLight) continue
     const w = s * (1 - Math.abs(l - 0.5) * 1.2)
     if (w <= 0) continue
     const bin = bins[Math.floor(h * BINS) % BINS]
@@ -56,10 +59,22 @@ export function pickAccent(data: Uint8ClampedArray): RGB | null {
     bin.b += px.b * w
   }
   const best = bins.reduce((a, b) => (b.w > a.w ? b : a))
-  if (best.w < 0.5) return null
+  if (best.w < minWeight) return null
   const avg = { r: best.r / best.w, g: best.g / best.w, b: best.b / best.w }
   const { h, s, l } = rgbToHsl(avg)
-  return hslToRgb(h, Math.max(s, 0.55), Math.min(0.66, Math.max(0.52, l)))
+  return hslToRgb(h, Math.max(s, liftSat), Math.min(0.66, Math.max(0.52, l)))
+}
+
+/**
+ * Picks a vivid accent from RGBA pixels: hue histogram weighted by saturation and
+ * mid-lightness, ignoring gray/black/white, then lifted into a readable range.
+ * Falls back to a muted-hue pass for pastel/low-saturation covers while still returning null for grayscale.
+ */
+export function pickAccent(data: Uint8ClampedArray): RGB | null {
+  return (
+    pickFromHistogram(data, 0.25, 0.1, 0.92, 0.5, 0.55) ??
+    pickFromHistogram(data, 0.14, 0.08, 0.94, 2.0, 0.42)
+  )
 }
 
 export const toCss = ({ r, g, b }: RGB): string => `rgb(${Math.round(r)} ${Math.round(g)} ${Math.round(b)})`
@@ -102,40 +117,92 @@ export function parseCssRgb(value: string): RGB | null {
   return null
 }
 
+const MAX_CACHE = 200
 const cache = new Map<string, Promise<RGB | null>>()
+let scratchCtx: CanvasRenderingContext2D | null = null
 
-async function loadBitmap(url: string): Promise<ImageBitmap | HTMLImageElement> {
-  if (isTauri() && url.startsWith('https://')) {
-    const bytes = await invoke<ArrayBuffer>('proxy_fetch', { url })
-    return createImageBitmap(new Blob([bytes]))
+function getScratchCtx(): CanvasRenderingContext2D | null {
+  if (scratchCtx) return scratchCtx
+  const canvas = document.createElement('canvas')
+  canvas.width = 32
+  canvas.height = 32
+  scratchCtx = canvas.getContext('2d', { willReadFrequently: true })
+  return scratchCtx
+}
+
+async function decodeBlobAsImage(blob: Blob): Promise<HTMLImageElement> {
+  const objectUrl = URL.createObjectURL(blob)
+  try {
+    const img = new Image()
+    img.src = objectUrl
+    await img.decode()
+    return img
+  } finally {
+    URL.revokeObjectURL(objectUrl)
   }
+}
+
+async function loadImageDirect(url: string): Promise<HTMLImageElement> {
   const img = new Image()
   img.crossOrigin = 'anonymous'
+  img.referrerPolicy = 'no-referrer'
   img.src = url
   await img.decode()
   return img
 }
 
+async function loadBitmap(url: string): Promise<ImageBitmap | HTMLImageElement> {
+  if (isTauri() && url.startsWith('https://')) {
+    try {
+      const bytes = await invoke<ArrayBuffer>('proxy_fetch', { url })
+      const blob = new Blob([bytes])
+      if (typeof createImageBitmap === 'function') {
+        try {
+          return await createImageBitmap(blob)
+        } catch {
+          return await decodeBlobAsImage(blob)
+        }
+      }
+      return await decodeBlobAsImage(blob)
+    } catch {
+      return await loadImageDirect(url)
+    }
+  }
+  return await loadImageDirect(url)
+}
+
 /** Accent color of an artwork URL (cached). Null when the image has no vivid color. */
 export function artworkAccent(url: string | undefined): Promise<RGB | null> {
   if (!url) return Promise.resolve(null)
-  let p = cache.get(url)
-  if (!p) {
-    p = (async () => {
-      try {
-        const src = await loadBitmap(url)
-        const canvas = document.createElement('canvas')
-        canvas.width = 32
-        canvas.height = 32
-        const ctx = canvas.getContext('2d', { willReadFrequently: true })
-        if (!ctx) return null
-        ctx.drawImage(src, 0, 0, 32, 32)
-        return pickAccent(ctx.getImageData(0, 0, 32, 32).data)
-      } catch {
-        return null
-      }
-    })()
-    cache.set(url, p)
+  const existing = cache.get(url)
+  if (existing) {
+    // Refresh LRU recency
+    cache.delete(url)
+    cache.set(url, existing)
+    return existing
   }
+  let p: Promise<RGB | null> | undefined
+  p = (async () => {
+    let src: ImageBitmap | HTMLImageElement | null = null
+    try {
+      src = await loadBitmap(url)
+      const ctx = getScratchCtx()
+      if (!ctx) return null
+      ctx.clearRect(0, 0, 32, 32)
+      ctx.drawImage(src, 0, 0, 32, 32)
+      return pickAccent(ctx.getImageData(0, 0, 32, 32).data)
+    } catch {
+      // Evict transient network/decode errors so later plays can retry.
+      if (p && cache.get(url) === p) cache.delete(url)
+      return null
+    } finally {
+      if (src && 'close' in src && typeof src.close === 'function') src.close()
+    }
+  })()
+  if (cache.size >= MAX_CACHE) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
+  cache.set(url, p)
   return p
 }

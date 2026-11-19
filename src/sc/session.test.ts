@@ -10,13 +10,14 @@ beforeEach(() => {
 })
 
 describe('SoundCloud session in the UI', () => {
-  test('signing in sets the user and who likes are for', () => {
-    useScSession.setState({ signingIn: true })
+  test('signing in sets the user, clears prior error, and sets who likes are for', () => {
+    useScSession.setState({ signingIn: true, error: 'Previous error' })
     applyStatus({ state: 'signed-in', user: { id: 7, name: 'n' } })
     const s = useScSession.getState()
     expect(s.phase).toBe('signed-in')
     expect(s.user?.id).toBe(7)
     expect(s.signingIn).toBe(false)
+    expect(s.error).toBeNull()
     expect(getScMeId()).toBe(7)
   })
 

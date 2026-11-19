@@ -93,8 +93,10 @@ vi.mock('./waveform', () => ({
 }))
 
 const spWarmCalls = vi.hoisted(() => [] as string[])
+const spClearWarmCalls = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../spotify/api', () => ({
   warmSpotifyTrack: async (id: string) => { spWarmCalls.push(id) },
+  clearWarmSpotifyTrack: async () => { spClearWarmCalls.count += 1 },
 }))
 
 const lyricsMock = vi.hoisted(() => {
@@ -127,8 +129,10 @@ const {
   clearPreload,
   clearPreloadExcept,
   getPreloadDebugState,
+  getPreloadedResource,
   parseHlsManifest,
   syncNextPreload,
+  takePreloadedBlobBytes,
   takePreloadedBlobUrl,
   takePreloadedSource,
 } = await import('./preload')
@@ -357,6 +361,7 @@ describe('preload', () => {
 
     // Spotify preload warms artwork + waveform + player track without streaming API side effects.
     spWarmCalls.length = 0
+    spClearWarmCalls.count = 0
     syncNextPreload({
       ...vkTrack(22),
       service: 'spotify',
@@ -367,13 +372,15 @@ describe('preload', () => {
     await flush()
     expect(h.spotifyWaveCalls).toEqual(['4cOdK2wGLETKBW3PvgPWqT'])
     expect(spWarmCalls).toEqual(['4cOdK2wGLETKBW3PvgPWqT'])
+    expect(spClearWarmCalls.count).toBe(0)
 
-    // SC DRM preload warms provider waveform as well.
+    // SC DRM preload warms provider waveform as well and clears previous Spotify remote warm buffer.
     h.setScSource('https://cdn.example/sc/drm.m3u8', { system: 'widevine' }, 'https://wave.sndcdn.com/w.json')
     h.setFile('https://cdn.example/sc/drm.m3u8', '#EXTM3U')
     syncNextPreload({ ...vkTrack(23), service: 'sc', key: 'sc_23' })
     await flush()
     expect(h.scWaveCalls).toEqual(['https://wave.sndcdn.com/w.json'])
+    expect(spClearWarmCalls.count).toBe(1)
   })
 
   test('prefetches next-track lyrics into React Query for Spotify, VK, and SC and respects cancellation', async () => {
@@ -418,5 +425,92 @@ describe('preload', () => {
       synced: true,
       lines: [{ text: 'Lyrics for Track 32' }],
     })
+  })
+
+  test('consumes cached buffers one-shot and clones inflight buffers to prevent detached ArrayBuffer failures', async () => {
+    h.setVkUrl('https://cdn.example/detach/index.m3u8')
+    h.setFile('https://cdn.example/detach/index.m3u8', '#EXTM3U\n#EXTINF:4,\nseg0.ts\n#EXTINF:4,\nseg1.ts')
+    h.setFile('https://cdn.example/detach/seg0.ts', new Uint8Array([10, 20, 30, 40]).buffer)
+
+    syncNextPreload(vkTrack(40))
+    await flush()
+
+    const beforeBytes = getPreloadDebugState().cachedBytes
+    const first = getPreloadedResource('https://cdn.example/detach/seg0.ts') as ArrayBuffer
+    expect(first).toBeInstanceOf(ArrayBuffer)
+    expect(first.byteLength).toBe(4)
+    // One-shot consumption removes entry and decrements cachedBytes.
+    expect(getPreloadDebugState().cachedBytes).toBe(beforeBytes - 4)
+    expect(getPreloadedResource('https://cdn.example/detach/seg0.ts')).toBeNull()
+
+    // In-flight buffer shared with two consumers returns independent slices so detaching one cannot corrupt the other.
+    const inflightA = getPreloadedResource('https://cdn.example/detach/seg1.ts') as Promise<ArrayBuffer>
+    const inflightB = getPreloadedResource('https://cdn.example/detach/seg1.ts') as Promise<ArrayBuffer>
+    expect(inflightA).toBeInstanceOf(Promise)
+    expect(inflightB).toBeInstanceOf(Promise)
+    const rawSeg1 = new Uint8Array([7, 8, 9]).buffer
+    h.pending.get('https://cdn.example/detach/seg1.ts')?.resolve(rawSeg1)
+    const [bufA, bufB] = await Promise.all([inflightA, inflightB])
+    expect(bufA).not.toBe(rawSeg1)
+    expect(bufA).not.toBe(bufB)
+    expect(new Uint8Array(bufA)).toEqual(new Uint8Array([7, 8, 9]))
+    expect(new Uint8Array(bufB)).toEqual(new Uint8Array([7, 8, 9]))
+  })
+
+  test('stops background HLS segment preloading on clearPreloadExcept(keepKey) while keeping already-cached segments and capping segment count', async () => {
+    const segLines = Array.from({ length: 8 }, (_, i) => `#EXTINF:4,\nseg${i}.ts`).join('\n')
+    h.setVkUrl('https://cdn.example/cap/index.m3u8')
+    h.setFile('https://cdn.example/cap/index.m3u8', `#EXTM3U\n${segLines}`)
+    for (let i = 0; i < 8; i++) {
+      h.setFile(`https://cdn.example/cap/seg${i}.ts`, new Uint8Array([i]).buffer)
+    }
+
+    syncNextPreload(vkTrack(41))
+    await flush()
+    // Capped at manifest + first 4 segments (never all 8 segments).
+    expect(h.fetchCalls).toEqual([
+      'https://cdn.example/cap/index.m3u8',
+      'https://cdn.example/cap/seg0.ts',
+      'https://cdn.example/cap/seg1.ts',
+      'https://cdn.example/cap/seg2.ts',
+      'https://cdn.example/cap/seg3.ts',
+    ])
+
+    // Now test stopping mid-preload when clearPreloadExcept(keepKey) is called as the track becomes active.
+    h.reset()
+    clearPreload()
+    h.setVkUrl('https://cdn.example/mid/index.m3u8')
+    h.setFile('https://cdn.example/mid/index.m3u8', '#EXTM3U\n#EXTINF:4,\nseg0.ts\n#EXTINF:4,\nseg1.ts\n#EXTINF:4,\nseg2.ts')
+    h.setFile('https://cdn.example/mid/seg0.ts', new Uint8Array([1, 2]).buffer)
+    // seg1.ts is left pending in h.pending
+
+    syncNextPreload(vkTrack(42))
+    await flush()
+    expect(h.fetchCalls).toEqual([
+      'https://cdn.example/mid/index.m3u8',
+      'https://cdn.example/mid/seg0.ts',
+      'https://cdn.example/mid/seg1.ts',
+    ])
+
+    // Track 42 starts playing -> clearPreloadExcept('1_42') stops further segment loop while preserving cached seg0 & in-flight seg1.
+    clearPreloadExcept('1_42')
+    h.pending.get('https://cdn.example/mid/seg1.ts')?.resolve(new Uint8Array([3, 4]).buffer)
+    await flush()
+    // seg2.ts must NOT be fetched by the background preloader after clearPreloadExcept('1_42')!
+    expect(h.fetchCalls).not.toContain('https://cdn.example/mid/seg2.ts')
+    expect(getPreloadedResource('https://cdn.example/mid/seg0.ts')).not.toBeNull()
+    expect(getPreloadedResource('https://cdn.example/mid/seg1.ts')).not.toBeNull()
+  })
+
+  test('takePreloadedBlobBytes falls back to preloaded or in-flight direct audio URL bytes', async () => {
+    h.setVkUrl('https://cdn.example/direct/wave.mp3')
+    syncNextPreload(vkTrack(43))
+    await flush()
+    // Still in-flight: takePreloadedBlobBytes returns a Promise for the in-flight bytes.
+    const pendingBytes = takePreloadedBlobBytes('https://cdn.example/direct/wave.mp3')
+    expect(pendingBytes).toBeInstanceOf(Promise)
+    h.pending.get('https://cdn.example/direct/wave.mp3')?.resolve(new Uint8Array([5, 6, 7]).buffer)
+    const resolved = await pendingBytes
+    expect(new Uint8Array(resolved as ArrayBuffer)).toEqual(new Uint8Array([5, 6, 7]))
   })
 })

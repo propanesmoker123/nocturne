@@ -55,14 +55,26 @@ export const useSpotify = create<SpotifyLive>(() => ({ status: { open: false }, 
 
 let available = false
 let owner = false
-let lastPlaying: boolean | null = null
 let pages = 0
+let controlEpoch = 0
+let lastRoguePauseAt = 0
 const sync = () => useSpotify.setState({ owner: available && owner })
 
 export const spotifyOwnsPlayback = () => available && owner && usePlayer.getState().current?.service !== 'spotify'
-export function claimSpotifyPlayback() { available = true; owner = true; lastPlaying = false; sync(); usePlayer.getState().pause() }
+export function claimSpotifyPlayback() {
+  controlEpoch++
+  reading = null
+  available = true
+  owner = true
+  sync()
+  usePlayer.getState().pause()
+}
 export function releaseSpotifyPlayback() {
-  available = false; owner = false; lastPlaying = null
+  controlEpoch++
+  reading = null
+  available = false
+  owner = false
+  lastRoguePauseAt = 0
   useSpotify.setState({ owner: false, playing: false, track: null })
 }
 /** The Spotify page is on screen: its status is read even before the player is open. */
@@ -83,6 +95,7 @@ const seconds = (value: unknown) => (typeof value === 'number' && Number.isFinit
 export function readSpotifyTrack(raw: unknown): SpotifyTrack | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
+  if (r.isAd === true) return null
   const title = text(r.title)
   if (!title) return null
   const cover = typeof r.cover === 'string' && COVER.test(r.cover) ? r.cover : undefined
@@ -108,8 +121,9 @@ export function readSpotifyTrack(raw: unknown): SpotifyTrack | null {
 let refreshSoon: ReturnType<typeof setTimeout> | undefined
 export async function spotifyControl(action: SpotifyAction, value?: number) {
   if (!isTauri()) return false
+  controlEpoch++
+  reading = null
   const changed = await invoke<boolean>('spotify_control', value === undefined ? { action } : { action, value })
-  if (changed && (action === 'pause' || action === 'play')) lastPlaying = action === 'play'
   // Spotify's bar updates a moment after a click: read it again to follow at once.
   if (changed && action !== 'reload') {
     clearTimeout(refreshSoon)
@@ -162,11 +176,23 @@ let reading: Promise<SpotifyStatus> | null = null
 export function spotifyStatus(): Promise<SpotifyStatus> {
   if (!isTauri()) return Promise.resolve({ open: false })
   // One reading at a time: the page, the poller and a click may ask together.
-  reading ??= invoke<SpotifyStatus>('spotify_status').then(apply).finally(() => { reading = null })
-  return reading
+  if (reading) return reading
+  const epochAtStart = controlEpoch
+  const req = invoke<SpotifyStatus>('spotify_status')
+    .then((raw) => apply(raw, epochAtStart))
+    .finally(() => {
+      if (reading === req) reading = null
+    })
+  reading = req
+  return req
 }
-function apply(raw: SpotifyStatus): SpotifyStatus {
-  const status: SpotifyStatus = { ...raw, account: raw.account === 'in' || raw.account === 'out' ? raw.account : null, nowPlaying: raw.open ? readSpotifyTrack(raw.nowPlaying) : null }
+function apply(raw: SpotifyStatus, epochAtStart: number): SpotifyStatus {
+  const rawNp = raw.nowPlaying && typeof raw.nowPlaying === 'object' ? (raw.nowPlaying as unknown as Record<string, unknown>) : null
+  const rawIsAd = rawNp?.isAd === true
+  const parsedTrack = raw.open && !rawIsAd ? readSpotifyTrack(raw.nowPlaying) : null
+  const status: SpotifyStatus = { ...raw, account: raw.account === 'in' || raw.account === 'out' ? raw.account : null, nowPlaying: parsedTrack }
+  // Discard stale polls that started before a newer playback control or VK/SC ownership takeover.
+  if (epochAtStart !== controlEpoch) return status
   available = status.open
   if (!status.open) {
     releaseSpotifyPlayback()
@@ -174,38 +200,57 @@ function apply(raw: SpotifyStatus): SpotifyStatus {
     return status
   }
   const nativeSpotify = usePlayer.getState().current?.service === 'spotify'
-  if (status.playing != null) {
-    if (status.playing && lastPlaying === false && !owner && !nativeSpotify) { owner = true; usePlayer.getState().pause() }
-    lastPlaying = status.playing
+  // The hidden 2x2 Spotify WebView must NEVER auto-hijack playback or pause VK/SC on its own.
+  // If a background ad or rogue stream starts while Nocturne is not playing Spotify, suppress it immediately.
+  if (!owner && !nativeSpotify && (status.playing === true || rawIsAd)) {
+    const now = Date.now()
+    if (now - lastRoguePauseAt >= 1500) {
+      lastRoguePauseAt = now
+      void invoke<boolean>('spotify_control', { action: 'pause' }).catch(() => {})
+    }
   }
-  useSpotify.setState({ status, owner: available && owner && !nativeSpotify, playing: status.playing === true, track: status.nowPlaying ?? null, at: Date.now() })
+  const effectiveOwner = available && owner && !nativeSpotify
+  useSpotify.setState({
+    status,
+    owner: effectiveOwner,
+    playing: effectiveOwner && !rawIsAd && status.playing === true,
+    track: effectiveOwner ? parsedTrack : null,
+    at: Date.now(),
+  })
   return status
 }
 
 export function startSpotifyBridge(): () => void {
   if (!isTauri()) return () => {}
-  // A track started in VK/SC takes over; an unopened Spotify view does not add any work.
+  // A track started in VK/SC takes over and pauses any hidden Spotify stream.
   const off = usePlayer.subscribe((state, previous) => {
     if (state.current?.service === 'spotify') {
       if (owner) {
+        controlEpoch++
+        reading = null
         owner = false
-        sync()
+        useSpotify.setState({ owner: false, playing: false, track: null })
       }
-    } else if (state.isPlaying && !previous.isPlaying) {
+    } else if (
+      (state.isPlaying && (!previous.isPlaying || owner)) ||
+      (previous.current?.service === 'spotify' && state.current?.key !== previous.current?.key)
+    ) {
+      controlEpoch++
+      reading = null
       owner = false
-      sync()
+      useSpotify.setState({ owner: false, playing: false, track: null })
       if (available) void spotifyControl('pause').catch(() => {})
     }
   })
-  // While external Spotify plays, the island, the tray and Windows' media flyout follow its track.
+  // Poll external Spotify only when explicitly claimed or while a Spotify page is actively mounted.
   // Skip redundant polling when native Spotify playback is already polled by Engine.
   let tick = 0
   const timer = setInterval(() => {
-    if (!available && !pages) return
+    if (!owner && !pages) return
     if (usePlayer.getState().current?.service === 'spotify') return
     tick++
-    const { owner, playing } = useSpotify.getState()
-    if ((owner && playing) || tick % 3 === 0) void spotifyStatus().catch(() => {})
+    const { owner: isOwner, playing } = useSpotify.getState()
+    if ((isOwner && playing) || tick % 3 === 0) void spotifyStatus().catch(() => {})
   }, 2000)
   return () => { off(); clearInterval(timer); clearTimeout(refreshSoon) }
 }

@@ -63,7 +63,7 @@ export function next<T>(q: QueueState<T>, isPlayable: (t: T) => boolean, manual:
 
 export function prev<T>(q: QueueState<T>, isPlayable: (t: T) => boolean): QueueState<T> | null {
   if (q.order.length === 0) return null
-  return seek(q, -1, q.repeat === 'all', isPlayable)
+  return seek(q, -1, q.repeat !== 'off', isPlayable)
 }
 
 export interface Around<T> {

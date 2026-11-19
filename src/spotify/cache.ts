@@ -7,6 +7,7 @@ const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000
 const SNAP_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_SNAP_ENTRIES = 20
 const MAX_TOTAL_CHARS = 750_000
+const FLUSH_DEBOUNCE_MS = 600
 
 export interface SpotifySessionSnapshot {
   signedIn: boolean
@@ -22,6 +23,12 @@ interface SnapRecord {
 }
 
 type SnapStore = Record<string, SnapRecord>
+
+let memSnaps: SnapStore | null = null
+let memStorage: Storage | null = null
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+let dirty = false
+let unloadHooked = false
 
 function storage(): Storage | null {
   try {
@@ -70,9 +77,7 @@ export function writeSpotifySessionSnapshot(signedIn: boolean, user: { id: strin
   } catch {}
 }
 
-function readSnapStore(now = Date.now()): SnapStore {
-  const ls = storage()
-  if (!ls) return {}
+function parseSnapStore(ls: Storage, now: number): SnapStore {
   try {
     const raw = ls.getItem(SNAP_KEY)
     if (!raw) return {}
@@ -92,10 +97,43 @@ function readSnapStore(now = Date.now()): SnapStore {
   }
 }
 
-function writeSnapStore(store: SnapStore): void {
+function getSnapStore(now = Date.now()): SnapStore | null {
   const ls = storage()
-  if (!ls) return
-  let entries = Object.entries(store).sort((a, b) => a[1].at - b[1].at)
+  if (!ls) {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    memSnaps = null
+    memStorage = null
+    dirty = false
+    return null
+  }
+  if (ls !== memStorage || !memSnaps) {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    dirty = false
+    memStorage = ls
+    memSnaps = parseSnapStore(ls, now)
+  }
+  return memSnaps
+}
+
+export function flushSpotifyCache(): void {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  if (!dirty || !memSnaps) return
+  const ls = storage()
+  if (!ls || ls !== memStorage) {
+    dirty = false
+    return
+  }
+  dirty = false
+  let entries = Object.entries(memSnaps).sort((a, b) => a[1].at - b[1].at)
   if (entries.length > MAX_SNAP_ENTRIES) {
     entries = entries.slice(entries.length - MAX_SNAP_ENTRIES)
   }
@@ -116,10 +154,22 @@ function writeSnapStore(store: SnapStore): void {
   }
 }
 
+function scheduleSnapFlush(): void {
+  dirty = true
+  if (!unloadHooked && typeof window !== 'undefined') {
+    unloadHooked = true
+    window.addEventListener('pagehide', flushSpotifyCache)
+    window.addEventListener('beforeunload', flushSpotifyCache)
+  }
+  if (flushTimer !== null) clearTimeout(flushTimer)
+  flushTimer = setTimeout(flushSpotifyCache, FLUSH_DEBOUNCE_MS)
+}
+
 export function writeSpotifyQuerySnapshot(key: QueryKey, data: unknown, opts?: { infinite?: boolean }): void {
   if (data === undefined || data === null) return
   const now = Date.now()
-  const store = readSnapStore(now)
+  const store = getSnapStore(now)
+  if (!store) return
   const id = serializeKey(key)
   store[id] = {
     key,
@@ -127,14 +177,25 @@ export function writeSpotifyQuerySnapshot(key: QueryKey, data: unknown, opts?: {
     data,
     at: now,
   }
-  writeSnapStore(store)
+  const entries = Object.entries(store)
+  if (entries.length > MAX_SNAP_ENTRIES) {
+    entries.sort((a, b) => a[1].at - b[1].at)
+    const drop = entries.length - MAX_SNAP_ENTRIES
+    for (let i = 0; i < drop; i++) delete store[entries[i]![0]]
+  }
+  scheduleSnapFlush()
 }
 
 /** Preloads persisted Spotify snapshots into React Query with stale updatedAt so UI paints instantly and revalidates in background. */
 export function hydrateSpotifySnapshots(qc: QueryClient, now = Date.now()): number {
-  const store = readSnapStore(now)
+  const store = getSnapStore(now)
+  if (!store) return 0
   let hydrated = 0
-  for (const rec of Object.values(store)) {
+  for (const [id, rec] of Object.entries(store)) {
+    if (now - rec.at > SNAP_TTL_MS) {
+      delete store[id]
+      continue
+    }
     // Only hydrate if not already populated in memory
     if (qc.getQueryData(rec.key) !== undefined) continue
     const value = rec.infinite ? { pages: [rec.data], pageParams: [0] } : rec.data
@@ -147,7 +208,14 @@ export function hydrateSpotifySnapshots(qc: QueryClient, now = Date.now()): numb
 }
 
 export function clearSpotifyCache(): void {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  dirty = false
+  memSnaps = {}
   const ls = storage()
+  memStorage = ls
   if (!ls) return
   try {
     ls.removeItem(SESSION_KEY)

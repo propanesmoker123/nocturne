@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { renderSVG } from 'uqr'
 import { useRouter } from '../app/router'
 import { useSheet, type SheetRequest } from '../app/sheetStore'
@@ -100,6 +100,14 @@ export function AlbumJoinBody() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [found, setFound] = useState<{ code: string; doc: AlbumDoc; recode: boolean } | null>(null)
+  const aliveRef = useRef(true)
+
+  useEffect(() => {
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
 
   const look = async (e: FormEvent) => {
     e.preventDefault()
@@ -107,16 +115,22 @@ export function AlbumJoinBody() {
     if (!code) return setError('Это не код альбома — 16 букв и цифр или ссылка nocturne://album')
     setError('')
     setBusy(true)
-    const doc = await readAlbum(code, 10_000)
-    setBusy(false)
-    if (!doc || doc.meta.deletedAt) return setError('Альбом с этим кодом не найден. Проверьте код или подключение к сети')
-    const kind = joinKind(doc.id, code)
-    if (kind === 'have') {
-      close()
-      useRouter.getState().push({ name: 'album', id: doc.id })
-      return toast('Этот альбом уже есть у вас', 'info')
+    try {
+      const doc = await readAlbum(code, 10_000)
+      if (!aliveRef.current) return
+      if (!doc || doc.meta.deletedAt) return setError('Альбом с этим кодом не найден. Проверьте код или подключение к сети')
+      const kind = joinKind(doc.id, code)
+      if (kind === 'have') {
+        close()
+        useRouter.getState().push({ name: 'album', id: doc.id })
+        return toast('Этот альбом уже есть у вас', 'info')
+      }
+      setFound({ code, doc, recode: kind === 'recode' })
+    } catch {
+      if (aliveRef.current) setError('Не удалось найти альбом. Проверьте подключение к сети')
+    } finally {
+      if (aliveRef.current) setBusy(false)
     }
-    setFound({ code, doc, recode: kind === 'recode' })
   }
 
   const add = () => {

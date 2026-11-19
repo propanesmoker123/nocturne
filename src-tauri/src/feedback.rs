@@ -16,6 +16,7 @@ pub const RELEASES_ENDPOINT: &str = "https://api.github.com/repos/propanesmoker1
 pub const MAX_MESSAGE_CHARS: usize = 4000;
 pub const MAX_CONTACT_CHARS: usize = 160;
 const MAX_SAVED_REPORTS: usize = 30;
+const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 const SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -216,20 +217,26 @@ fn identity_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn load_or_create_identity_at(path: &Path) -> Result<ClientIdentity, String> {
     let _guard = id_lock().lock().unwrap_or_else(|p| p.into_inner());
-    if let Ok(raw) = fs::read_to_string(path) {
-        if let Ok(parsed) = serde_json::from_str::<ClientIdentity>(&raw) {
-            if valid_id(&parsed.client_id) && valid_token(&parsed.client_token) {
-                return Ok(parsed);
+    match fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str::<ClientIdentity>(&raw) {
+            Ok(parsed) if valid_id(&parsed.client_id) && valid_token(&parsed.client_token) => Ok(parsed),
+            _ => {
+                let backup = path.with_extension(format!("corrupt-{}.json", now_ms()));
+                let _ = fs::copy(path, &backup);
+                Err("Файл профиля обратной связи повреждён".to_string())
             }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let identity = ClientIdentity {
+                client_id: uuid::Uuid::new_v4().to_string(),
+                client_token: random_hex_token()?,
+                submitted_reports: Vec::new(),
+            };
+            save_identity_at(path, &identity)?;
+            Ok(identity)
         }
+        Err(e) => Err(format!("Не удалось прочитать ключ устройства: {e}")),
     }
-    let identity = ClientIdentity {
-        client_id: uuid::Uuid::new_v4().to_string(),
-        client_token: random_hex_token()?,
-        submitted_reports: Vec::new(),
-    };
-    save_identity_at(path, &identity)?;
-    Ok(identity)
 }
 
 fn save_identity_at(path: &Path, identity: &ClientIdentity) -> Result<(), String> {
@@ -238,9 +245,29 @@ fn save_identity_at(path: &Path, identity: &ClientIdentity) -> Result<(), String
     }
     let json = serde_json::to_string_pretty(identity).map_err(|_| "Ошибка сериализации профиля".to_string())?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|_| "Не удалось сохранить ключ устройства".to_string())?;
-    fs::rename(&tmp, path).map_err(|_| "Не удалось обновить ключ устройства".to_string())?;
+    if fs::write(&tmp, json).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return Err("Не удалось сохранить ключ устройства".to_string());
+    }
+    if fs::rename(&tmp, path).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return Err("Не удалось обновить ключ устройства".to_string());
+    }
     Ok(())
+}
+
+async fn read_text_bounded(mut resp: reqwest::Response, max_bytes: usize) -> Result<String, String> {
+    if resp.content_length().is_some_and(|n| n > max_bytes as u64) {
+        return Err("response too large".into());
+    }
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.without_url().to_string())? {
+        if buf.len() + chunk.len() > max_bytes {
+            return Err("response too large".into());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn record_submitted_report_at(path: &Path, report: SubmittedReport) {
@@ -254,11 +281,10 @@ fn record_submitted_report_at(path: &Path, report: SubmittedReport) {
     let _ = save_identity_at(path, &identity);
 }
 
-pub fn parse_github_releases(raw_json: &str) -> Vec<ReleaseNote> {
-    let Ok(items) = serde_json::from_str::<Vec<GithubReleaseRaw>>(raw_json) else {
-        return Vec::new();
-    };
-    items
+pub fn parse_github_releases(raw_json: &str) -> Result<Vec<ReleaseNote>, String> {
+    let items: Vec<GithubReleaseRaw> =
+        serde_json::from_str(raw_json).map_err(|_| "Некорректный ответ GitHub API".to_string())?;
+    Ok(items
         .into_iter()
         .filter(|r| !r.draft && !r.prerelease)
         .filter_map(|r| {
@@ -279,7 +305,7 @@ pub fn parse_github_releases(raw_json: &str) -> Vec<ReleaseNote> {
                 url: r.html_url,
             })
         })
-        .collect()
+        .collect())
 }
 
 pub fn parse_inbox_response(raw_json: &str) -> Result<(Vec<RelayReply>, Vec<RelayAnnouncement>), String> {
@@ -299,8 +325,14 @@ pub async fn send_feedback(
 ) -> Result<(), String> {
     let (clean_kind, clean_message, clean_contact) = validate_input(&kind, &message, contact.as_deref())?;
     let id_path = identity_path(&app)?;
-    let identity = load_or_create_identity_at(&id_path)?;
-    let log = if include_log { journal::journal_tail() } else { String::new() };
+    let id_path_load = id_path.clone();
+    let (identity, log) = tauri::async_runtime::spawn_blocking(move || -> Result<(ClientIdentity, String), String> {
+        let identity = load_or_create_identity_at(&id_path_load)?;
+        let log = if include_log { journal::tail() } else { String::new() };
+        Ok((identity, log))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     let payload = FeedbackPayload {
         kind: clean_kind.to_string(),
@@ -339,21 +371,19 @@ pub async fn send_feedback(
         return Err(msg);
     }
 
-    let body_text = resp.text().await.unwrap_or_default();
+    let body_text = read_text_bounded(resp, MAX_RESPONSE_BYTES).await.unwrap_or_default();
     let report_id = serde_json::from_str::<serde_json::Value>(&body_text)
         .ok()
         .and_then(|v| v.get("reportId")?.as_str().map(str::to_string))
         .unwrap_or_else(|| format!("local_{}", now_ms()));
 
-    record_submitted_report_at(
-        &id_path,
-        SubmittedReport {
-            id: report_id,
-            kind: clean_kind.to_string(),
-            preview: preview_text(&clean_message, 110),
-            created_at: now_ms(),
-        },
-    );
+    let report = SubmittedReport {
+        id: report_id,
+        kind: clean_kind.to_string(),
+        preview: preview_text(&clean_message, 110),
+        created_at: now_ms(),
+    };
+    let _ = tauri::async_runtime::spawn_blocking(move || record_submitted_report_at(&id_path, report)).await;
 
     journal::write("app", &format!("feedback sent: kind={clean_kind} log={include_log}"));
     Ok(())
@@ -365,7 +395,9 @@ pub async fn fetch_notifications(
     http: State<'_, Http>,
 ) -> Result<NotificationsPayload, String> {
     let id_path = identity_path(&app)?;
-    let identity = load_or_create_identity_at(&id_path)?;
+    let identity = tauri::async_runtime::spawn_blocking(move || load_or_create_identity_at(&id_path))
+        .await
+        .map_err(|e| e.to_string())??;
 
     let inbox_req = http
         .client
@@ -391,7 +423,7 @@ pub async fn fetch_notifications(
     let mut announcements = Vec::new();
     if let Ok(resp) = inbox_res {
         if resp.status().is_success() {
-            if let Ok(text) = resp.text().await {
+            if let Ok(text) = read_text_bounded(resp, MAX_RESPONSE_BYTES).await {
                 if let Ok((r, a)) = parse_inbox_response(&text) {
                     inbox_ok = true;
                     replies = r;
@@ -407,9 +439,11 @@ pub async fn fetch_notifications(
     let mut releases = Vec::new();
     if let Ok(resp) = releases_res {
         if resp.status().is_success() {
-            if let Ok(text) = resp.text().await {
-                releases_ok = true;
-                releases = parse_github_releases(&text);
+            if let Ok(text) = read_text_bounded(resp, MAX_RESPONSE_BYTES).await {
+                if let Ok(parsed) = parse_github_releases(&text) {
+                    releases_ok = true;
+                    releases = parsed;
+                }
             }
         } else {
             journal::write("app", &format!("releases fetch failed: HTTP {}", resp.status().as_u16()));
@@ -487,10 +521,36 @@ mod tests {
             { "tag_name": "v0.3.8-beta", "name": "Beta", "body": "wip", "draft": false, "prerelease": true, "published_at": "2026-11-18T10:00:00Z", "html_url": "" },
             { "tag_name": "v0.3.9", "name": "Draft", "body": "", "draft": true, "prerelease": false, "published_at": "", "html_url": "" }
         ]"#;
-        let parsed = parse_github_releases(raw);
+        let parsed = parse_github_releases(raw).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].version, "0.3.7");
         assert_eq!(parsed[0].notes, "Исправления: Spotify.");
+        assert!(parse_github_releases("<html>rate limit</html>").is_err());
+    }
+
+    #[test]
+    fn identity_loader_never_clobbers_corrupt_or_unreadable_files() {
+        let dir = std::env::temp_dir().join(format!("nocturne_fb_corrupt_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // Corrupt JSON: returns Err, preserves original file, creates backup.
+        let corrupt = dir.join("feedback-client.json");
+        fs::write(&corrupt, "{not valid json").unwrap();
+        assert!(load_or_create_identity_at(&corrupt).is_err());
+        assert_eq!(fs::read_to_string(&corrupt).unwrap(), "{not valid json");
+        let backups: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+
+        // Non-NotFound I/O error (path is a directory): returns Err without creating a file.
+        let as_dir = dir.join("dir-as-file");
+        fs::create_dir(&as_dir).unwrap();
+        assert!(load_or_create_identity_at(&as_dir).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

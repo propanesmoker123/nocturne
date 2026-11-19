@@ -4,9 +4,11 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { showMenu } from '../app/menu'
 import { useRouter } from '../app/router'
 import { openTrackMenu, playlistMenuItems } from '../app/trackActions'
+import { useUi } from '../app/ui'
 import { isAlgorithmicVkPlaylist, needsDerivedPlaylistCovers, pickRealTrackCovers } from '../lib/covers'
 import { formatPlays, formatPlaysShort, formatTime, pluralRu } from '../lib/format'
 import { useSettings, type WallpaperConfig } from '../lib/settings'
+import { useWindowVisibility } from '../lib/windowVisibility'
 import { upcoming } from '../player/queue'
 import { usePlayer } from '../player/store'
 import * as sc from '../sc/api'
@@ -198,9 +200,13 @@ export function PlaylistCard({ playlist: p, note }: { playlist: Playlist; note?:
             aria-label={`Играть «${p.title}»`}
             onClick={async (e) => {
               e.stopPropagation()
+              if (busy) return
               setBusy(true)
-              await playPlaylist(p)
-              setBusy(false)
+              try {
+                await playPlaylist(p)
+              } finally {
+                setBusy(false)
+              }
             }}
           >
             {busy ? <Spinner size={16} /> : <IconPlay size={17} />}
@@ -294,9 +300,13 @@ export function RecommendedCard({ item }: { item: RecommendedPlaylist }) {
             aria-label={`Играть «${p.title}»`}
             onClick={async (e) => {
               e.stopPropagation()
+              if (busy) return
               setBusy(true)
-              await playPlaylist(resolved)
-              setBusy(false)
+              try {
+                await playPlaylist(resolved)
+              } finally {
+                setBusy(false)
+              }
             }}
           >
             {busy ? <Spinner size={15} /> : <IconPlay size={15} />}
@@ -441,6 +451,8 @@ export function MixHero({
   const queue = usePlayer((p) => p.queue)
   const [busy, setBusy] = useState(false)
   const wallpaper = useSettings((x) => x.wallpaper)
+  const visible = useWindowVisibility((x) => x.visible)
+  const nowPlaying = useUi((u) => u.nowPlaying)
   const playingMix = source?.kind === 'mix' && (source.service ?? 'vk') === service
   const live = playingMix && current ? current : null
   // Front card first: only real track covers from what plays now / comes next, topped up from the catalog.
@@ -460,6 +472,7 @@ export function MixHero({
       aria-label={title.replace(/^Слушать\s+/i, '')}
       data-service={service}
       data-live={(playingMix && isPlaying) || undefined}
+      data-paused={!visible || nowPlaying || undefined}
       data-aura={aura.kind}
       style={aura.kind === 'colors' ? ({ ['--aura-1' as string]: aura.colors[0], ['--aura-2' as string]: aura.colors[1], ['--aura-3' as string]: aura.colors[2] } as CSSProperties) : undefined}
     >
@@ -485,9 +498,13 @@ export function MixHero({
                 usePlayer.getState().toggle()
                 return
               }
+              if (busy) return
               setBusy(true)
-              await usePlayer.getState().playMix(service)
-              setBusy(false)
+              try {
+                await usePlayer.getState().playMix(service)
+              } finally {
+                setBusy(false)
+              }
             }}
           >
             {busy ? <Spinner size={18} /> : playingMix && isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}

@@ -38,6 +38,8 @@ export const useWhisperState = create<WhisperState>((set) => ({
   },
   async clearModelCache() {
     if (!isTauri()) return
+    if (useWhisperState.getState().busy) return
+    terminateWorker()
     await invoke('whisper_model_clear')
     set({ diskBytes: 0, filesCount: 0, stage: '', error: null })
   },
@@ -50,16 +52,70 @@ interface ProbeReply {
   contentRange?: string
 }
 
+const WORKER_IDLE_TTL_MS = 60_000
+
 let worker: Worker | null = null
+let idleTimer: ReturnType<typeof setTimeout> | null = null
 let jobSeq = 1
 const pendingJobs = new Map<number, { resolve: (chunks: WhisperWordChunk[]) => void; reject: (err: Error) => void }>()
-let unlistenProgress: (() => void) | null = null
+let progressListening = false
+
+function clearIdleTimer() {
+  if (idleTimer !== null) {
+    clearTimeout(idleTimer)
+    idleTimer = null
+  }
+}
+
+function terminateWorker(reason?: Error) {
+  clearIdleTimer()
+  const w = worker
+  worker = null
+  if (w) {
+    try {
+      w.terminate()
+    } catch {
+      /* ignore */
+    }
+  }
+  if (pendingJobs.size) {
+    const err = reason ?? new Error('Whisper worker terminated')
+    const jobs = [...pendingJobs.values()]
+    pendingJobs.clear()
+    for (const job of jobs) job.reject(err)
+  }
+}
+
+function scheduleIdleTerminate() {
+  clearIdleTimer()
+  if (!worker || pendingJobs.size > 0 || useWhisperState.getState().busy) return
+  idleTimer = setTimeout(() => {
+    idleTimer = null
+    if (pendingJobs.size === 0 && !useWhisperState.getState().busy) terminateWorker()
+  }, WORKER_IDLE_TTL_MS)
+}
 
 function ensureWorker(): Worker {
+  clearIdleTimer()
   if (worker) return worker
-  worker = new Worker(new URL('./whisperWorker.ts', import.meta.url), { type: 'module' })
+  const w = new Worker(new URL('./whisperWorker.ts', import.meta.url), { type: 'module' })
+  worker = w
 
-  worker.addEventListener('message', async (ev: MessageEvent) => {
+  const onCrash = (message: string) => {
+    if (worker !== w) return
+    terminateWorker(new Error(message))
+  }
+
+  w.addEventListener('error', (ev: ErrorEvent) => {
+    onCrash(ev.message || 'Whisper worker crashed')
+  })
+
+  w.addEventListener('messageerror', () => {
+    onCrash('Whisper worker message deserialization failed')
+  })
+
+  w.addEventListener('message', async (ev: MessageEvent) => {
+    if (worker !== w) return
     const msg = ev.data as
       | { type: 'net-fetch'; id: number; url: string; isProbe: boolean }
       | { type: 'progress'; jobId: number; stage: string; progress?: number }
@@ -68,13 +124,16 @@ function ensureWorker(): Worker {
 
     if (msg.type === 'net-fetch') {
       if (!isTauri()) {
-        worker?.postMessage({ type: 'net-reply', id: msg.id, reply: { ok: false, status: 500, error: 'Tauri required' } })
+        if (worker === w) {
+          w.postMessage({ type: 'net-reply', id: msg.id, reply: { ok: false, status: 500, error: 'Tauri required' } })
+        }
         return
       }
       try {
         if (msg.isProbe) {
           const p = await invoke<ProbeReply>('whisper_probe_asset', { url: msg.url })
-          worker?.postMessage({
+          if (worker !== w) return
+          w.postMessage({
             type: 'net-reply',
             id: msg.id,
             reply: {
@@ -88,7 +147,8 @@ function ensureWorker(): Worker {
           })
         } else {
           const bytes = await invoke<ArrayBuffer>('whisper_fetch_asset', { url: msg.url })
-          worker?.postMessage(
+          if (worker !== w) return
+          w.postMessage(
             {
               type: 'net-reply',
               id: msg.id,
@@ -104,9 +164,10 @@ function ensureWorker(): Worker {
           )
         }
       } catch (e) {
+        if (worker !== w) return
         const s = String(e)
         const is404 = s.includes('HTTP_404')
-        worker?.postMessage({
+        w.postMessage({
           type: 'net-reply',
           id: msg.id,
           reply: { ok: false, status: is404 ? 404 : 500, error: s },
@@ -130,7 +191,8 @@ function ensureWorker(): Worker {
     else job.reject(new Error(msg.error || 'Ошибка Whisper AI'))
   })
 
-  if (!unlistenProgress && isTauri()) {
+  if (!progressListening && isTauri()) {
+    progressListening = true
     void listen<{ loaded: number; total: number }>('whisper:progress', (e) => {
       if (!useWhisperState.getState().busy) return
       const { loaded, total } = e.payload
@@ -141,12 +203,12 @@ function ensureWorker(): Worker {
           progress: pct,
         })
       }
-    }).then((unlisten) => {
-      unlistenProgress = unlisten
+    }).catch(() => {
+      progressListening = false
     })
   }
 
-  return worker
+  return w
 }
 
 export async function preloadWhisperModel(modelSize?: WhisperModelSize): Promise<void> {
@@ -165,6 +227,8 @@ export async function preloadWhisperModel(modelSize?: WhisperModelSize): Promise
   } catch (e) {
     useWhisperState.setState({ busy: false, stage: '', progress: null, error: e instanceof Error ? e.message : String(e) })
     throw e
+  } finally {
+    scheduleIdleTerminate()
   }
 }
 
@@ -219,5 +283,7 @@ export async function runWhisperForTrack(track: Track, existingLyrics?: Lyrics |
     const msg = e instanceof Error ? e.message : String(e)
     useWhisperState.setState({ busy: false, activeTrackKey: null, stage: '', progress: null, error: msg })
     return null
+  } finally {
+    scheduleIdleTerminate()
   }
 }

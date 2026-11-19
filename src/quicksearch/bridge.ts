@@ -25,38 +25,39 @@ import { quickResults, toQuickTrack } from './results'
 
 const LABEL = 'search'
 const LIBRARY_TTL = 60_000
+const MAX_LIBRARY_PAGES = 40
 
-let ownCache: { at: number; items: Track[] } | null = null
-let ownLoading: Promise<Track[]> | null = null
+let ownCache: { me: number; at: number; items: Track[] } | null = null
+let ownLoading: { me: number; promise: Promise<Track[]> } | null = null
 
 /** All of «Моя музыка»: from the shared cache when a page already loaded every page, else fetched at most once a minute. */
 function wholeLibrary(): Promise<Track[]> {
+  const me = vk.getMeId()
   const shared = queryClient.getQueryData<InfiniteData<Page<Track>>>(myTracksKey())
   if (shared) {
     const items = shared.pages.flatMap((p) => p.items)
     if (items.length >= (shared.pages[0]?.count ?? 0)) return Promise.resolve(items)
   }
-  if (ownCache && Date.now() - ownCache.at < LIBRARY_TTL) return Promise.resolve(ownCache.items)
-  ownLoading ??= (async () => {
-    const me = vk.getMeId()
+  if (ownCache && ownCache.me === me && Date.now() - ownCache.at < LIBRARY_TTL) return Promise.resolve(ownCache.items)
+  if (ownLoading && ownLoading.me === me) return ownLoading.promise
+  const promise = (async () => {
     const items: Track[] = []
-    for (;;) {
+    for (let pages = 0; pages < MAX_LIBRARY_PAGES; pages++) {
       const page = await vk.getTracks(me, items.length, 500)
       items.push(...page.items)
       if (page.items.length === 0 || items.length >= page.count) break
     }
-    ownCache = { at: Date.now(), items }
+    ownCache = { me, at: Date.now(), items }
     return items
-  })().finally(() => (ownLoading = null))
-  return ownLoading
+  })().finally(() => {
+    if (ownLoading?.promise === promise) ownLoading = null
+  })
+  ownLoading = { me, promise }
+  return promise
 }
 
 const SC_LIKES_MAX = 2000
-let scLikesFill: { me: number; promise: Promise<void>; listeners: Set<(items: Track[], partial: boolean) => void> } | null = null
-
-function notifyScListeners(listeners: Set<(items: Track[], partial: boolean) => void>, items: Track[], partial: boolean) {
-  for (const fn of listeners) fn(items, partial)
-}
+let scLikesFill: { me: number; promise: Promise<void>; onProgress: ((items: Track[], partial: boolean) => void) | null } | null = null
 
 /** Ensures SoundCloud likes fill into the shared `scKeys.likes(me)` infinite cache, notifying on progress. */
 async function scLikes(onProgress?: (items: Track[], partial: boolean) => void): Promise<{ items: Track[]; partial: boolean }> {
@@ -80,16 +81,19 @@ async function scLikes(onProgress?: (items: Track[], partial: boolean) => void):
   if (!next) return { items: initialItems, partial: false }
 
   if (!scLikesFill || scLikesFill.me !== me) {
-    const listeners = new Set<(items: Track[], partial: boolean) => void>()
-    if (onProgress) listeners.add(onProgress)
-    const promise = (async () => {
+    const entry = {
+      me,
+      promise: Promise.resolve(),
+      onProgress: onProgress ?? null,
+    }
+    entry.promise = (async () => {
       try {
         for (;;) {
           const cur = queryClient.getQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me))
           if (!cur) break
           const cursor = nextCursor(cur.pages, SC_LIKES_MAX)
           if (!cursor) {
-            notifyScListeners(listeners, cur.pages.flatMap((p) => p.items), false)
+            entry.onProgress?.(cur.pages.flatMap((p) => p.items), false)
             break
           }
           const page = await sc.getLikes(me, cursor)
@@ -102,19 +106,20 @@ async function scLikes(onProgress?: (items: Track[], partial: boolean) => void):
           })
           const items = updated?.pages.flatMap((p) => p.items) ?? []
           const more = Boolean(updated && nextCursor(updated.pages, SC_LIKES_MAX))
-          notifyScListeners(listeners, items, more)
+          entry.onProgress?.(items, more)
           if (!more || !page.items.length) break
         }
       } catch {
         const cur = queryClient.getQueryData<InfiniteData<sc.ScPage<Track>>>(scKeys.likes(me))
-        notifyScListeners(listeners, cur?.pages.flatMap((p) => p.items) ?? [], false)
+        entry.onProgress?.(cur?.pages.flatMap((p) => p.items) ?? [], false)
       } finally {
-        if (scLikesFill?.me === me) scLikesFill = null
+        if (scLikesFill === entry) scLikesFill = null
       }
     })()
-    scLikesFill = { me, promise, listeners }
+    scLikesFill = entry
   } else if (onProgress) {
-    scLikesFill.listeners.add(onProgress)
+    // Replace prior progress callback rather than pushing forever into a Set.
+    scLikesFill.onProgress = onProgress
   }
 
   return { items: initialItems, partial: true }
@@ -145,21 +150,23 @@ async function spLikes(): Promise<Track[]> {
   })
 }
 
-let newest = -1
-let shown: { q: string; own: Track[]; others: Track[] } = { q: '', own: [], others: [] }
+let activeReq = 0
+let shown: { q: string; service: 'vk' | 'sc' | 'spotify'; own: Track[]; others: Track[] } = { q: '', service: 'vk', own: [], others: [] }
 
 function answer({ seq, q }: QuickQuery) {
-  newest = Math.max(newest, seq)
+  // Use a bridge-local request counter so quicksearch WebView reloads (which reset seq to 1) never stall permanently.
+  const reqId = ++activeReq
   const term = q.trim()
   const service = useService.getState().current
+  if (service !== 'sc' && scLikesFill) scLikesFill.onProgress = null
   let own: Track[] | null = null
   let ownPartial = false
   let global: Track[] | null = null
   let error: string | null = null
   const publish = () => {
-    if (seq !== newest) return
+    if (reqId !== activeReq) return
     const found = quickResults(own ?? [], global ?? [], term)
-    shown = { q: term, ...found }
+    shown = { q: term, service, ...found }
     const payload: QuickResults = {
       seq,
       own: found.own.map(toQuickTrack),
@@ -222,9 +229,8 @@ function play({ key, next }: QuickPlay) {
   const index = at >= 0 ? at : shown.others.findIndex((t) => t.key === key)
   if (index < 0 || !list[index].playable) return
   const p = usePlayer.getState()
-  const service = useService.getState().current
   if (next) p.playNext([list[index]])
-  else p.playList(list, index, { source: { kind: 'list', service: service === 'spotify' ? 'spotify' : 'vk', label: `Поиск: «${shown.q}»` } })
+  else p.playList(list, index, { source: { kind: 'list', service: shown.service, label: `Поиск: «${shown.q}»` } })
 }
 
 /** The hotkey: show the panel over whatever is in front (or hide it if it already is). */
@@ -234,7 +240,11 @@ export function openQuickSearch() {
   void invoke('search_open').catch(() => {})
 }
 
+let started = false
+
 export function startQuickSearch() {
+  if (started) return
+  started = true
   void listen<QuickQuery>(EV.quickQuery, (e) => answer(e.payload))
   void listen<QuickPlay>(EV.quickPlay, (e) => play(e.payload))
 }

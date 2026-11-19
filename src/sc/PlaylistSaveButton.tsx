@@ -21,10 +21,17 @@ export function PlaylistSaveButton({ playlist }: { playlist: Playlist }) {
   if (!me || playlist.ownerId === me) return null
 
   const toggle = async () => {
-    if (pending.current) return
+    if (pending.current || saved.isFetching) return
     if (saved.isError) {
-      const result = await saved.refetch()
-      if (result.error) toast(describeScError(result.error), 'error')
+      pending.current = true
+      setBusy(true)
+      try {
+        const result = await saved.refetch()
+        if (result.error) toast(describeScError(result.error), 'error')
+      } finally {
+        pending.current = false
+        setBusy(false)
+      }
       return
     }
     if (!saved.data) return

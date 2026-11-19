@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { useSettings } from '../lib/settings'
 import { resample } from '../player/peaks'
 import { useWaveform } from '../player/waveformStore'
@@ -17,6 +17,7 @@ interface WaveformProps {
   disabled?: boolean
   onChange?: (v: number) => void
   onCommit?: (v: number) => void
+  onCancel?: () => void
   /** Played-part colour; by default the waveform setting or the app accent. */
   color?: string
 }
@@ -39,16 +40,21 @@ function useAccentVersion() {
 }
 
 /** Seek bar drawn as the track's real waveform, SoundCloud-style, in the app accent. */
-export function WaveformScrubber({ trackKey, value, buffered, height, label, valueText, step = 0.02, disabled, onChange, onCommit, color }: WaveformProps) {
+export function WaveformScrubber({ trackKey, value, buffered, height, label, valueText, step = 0.02, disabled, onChange, onCommit, onCancel, color }: WaveformProps) {
   const box = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const peaks = useWaveform((w) => (w.key === trackKey ? w.peaks : null))
   const [width, setWidth] = useState(0)
   const [drag, setDrag] = useState<number | null>(null)
-  const [hover, setHover] = useState<number | null>(null)
+  const [hoverBar, setHoverBar] = useState<number | null>(null)
   const shown = clamp(drag ?? value)
   const waveColor = useSettings((x) => x.waveColor)
   const accentVersion = useAccentVersion()
+
+  // Clear local drag preview if the underlying track changes mid-scrub
+  useEffect(() => {
+    setDrag(null)
+  }, [trackKey])
 
   useEffect(() => {
     const el = box.current
@@ -58,21 +64,34 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
     return () => ro.disconnect()
   }, [])
 
+  const bars = Math.max(1, Math.floor((width + GAP) / (BAR + GAP)))
+  const levels = useMemo(() => resample(peaks, bars), [peaks, bars])
+  const resolvedAccent = useMemo(() => {
+    if (color) return color
+    if (waveColor !== 'accent') return waveColor
+    if (typeof document === 'undefined') return '#ff375f'
+    return (
+      document.documentElement.style.getPropertyValue('--accent').trim() ||
+      getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() ||
+      '#ff375f'
+    )
+  }, [color, waveColor, accentVersion])
+
   useEffect(() => {
     const c = canvas.current
     if (!c || width <= 0) return
     const dpr = window.devicePixelRatio || 1
-    c.width = Math.round(width * dpr)
-    c.height = Math.round(height * dpr)
+    const targetW = Math.round(width * dpr)
+    const targetH = Math.round(height * dpr)
+    if (c.width !== targetW || c.height !== targetH) {
+      c.width = targetW
+      c.height = targetH
+    }
     const g = c.getContext('2d')
     if (!g) return
     g.setTransform(dpr, 0, 0, dpr, 0, 0)
     g.clearRect(0, 0, width, height)
 
-    const css = getComputedStyle(c)
-    const accent = color ?? (waveColor !== 'accent' ? waveColor : css.getPropertyValue('--accent').trim() || '#ff375f')
-    const bars = Math.max(1, Math.floor((width + GAP) / (BAR + GAP)))
-    const levels = resample(peaks, bars)
     const upperH = Math.round(height * UPPER)
     const lowerH = height - upperH - 1
 
@@ -80,8 +99,8 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
       const at = (i + 0.5) / bars
       const lv = levels[i] < 0 ? 0.05 : 0.07 + 0.93 * levels[i]
       const played = at <= shown
-      const hovered = hover !== null && at <= hover
-      g.fillStyle = played ? accent : '#fff'
+      const hovered = hoverBar !== null && i <= hoverBar
+      g.fillStyle = played ? resolvedAccent : '#fff'
       g.globalAlpha = played ? 1 : hovered ? 0.62 : at <= buffered ? 0.4 : 0.2
       const x = i * (BAR + GAP)
       const up = Math.max(1, lv * upperH)
@@ -90,14 +109,16 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
       g.fillRect(x, upperH + 1, BAR, Math.max(1, lv * lowerH))
     }
     g.globalAlpha = 1
-  }, [peaks, width, height, shown, buffered, hover, waveColor, accentVersion, color])
+  }, [levels, bars, width, height, shown, buffered, hoverBar, resolvedAccent])
 
   const fromEvent = (e: PointerEvent) => {
-    const r = box.current!.getBoundingClientRect()
+    const r = box.current?.getBoundingClientRect()
+    if (!r || r.width <= 0) return shown
     return clamp((e.clientX - r.left) / r.width)
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return
     const map: Record<string, number> = { ArrowRight: value + step, ArrowUp: value + step, ArrowLeft: value - step, ArrowDown: value - step, Home: 0, End: 1 }
     if (!(e.key in map)) return
     e.preventDefault()
@@ -128,19 +149,26 @@ export function WaveformScrubber({ trackKey, value, buffered, height, label, val
       }}
       onPointerMove={(e) => {
         const v = fromEvent(e)
-        if (!disabled) setHover(v)
+        if (!disabled) {
+          const idx = Math.min(bars - 1, Math.floor(v * bars))
+          setHoverBar((prev) => (prev === idx ? prev : idx))
+        }
         if (drag === null) return
         setDrag(v)
         onChange?.(v)
       }}
-      onPointerLeave={() => setHover(null)}
+      onPointerLeave={() => setHoverBar((prev) => (prev === null ? prev : null))}
       onPointerUp={(e) => {
         if (drag === null) return
         const v = fromEvent(e)
         setDrag(null)
         onCommit?.(v)
       }}
-      onPointerCancel={() => setDrag(null)}
+      onPointerCancel={() => {
+        if (drag === null) return
+        setDrag(null)
+        onCancel?.()
+      }}
       onKeyDown={onKeyDown}
     >
       <canvas ref={canvas} className={s.canvas} style={{ width, height }} aria-hidden="true" />

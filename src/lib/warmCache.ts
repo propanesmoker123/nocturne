@@ -11,6 +11,7 @@ const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000
 const SNAP_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_SNAP_ENTRIES = 24
 const MAX_TOTAL_CHARS = 850_000
+const FLUSH_DEBOUNCE_MS = 600
 
 const VK_SNAPSHOT_PREFIXES = new Set([
   'catalog',
@@ -161,9 +162,22 @@ export function writeScSessionSnapshot(signedIn: boolean, user: ScUser | null): 
   } catch {}
 }
 
-function readSnapStore(storageKey: string, now = Date.now()): SnapStore {
-  const ls = storage()
-  if (!ls) return {}
+let memStorage: Storage | null = null
+const memStores = new Map<string, SnapStore>()
+const dirtyKeys = new Set<string>()
+const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
+let unloadHooked = false
+
+function resetMemoryIfStorageChanged(ls: Storage | null): void {
+  if (ls === memStorage) return
+  for (const t of flushTimers.values()) clearTimeout(t)
+  flushTimers.clear()
+  dirtyKeys.clear()
+  memStores.clear()
+  memStorage = ls
+}
+
+function parseSnapStore(ls: Storage, storageKey: string, now: number): SnapStore {
   try {
     const raw = ls.getItem(storageKey)
     if (!raw) return {}
@@ -183,9 +197,30 @@ function readSnapStore(storageKey: string, now = Date.now()): SnapStore {
   }
 }
 
-function writeSnapStore(storageKey: string, store: SnapStore): void {
+function getSnapStore(storageKey: string, now = Date.now()): SnapStore | null {
   const ls = storage()
-  if (!ls) return
+  resetMemoryIfStorageChanged(ls)
+  if (!ls) return null
+  let store = memStores.get(storageKey)
+  if (!store) {
+    store = parseSnapStore(ls, storageKey, now)
+    memStores.set(storageKey, store)
+  }
+  return store
+}
+
+function flushKey(storageKey: string): void {
+  const t = flushTimers.get(storageKey)
+  if (t !== undefined) {
+    clearTimeout(t)
+    flushTimers.delete(storageKey)
+  }
+  if (!dirtyKeys.has(storageKey)) return
+  dirtyKeys.delete(storageKey)
+  const ls = storage()
+  if (!ls || ls !== memStorage) return
+  const store = memStores.get(storageKey)
+  if (!store) return
   let entries = Object.entries(store).sort((a, b) => a[1].at - b[1].at)
   if (entries.length > MAX_SNAP_ENTRIES) {
     entries = entries.slice(entries.length - MAX_SNAP_ENTRIES)
@@ -207,6 +242,28 @@ function writeSnapStore(storageKey: string, store: SnapStore): void {
   }
 }
 
+export function flushWarmCache(): void {
+  for (const key of [...dirtyKeys]) flushKey(key)
+}
+
+function scheduleFlush(storageKey: string): void {
+  dirtyKeys.add(storageKey)
+  if (!unloadHooked && typeof window !== 'undefined') {
+    unloadHooked = true
+    window.addEventListener('pagehide', flushWarmCache)
+    window.addEventListener('beforeunload', flushWarmCache)
+  }
+  const prev = flushTimers.get(storageKey)
+  if (prev !== undefined) clearTimeout(prev)
+  flushTimers.set(
+    storageKey,
+    setTimeout(() => {
+      flushTimers.delete(storageKey)
+      flushKey(storageKey)
+    }, FLUSH_DEBOUNCE_MS),
+  )
+}
+
 function writeQuerySnapshot(storageKey: string, key: QueryKey, data: unknown, opts?: { infinite?: boolean }): void {
   if (data === undefined || data === null) return
   let infinite = Boolean(opts?.infinite)
@@ -217,20 +274,32 @@ function writeQuerySnapshot(storageKey: string, key: QueryKey, data: unknown, op
     payload = { pages: data.pages.slice(0, 1), pageParams: data.pageParams.slice(0, 1) }
   }
   const now = Date.now()
-  const store = readSnapStore(storageKey, now)
+  const store = getSnapStore(storageKey, now)
+  if (!store) return
   store[serializeKey(key)] = {
     key,
     infinite,
     data: payload,
     at: now,
   }
-  writeSnapStore(storageKey, store)
+  const entries = Object.entries(store)
+  if (entries.length > MAX_SNAP_ENTRIES) {
+    entries.sort((a, b) => a[1].at - b[1].at)
+    const drop = entries.length - MAX_SNAP_ENTRIES
+    for (let i = 0; i < drop; i++) delete store[entries[i]![0]]
+  }
+  scheduleFlush(storageKey)
 }
 
 function hydrateSnapshots(storageKey: string, qc: QueryClient, now = Date.now()): number {
-  const store = readSnapStore(storageKey, now)
+  const store = getSnapStore(storageKey, now)
+  if (!store) return 0
   let hydrated = 0
-  for (const rec of Object.values(store)) {
+  for (const [id, rec] of Object.entries(store)) {
+    if (now - rec.at > SNAP_TTL_MS) {
+      delete store[id]
+      continue
+    }
     if (qc.getQueryData(rec.key) !== undefined) continue
     const value = rec.infinite
       ? isInfiniteShape(rec.data)
@@ -256,7 +325,15 @@ export function markVkSnapshotsStale(qc: QueryClient): void {
 }
 
 export function clearVkCache(): void {
+  const t = flushTimers.get(VK_SNAP_KEY)
+  if (t !== undefined) {
+    clearTimeout(t)
+    flushTimers.delete(VK_SNAP_KEY)
+  }
+  dirtyKeys.delete(VK_SNAP_KEY)
   const ls = storage()
+  resetMemoryIfStorageChanged(ls)
+  memStores.set(VK_SNAP_KEY, {})
   if (!ls) return
   try {
     ls.removeItem(VK_SESSION_KEY)
@@ -277,7 +354,15 @@ export function markScSnapshotsStale(qc: QueryClient): void {
 }
 
 export function clearScCache(): void {
+  const t = flushTimers.get(SC_SNAP_KEY)
+  if (t !== undefined) {
+    clearTimeout(t)
+    flushTimers.delete(SC_SNAP_KEY)
+  }
+  dirtyKeys.delete(SC_SNAP_KEY)
   const ls = storage()
+  resetMemoryIfStorageChanged(ls)
+  memStores.set(SC_SNAP_KEY, {})
   if (!ls) return
   try {
     ls.removeItem(SC_SESSION_KEY)
@@ -288,6 +373,14 @@ export function clearScCache(): void {
 /** Persists successful VK and SoundCloud queries in the background for instant next-launch warm hydration. */
 export function installWarmCacheObserver(qc: QueryClient): () => void {
   const lastSavedAt = new Map<string, number>()
+  // Seed from already-hydrated queries so startup hydration does not trigger redundant writes.
+  for (const q of qc.getQueryCache().getAll()) {
+    if (q.state.status === 'success' && q.state.dataUpdatedAt) {
+      if (isVkSnapshotKey(q.queryKey) || isScSnapshotKey(q.queryKey)) {
+        lastSavedAt.set(serializeKey(q.queryKey), q.state.dataUpdatedAt)
+      }
+    }
+  }
   return qc.getQueryCache().subscribe((event) => {
     if (event.type !== 'updated') return
     const q = event.query

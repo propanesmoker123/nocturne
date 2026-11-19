@@ -11,9 +11,7 @@
 }
 .card {
   border-radius: 14px;
-  background: var(--mat-thin);
-  backdrop-filter: var(--mat-blur);
-  -webkit-backdrop-filter: var(--mat-blur);
+  background: rgba(28, 28, 32, 0.78);
   box-shadow: var(--mat-edge);
   overflow: hidden;
 }

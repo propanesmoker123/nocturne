@@ -40,12 +40,22 @@ export function Library() {
         </label>
       </div>
       {q.isLoading && <TrackListSkeleton rows={10} />}
-      {q.isError && <EmptyState icon={<LibraryBig size={26} />} title="Не удалось загрузить музыку" text={describeError(q.error)} />}
+      {q.isError && q.items.length === 0 && (
+        <EmptyState icon={<LibraryBig size={26} />} title="Не удалось загрузить музыку" text={describeError(q.error)} />
+      )}
       {!q.isLoading && !q.isError && q.items.length === 0 && (
         <EmptyState icon={<LibraryBig size={26} />} title="Здесь пока пусто" text="Добавляйте треки кнопкой «+» — они появятся здесь и во всех ваших VK-клиентах." />
       )}
       {q.items.length > 0 && shown.length === 0 && <div className={s.hint}>Ничего не нашлось по запросу «{filter}»</div>}
       {shown.length > 0 && <TrackList tracks={shown} />}
+      {q.isError && q.items.length > 0 && (
+        <div className={s.hint}>
+          Часть треков не загрузилась: {describeError(q.error)}{' '}
+          <Button variant="tinted" onClick={() => void q.fetchNextPage()}>
+            Повторить
+          </Button>
+        </div>
+      )}
     </>
   )
 }

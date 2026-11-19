@@ -11,6 +11,7 @@ export { runCommand } from './commands'
 
 let accent: string | null = null
 let artworkColor: string | null = null
+let bridgesStarted = false
 const SPOTIFY_GREEN = '#1ed760'
 
 /** While Spotify is the player, the island shows its track instead of the paused VK/SC one. */
@@ -72,22 +73,48 @@ function applyAccent(fromArtwork: string | null) {
 
 /** Wires the player to the island window, Windows SMTC, MediaSession and accent color. */
 export function startBridges(actions: BridgeActions) {
+  if (bridgesStarted) return
+  bridgesStarted = true
   let lastKey = ''
+  let lastCover = ''
+  let accentSeq = 0
   let lastEmit = 0
   let pending: ReturnType<typeof setTimeout> | undefined
+  const coverOf = (s: PlayerState) => s.current?.cover?.m || s.current?.cover?.l || s.current?.cover?.s || ''
 
   const pushIsland = () => {
     clearTimeout(pending)
+    if (!useSettings.getState().island.enabled) return
     lastEmit = Date.now()
-    void emitTo('island', EV.playerState, snapshot(usePlayer.getState()))
+    void emitTo('island', EV.playerState, snapshot(usePlayer.getState())).catch(() => {})
   }
   const scheduleIsland = () => {
+    if (!useSettings.getState().island.enabled) return
     const wait = 120 - (Date.now() - lastEmit)
     if (wait <= 0) pushIsland()
     else {
       clearTimeout(pending)
       pending = setTimeout(pushIsland, wait)
     }
+  }
+
+  const syncAccentForCurrent = (s: PlayerState) => {
+    const key = s.current?.key ?? ''
+    const cover = coverOf(s)
+    lastKey = key
+    lastCover = cover
+    const seq = ++accentSeq
+    if (!cover) {
+      applyAccent(null)
+      pushIsland()
+      return
+    }
+    void artworkAccent(cover).then((rgb) => {
+      const cur = usePlayer.getState()
+      if (seq !== accentSeq || (cur.current?.key ?? '') !== key || coverOf(cur) !== cover) return
+      applyAccent(rgb ? toCss(rgb) : null)
+      pushIsland()
+    })
   }
 
   const pushSmtc = (s: PlayerState) => {
@@ -133,32 +160,31 @@ export function startBridges(actions: BridgeActions) {
 
   usePlayer.subscribe((s, prev) => {
     const key = s.current?.key ?? ''
-    if (key !== lastKey) {
-      lastKey = key
-      const cover = s.current?.cover?.m
-      void artworkAccent(cover).then((rgb) => {
-        if ((usePlayer.getState().current?.key ?? '') !== key) return
-        applyAccent(rgb ? toCss(rgb) : null)
-        pushIsland()
-      })
+    const cover = coverOf(s)
+    if (key !== lastKey || cover !== lastCover) {
+      syncAccentForCurrent(s)
       pushMediaSession(s)
       pushSmtc(s)
       pushIsland()
       return
     }
+    const jumped = Math.abs(s.position - prev.position) > 1.5
     const meaningful =
       s.isPlaying !== prev.isPlaying ||
       s.isLoading !== prev.isLoading ||
+      s.duration !== prev.duration ||
       s.volume !== prev.volume ||
       s.muted !== prev.muted ||
       s.shuffle !== prev.shuffle ||
       s.repeat !== prev.repeat ||
       s.current?.liked !== prev.current?.liked ||
-      Math.abs(s.position - prev.position) > 1.5
+      jumped
     if (meaningful) {
       scheduleIsland()
       if (s.isPlaying !== prev.isPlaying) {
         pushMediaSession(s)
+      }
+      if (s.isPlaying !== prev.isPlaying || jumped || s.duration !== prev.duration) {
         pushSmtc(s)
       }
     }
@@ -189,15 +215,28 @@ export function startBridges(actions: BridgeActions) {
 
   // Heartbeat keeps the island's interpolation honest while playing.
   setInterval(() => {
+    if (!useSettings.getState().island.enabled) return
     const sp = useSpotify.getState()
     if (usePlayer.getState().isPlaying || (sp.owner && sp.playing)) pushIsland()
   }, 2000)
 
   applyAccent(null)
-  const pushIslandSettings = () => void emitTo('island', EV.islandSettings, useSettings.getState().island)
+  const initialPlayer = usePlayer.getState()
+  if (initialPlayer.current) {
+    syncAccentForCurrent(initialPlayer)
+    pushMediaSession(initialPlayer)
+    pushSmtc(initialPlayer)
+  }
+  const pushIslandSettings = () => void emitTo('island', EV.islandSettings, useSettings.getState().island).catch(() => {})
   pushIslandSettings()
   useSettings.subscribe((st, prev) => {
-    if (st.island !== prev.island) pushIslandSettings()
+    if (st.island !== prev.island) {
+      pushIslandSettings()
+      if (st.island.enabled && !prev.island.enabled) {
+        pushIsland()
+        pushWave()
+      }
+    }
     if (st.accent === prev.accent) return
     applyAccent(artworkColor)
     pushIsland()
@@ -212,13 +251,15 @@ export function startBridges(actions: BridgeActions) {
   let waveTimer: ReturnType<typeof setTimeout> | undefined
   const pushWave = () => {
     clearTimeout(waveTimer)
+    if (!useSettings.getState().island.enabled) return
     const { key, peaks } = useWaveform.getState()
     const color = useSettings.getState().waveColor
     const wave: IslandWave = { key, peaks: peaks ? Array.from(peaks, (v) => Math.round(v * 1000) / 1000) : null, color: color === 'accent' ? null : color }
-    void emitTo('island', EV.islandWave, wave)
+    void emitTo('island', EV.islandWave, wave).catch(() => {})
   }
   const pushWaveSoon = () => {
     clearTimeout(waveTimer)
+    if (!useSettings.getState().island.enabled) return
     waveTimer = setTimeout(pushWave, 300)
   }
   useWaveform.subscribe(pushWaveSoon)

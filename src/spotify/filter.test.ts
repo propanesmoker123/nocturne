@@ -2187,4 +2187,1157 @@ describe('bounded Spotify ad experiment', () => {
     expect(lab.playing()).toBe(false)
     expect(lab.nowPlaying()?.paused).toBe(true)
   })
+
+  test('ignores anonymous tokens, strips disallows without ads, keys pfCache by offset/limit, clears desiredTrackId on next/prev, injects style on DOMContentLoaded, and falls back to Web API for addToPlaylist', async () => {
+    // 1. Anonymous token in <script id="session"> must not mark account() as 'in'; deferred head gets <style> on DOMContentLoaded
+    let domReadyListener: (() => void) | null = null
+    const appendedStyles: Array<{ textContent?: string }> = []
+    const sessionScript = {
+      textContent: JSON.stringify({
+        accessToken: 'A'.repeat(48),
+        accessTokenExpirationTimestampMs: Date.now() + 3600_000,
+        isAnonymous: true,
+      }),
+    }
+    const doc: Record<string, unknown> = {
+      head: null,
+      createElement: (tag: string) => (tag === 'style' ? { textContent: '' } : {}),
+      addEventListener: (ev: string, fn: () => void) => {
+        if (ev === 'DOMContentLoaded') domReadyListener = fn
+      },
+      getElementById: (id: string) => (id === 'session' ? sessionScript : null),
+      querySelector: () => null,
+      querySelectorAll: (sel: string) => (sel === 'script' ? [sessionScript] : []),
+    }
+    const { win: anonWin } = fixture({}, undefined, undefined, { document: doc })
+    const anonLab = anonWin.__nocturneSpotifyLab as unknown as {
+      account(): string | null
+      startJob(k: string, s: unknown): boolean
+      pollJob(k: string): { done: boolean }
+      dropJob?(k: string): boolean
+    }
+    // Trigger readDomSessionToken via an API job and verify account() is not 'in'
+    anonLab.startJob('anon-check', { kind: 'api', method: 'GET', path: '/me/tracks' })
+    expect(anonLab.account()).not.toBe('in')
+    expect(anonLab.dropJob?.('anon-check')).toBe(true)
+    expect(anonLab.pollJob('anon-check')).toMatchObject({ done: true, ok: false, error: 'MISSING' })
+
+    doc.head = { appendChild: (el: { textContent?: string }) => appendedStyles.push(el) }
+    expect(domReadyListener).toBeTypeOf('function')
+    domReadyListener!()
+    expect(appendedStyles).toHaveLength(1)
+    expect(appendedStyles[0].textContent).toContain('animation:none!important')
+
+    // 2. patch() strips restrictions/disallows even when state_machine has no ad states
+    const songOnlyPayload = {
+      state_machine: {
+        state_machine_id: 'no-ads',
+        restrictions: { disallow_seeking: true },
+        disallows: { disallow_skipping_next: true },
+        tracks: [{ metadata: { uri: 'spotify:track:first' } }],
+        states: [
+          {
+            state_id: 'song0',
+            track: 0,
+            restrictions: { disallow_seeking: true },
+            disallows: { disallow_skipping_prev: true },
+            transitions: { advance: null },
+          },
+        ],
+      },
+    }
+    const { win: cleanWin } = fixture(songOnlyPayload)
+    const cleanedRes = await (await cleanWin.fetch(endpoint)).json()
+    expect(cleanedRes.state_machine.restrictions).toEqual({})
+    expect(cleanedRes.state_machine.disallows).toEqual({})
+    expect(cleanedRes.state_machine.states[0].restrictions).toEqual({})
+    expect(cleanedRes.state_machine.states[0].disallows).toEqual({})
+
+    // 3. pfCacheKey includes offset and limit so pagination on /me/albums and /me/tracks does not return page 1 or truncated radio page
+    let albumCalls = 0
+    const webApiPlaylistAdds: Array<{ url: string; body: unknown }> = []
+    const { win: pfWin } = fixture({}, undefined, undefined, {
+      fetch: async (input: unknown, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url
+        const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {}
+        if (url.includes('/pathfinder/v2/query')) {
+          const op = body.operationName
+          const vars = (body.variables ?? {}) as Record<string, unknown>
+          if (op === 'libraryV3') {
+            albumCalls++
+            const off = Number(vars.offset) || 0
+            return Response.json({
+              data: {
+                me: {
+                  libraryV3: {
+                    totalCount: 2,
+                    items: [{ item: { __typename: 'AlbumResponseWrapper', data: { __typename: 'Album', uri: `spotify:album:page_${off}`, name: `Album ${off}` } } }],
+                  },
+                },
+              },
+            })
+          }
+          if (op === 'fetchLibraryTracks') {
+            const lim = Number(vars.limit) || 50
+            const items = Array.from({ length: lim }, (_, i) => ({
+              addedAt: { isoString: '2026-01-01T00:00:00Z' },
+              track: { _uri: `spotify:track:t${i}`, data: { __typename: 'Track', name: `T${i}`, duration: { totalMilliseconds: 180000 } } },
+            }))
+            return Response.json({ data: { me: { library: { tracks: { totalCount: 50, items } } } } })
+          }
+          if (op === 'addToPlaylist') {
+            return new Response(null, { status: 400 })
+          }
+        }
+        if (url.includes('api.spotify.com/v1/playlists/') && url.endsWith('/tracks') && init?.method === 'POST') {
+          webApiPlaylistAdds.push({ url, body })
+          return Response.json({ snapshot_id: 'snap1' })
+        }
+        return Response.json({})
+      },
+    })
+    await pfWin.fetch('https://open.spotify.com/ping', {
+      headers: { authorization: 'Bearer ' + 't'.repeat(40), 'client-token': 'c'.repeat(30) },
+    })
+    const pfLab = pfWin.__nocturneSpotifyLab as unknown as {
+      startJob(key: string, spec: Record<string, unknown>): boolean
+      pollJob(key: string): { done: boolean; ok: boolean; data?: Record<string, unknown> }
+    }
+    const runJob = async (key: string, method: string, path: string) => {
+      pfLab.startJob(key, { kind: 'api', method, path })
+      let out: { done: boolean; ok: boolean; data?: Record<string, unknown> } = { done: false, ok: false }
+      await vi.waitFor(() => {
+        const r = pfLab.pollJob(key)
+        expect(r.done).toBe(true)
+        out = r
+      })
+      return out
+    }
+    const page1 = await runJob('alb-0', 'GET', '/me/albums?offset=0&limit=50')
+    const page2 = await runJob('alb-50', 'GET', '/me/albums?offset=50&limit=50')
+    expect(albumCalls).toBe(2)
+    expect((page1.data?.items as Array<{ name: string }>)[0]?.name).toBe('Album 0')
+    expect((page2.data?.items as Array<{ name: string }>)[0]?.name).toBe('Album 50')
+
+    await runJob('top-24', 'GET', '/me/top/tracks')
+    const likes50 = await runJob('likes-50', 'GET', '/me/tracks?offset=0&limit=50')
+    expect((likes50.data?.items as unknown[]).length).toBe(50)
+
+    const addPl = await runJob('add-pl', 'POST', '/playlists/1111111111111111111111/tracks?ids=3333333333333333333333')
+    expect(addPl.ok).toBe(true)
+    expect(webApiPlaylistAdds).toEqual([
+      {
+        url: 'https://api.spotify.com/v1/playlists/1111111111111111111111/tracks',
+        body: { uris: ['spotify:track:3333333333333333333333'] },
+      },
+    ])
+
+    // 4. control('next') clears desiredTrackId so bleed-protection does not pause the skipped-to track
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    let pausedCount = 0
+    const nextBtn = { disabled: false, click: () => {} }
+    const skipDoc = {
+      querySelector: (sel: string) => (sel === '[data-testid="control-button-skip-forward"]' ? nextBtn : null),
+      querySelectorAll: () => [],
+    }
+    const { win: skipWin } = fixture({}, undefined, undefined, { document: skipDoc })
+    const skipLab = skipWin.__nocturneSpotifyLab as unknown as {
+      stats(): { trackEnded?: boolean; startPending?: boolean }
+      playTrack(id: string): boolean
+      control(action: string): boolean
+    }
+    const trackA = '13qpCQkqSTI37Um7UyOBBt'
+    const trackB = '24qpCQkqSTI37Um7UyOBBt'
+    const hState = {
+      duration: 200000,
+      position: 50000,
+      timestamp: Date.now(),
+      paused: false,
+      loading: false,
+      playback_speed: 1,
+      track_window: { current_track: { uri: `spotify:track:${trackA}`, name: 'A' }, previous_tracks: [] as Array<{ uri: string }> },
+    }
+    const host = Object.create(Object.getPrototypeOf(skipLab.stats())) as Record<string, unknown>
+    host._harmony = {
+      playTracks: async () => {},
+      playURI: async () => {},
+      pause: () => { pausedCount++ },
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      _controller: { _state: hState, playURI: async () => {}, pause: () => { pausedCount++ } },
+    }
+    expect(skipLab.playTrack(trackA)).toBe(true)
+    await vi.waitFor(() => expect(skipLab.stats().startPending).toBe(false), { timeout: 1000 })
+    expect(skipLab.control('next')).toBe(true)
+    hState.track_window = {
+      current_track: { uri: `spotify:track:${trackB}`, name: 'B' },
+      previous_tracks: [{ uri: `spotify:track:${trackA}` }],
+    }
+    hState.position = 200
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(pausedCount).toBe(0)
+    expect(skipLab.stats().trackEnded).toBe(false)
+  })
+
+  test('switching Spotify tracks never leaks outgoing track DOM progressbar or transition position onto new track', async () => {
+    class Input extends EventTarget {
+      min = '0'
+      max = '180000'
+      step = '1000'
+      disabled = false
+      _value = '90000'
+      get value() { return this._value }
+      set value(v: string) { this._value = v }
+    }
+    const slider = new Input()
+    const audioEl = {
+      paused: false,
+      ended: false,
+      currentTime: 90.3,
+      duration: 180,
+      volume: 0.7,
+      muted: false,
+      playbackRate: 1,
+      readyState: 4,
+      buffered: { length: 1, start: () => 0, end: () => 180 },
+    }
+    const elements: Record<string, unknown> = {
+      '[data-testid="playback-progressbar"]': { querySelector: () => slider },
+      '[data-testid="playback-position"]': { textContent: '1:30' },
+      '[data-testid="playback-duration"]': { textContent: '3:00' },
+      '[data-testid="now-playing-widget"]': { querySelector: () => null, querySelectorAll: () => [] },
+    }
+    const doc = {
+      querySelector: (sel: string) => elements[sel] ?? null,
+      querySelectorAll: (sel: string) => (sel.replace(/\s+/g, '') === 'audio,video' ? [audioEl] : []),
+    }
+    const mediaSession = {
+      playbackState: 'playing',
+      metadata: { title: 'm3 killa laharl', artist: 'Old Artist', album: 'Old Album', artwork: [] },
+    }
+    const { win } = fixture({}, undefined, undefined, { document: doc, navigator: { mediaSession }, HTMLInputElement: Input })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): { startPending?: boolean }
+      playTrack(id: string, startAt?: number, vol?: number, muted?: boolean): boolean
+      nowPlaying(): { trackId: string | null; title: string; position: number; duration: number } | null
+      control(action: string, value?: number): boolean
+    }
+    const trackA = '1111111111111111111111'
+    const trackB = '2222222222222222222222'
+    const hState = {
+      duration: 180000,
+      position: 90000,
+      timestamp: Date.now(),
+      paused: false,
+      loading: false,
+      playback_speed: 1,
+      track_window: { current_track: { uri: `spotify:track:${trackA}`, name: 'm3 killa laharl', artists: [{ name: 'Old Artist' }] } },
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    host._harmony = {
+      playTracks: async () => {},
+      playURI: async () => {},
+      seek: (ms: number) => { hState.position = ms; hState.timestamp = Date.now() },
+      _controller: { _state: hState, playURI: async () => {}, seek: (ms: number) => { hState.position = ms; hState.timestamp = Date.now() } },
+    }
+
+    // Track A is playing in the middle (90s)
+    expect(lab.playTrack(trackA, 90, 0.7, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+    expect(lab.nowPlaying()?.position).toBeGreaterThanOrEqual(89.5)
+
+    // User clicks Next -> Track B starts at 0s while hidden 2x2 DOM slider & mediaSession STILL lag on Track A (90s)!
+    expect(lab.playTrack(trackB, 0, 0.7, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+
+    // Case 1: Harmony switches to Track B at 150ms while DOM playback-progressbar STILL says 90000ms (90s)
+    hState.track_window = { current_track: { uri: `spotify:track:${trackB}`, name: 'Next Track', artists: [{ name: 'New Artist' }] } }
+    hState.position = 150
+    hState.timestamp = Date.now()
+    const npFresh = lab.nowPlaying()
+    expect(npFresh).toMatchObject({ trackId: trackB, title: 'Next Track' })
+    expect(npFresh!.position).toBeLessThan(1)
+
+    // Case 2: Even if Harmony momentarily emits a stale 90000ms frame on Track B right after switch, position stays at 0
+    hState.position = 90000
+    hState.timestamp = Date.now()
+    expect(lab.nowPlaying()?.position).toBe(0)
+
+    // Case 3: Intentional user seek to 90s on Track B clears the switch guard and seeks immediately
+    expect(lab.control('seek', 90)).toBe(true)
+    expect(lab.nowPlaying()?.position).toBeGreaterThanOrEqual(89.5)
+  })
+
+  test('hardPaused suppresses rogue background Spotify ads and non-looping video ads while user is in VK, then restores cleanly on playTrack', async () => {
+    class MockMedia extends EventTarget {
+      _vol = 0.8
+      _muted = false
+      paused = false
+      ended = false
+      loop = false
+      isConnected = true
+      tagName = 'AUDIO'
+      currentTime = 2
+      duration = 29
+      playbackRate = 1
+      readyState = 4
+      mediaKeys: object | null = null
+      nativePlayCalls = 0
+      pauseCalls = 0
+      buffered = { length: 1, start: () => 0, end: () => 29 }
+      get volume() { return this._vol }
+      set volume(v: number) { this._vol = v }
+      get muted() { return this._muted }
+      set muted(m: boolean) { this._muted = m }
+      play() { this.nativePlayCalls++; this.paused = false; return Promise.resolve() }
+      pause() { this.pauseCalls++; this.paused = true }
+      load() {}
+    }
+    const adAudio = new MockMedia()
+    const adVideo = new MockMedia()
+    adVideo.tagName = 'VIDEO'
+    adVideo.duration = 10
+    adVideo.loop = false
+    let nextTrackCalls = 0
+    let apiPauseCalls = 0
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    const widget = {
+      getAttribute: () => 'Реклама',
+      querySelector: (sel: string) => (sel === '[data-testid="context-item-info-title"]' ? { textContent: 'Реклама' } : null),
+      querySelectorAll: () => [],
+    }
+    const doc = {
+      querySelector: (sel: string) => (sel === '[data-testid="now-playing-widget"]' ? widget : null),
+      querySelectorAll: (sel: string) => (sel.replace(/\s+/g, '') === 'audio,video' ? [adAudio, adVideo] : []),
+      createElement: () => new MockMedia(),
+    }
+    const { win } = fixture({}, undefined, undefined, { document: doc, HTMLMediaElement: MockMedia })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): Record<string, unknown>
+      playing(): boolean | null
+      playTrack(id: string, startAt?: number, vol?: number, muted?: boolean): boolean
+      control(action: string): boolean
+    }
+    const hState = {
+      duration: 29000,
+      position: 2000,
+      timestamp: Date.now(),
+      paused: false,
+      loading: false,
+      track_window: { current_track: { uri: 'spotify:ad:promo123', name: 'Реклама' } },
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    host._harmony = {
+      playTracks: async () => {},
+      playURI: async () => {},
+      pause: () => { apiPauseCalls++; hState.paused = true },
+      nextTrack: () => { nextTrackCalls++ },
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      _controller: { _state: hState, playURI: async () => {}, pause: () => { apiPauseCalls++; hState.paused = true } },
+    }
+
+    // User switches to VK -> Nocturne pauses hidden Spotify WebView
+    expect(lab.control('pause')).toBe(true)
+    expect(lab.playing()).toBe(false)
+    expect(adAudio._muted).toBe(true)
+    expect(adAudio._vol).toBe(0)
+    expect(adAudio.paused).toBe(true)
+    expect(adVideo._muted).toBe(true)
+    expect(adVideo.paused).toBe(true)
+
+    // Rogue ad tries to start playing while user is in VK
+    adAudio.nativePlayCalls = 0
+    await adAudio.play()
+    expect(adAudio.nativePlayCalls).toBe(0)
+    expect(adAudio._muted).toBe(true)
+    expect(adAudio._vol).toBe(0)
+
+    // Harmony emits advancing ad state_changed while user is in VK
+    hState.paused = false
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(apiPauseCalls).toBeGreaterThanOrEqual(2)
+    expect(nextTrackCalls).toBe(0)
+    expect(lab.playing()).toBe(false)
+
+    // Returning to Spotify and starting a real track restores normal volume cleanly
+    hState.track_window = { current_track: { uri: 'spotify:track:4cOdK2wGLETKBW3PvgPWqT', name: 'Song' } }
+    hState.paused = false
+    expect(lab.playTrack('4cOdK2wGLETKBW3PvgPWqT', 0, 0.65, false)).toBe(true)
+    expect(adAudio._muted).toBe(false)
+    expect(adAudio._vol).toBeCloseTo(0.65, 3)
+  })
+
+  test('handles post-roll ad trackEnded, safe buffered ad fast-forward (no playbackRate=16), skip_next state_machine patching, and 0ms unmute despite lagging DOM ad label', async () => {
+    // 1. State machine patches ad states via skip_next and metadata.is_advertisement
+    const skipNextPayload = {
+      state_machine: {
+        state_machine_id: 'skip-next-ad',
+        tracks: [
+          { metadata: { uri: 'spotify:track:song1' } },
+          { metadata: { uri: 'spotify:episode:promo', is_advertisement: true } },
+          { metadata: { uri: 'spotify:track:song2' } },
+        ],
+        states: [
+          { state_id: 's1', track: 0, transitions: { advance: { state_index: 1 } } },
+          { state_id: 'ad1', track: 1, transitions: { advance: null, skip_next: { state_index: 2 } } },
+          { state_id: 's2', track: 2, transitions: { advance: null } },
+        ],
+      },
+    }
+    const { win: patchWin } = fixture(skipNextPayload)
+    const patched = await (await patchWin.fetch(endpoint)).json()
+    expect(patched.state_machine.states[1].state_id).toBe('s2')
+
+    // 2. Post-roll ad detection + safe buffered fast-forward + 0ms unmute on real song with stale DOM "Реклама"
+    class MockMedia extends EventTarget {
+      _vol = 0.75
+      _muted = false
+      paused = false
+      ended = false
+      loop = false
+      isConnected = false
+      tagName = 'AUDIO'
+      currentTime = 0.5
+      duration = 30
+      playbackRate = 1
+      readyState = 1
+      mediaKeys: object | null = {}
+      bufEnd = 0
+      get buffered() {
+        return { length: this.bufEnd > 0 ? 1 : 0, start: () => 0, end: () => this.bufEnd }
+      }
+      get volume() { return this._vol }
+      set volume(v: number) { this._vol = v }
+      get muted() { return this._muted }
+      set muted(m: boolean) { this._muted = m }
+      play() { this.paused = false; return Promise.resolve() }
+      pause() { this.paused = true }
+      load() {}
+    }
+    const el = new MockMedia()
+    let nextTrackCalls = 0
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    const widget = {
+      getAttribute: () => 'Реклама',
+      querySelector: (sel: string) => (sel === '[data-testid="context-item-info-title"]' ? { textContent: 'Реклама' } : null),
+      querySelectorAll: () => [],
+    }
+    const doc = {
+      querySelector: (sel: string) => (sel === '[data-testid="now-playing-widget"]' ? widget : null),
+      querySelectorAll: (sel: string) => (sel.replace(/\s+/g, '') === 'audio,video' ? [el] : []),
+      createElement: () => new MockMedia(),
+    }
+    const mediaSession = { playbackState: 'playing', metadata: { title: 'Реклама', artist: '', album: '', artwork: [] } }
+    const { win } = fixture({}, undefined, undefined, { document: doc, navigator: { mediaSession }, HTMLMediaElement: MockMedia })
+    const lab = win.__nocturneSpotifyLab as unknown as {
+      stats(): { startPending?: boolean; trackEnded?: boolean; endedTrackId?: string }
+      nowPlaying(): { isAd?: boolean; trackEnded?: boolean; endedTrackId?: string | null; volume?: number | null } | null
+      playTrack(id: string, startAt?: number, vol?: number, muted?: boolean): boolean
+    }
+    const trackA = '13qpCQkqSTI37Um7UyOBBt'
+    const trackB = '612QrhJo7loQ6s7qC7dMdF'
+    const hState = {
+      duration: 180000,
+      position: 177000,
+      timestamp: Date.now(),
+      paused: false,
+      loading: false,
+      track_window: { current_track: { uri: `spotify:track:${trackA}`, name: 'Track A' }, previous_tracks: [] as Array<{ uri: string }> },
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    host._harmony = {
+      playTracks: async () => {},
+      playURI: async () => {},
+      nextTrack: () => { nextTrackCalls++ },
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      _controller: { _state: hState, playURI: async () => {} },
+    }
+
+    el.play()
+    expect(lab.playTrack(trackA, 0, 0.75, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+    // Even with stale DOM "Реклама", Harmony on real Track A is NOT an ad!
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(lab.nowPlaying()?.isAd).toBe(false)
+    expect(el._muted).toBe(false)
+
+    // Track A finishes and Spotify Free transitions into a post-roll ad
+    hState.track_window = {
+      current_track: { uri: 'spotify:ad:postroll', name: 'Реклама' },
+      previous_tracks: [{ uri: `spotify:track:${trackA}` }],
+    }
+    hState.duration = 30000
+    hState.position = 200
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(lab.stats().trackEnded).toBe(true)
+    expect(lab.stats().endedTrackId).toBe(trackA)
+    expect(lab.nowPlaying()).toMatchObject({ isAd: true, trackEnded: true, endedTrackId: trackA })
+    expect(lab.nowPlaying()?.volume).toBeCloseTo(0.75, 2)
+
+    // Now Nocturne requests Track B while Spotify Free forces a pre-roll ad:
+    expect(lab.playTrack(trackB, 0, 0.75, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+    // Unready MSE ad (readyState=1, bufEnd=0) must be muted WITHOUT seeking past buffer or setting playbackRate=16!
+    el.readyState = 1
+    el.bufEnd = 0
+    el.currentTime = 0.5
+    el.dispatchEvent(new Event('loadstart'))
+    expect(el._muted).toBe(true)
+    expect(el._vol).toBe(0)
+    expect(el.currentTime).toBe(0.5)
+    expect(el.playbackRate).toBe(1)
+    expect(nextTrackCalls).toBe(0)
+
+    // Once partially buffered [0, 8] with readyState=4, safely advances inside buffer at rate=4 (never 16)
+    el.readyState = 4
+    el.bufEnd = 8
+    el.dispatchEvent(new Event('canplay'))
+    expect(el.currentTime).toBeCloseTo(7.85, 2)
+    expect(el.playbackRate).toBe(4)
+    expect(nextTrackCalls).toBe(0)
+
+    // Once fully buffered [0, 30], jumps to dur - 0.1 (29.9)
+    el.bufEnd = 30
+    el.dispatchEvent(new Event('playing'))
+    expect(el.currentTime).toBeCloseTo(29.9, 2)
+
+    // The instant Harmony switches to Track B (even while DOM & mediaSession STILL say "Реклама"), unmute & restore rate=1 in 0ms!
+    hState.track_window = { current_track: { uri: `spotify:track:${trackB}`, name: 'Track B' }, previous_tracks: [] }
+    hState.duration = 200000
+    hState.position = 100
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(lab.nowPlaying()?.isAd).toBe(false)
+    expect(el._muted).toBe(false)
+    expect(el._vol).toBeCloseTo(0.75, 2)
+    expect(el.playbackRate).toBe(1)
+  })
+
+  test('warmNextTrack passively learns active MP4 format, preloads metadata + storage-resolve + 512KB audio, and serves 0ms fetch & XHR range slices', async () => {
+    const trackA = '4cOdK2wGLETKBW3PvgPWqT'
+    const trackB = '3KVOuPRavcPzqbKd6yJig7'
+    // Base62 -> 32-char lowercase hex GID helper for test assertions
+    const b62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    const toGid = (id: string) => {
+      let n = 0n
+      for (const ch of id) n = n * 62n + BigInt(b62.indexOf(ch))
+      return n.toString(16).padStart(32, '0')
+    }
+    const gidA = toGid(trackA)
+    const gidB = toGid(trackB)
+    const fileA128 = 'a'.repeat(40)
+    const fileA256 = 'b'.repeat(40)
+    const fileB128 = 'c'.repeat(40)
+    const fileB256 = 'd'.repeat(40)
+    const cdnB = `https://audio4-fa.scdn.co/audio/${fileB256}?token=sig`
+
+    // Synthetic 64 KB audio payload for Track B (full track nominally 2 MB)
+    const audioPayloadB = new Uint8Array(64 * 1024)
+    for (let i = 0; i < audioPayloadB.length; i++) audioPayloadB[i] = (i * 13 + 7) & 0xff
+    const totalLenB = 2 * 1024 * 1024
+
+    const networkLog: Array<{ url: string; range?: string }> = []
+    const fetchMock = async (input: unknown, init?: { headers?: Record<string, string> }) => {
+      const url = typeof input === 'string' ? input : (input as URL).href
+      const h = new Headers(init?.headers as HeadersInit | undefined)
+      networkLog.push({ url, range: h.get('range') ?? undefined })
+      if (url.includes(`/metadata/4/track/${gidA}`)) {
+        return new Response(
+          JSON.stringify({ file: [{ file_id: fileA128, format: 'MP4_128' }, { file_id: fileA256, format: 'MP4_256' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      if (url.includes(`/storage-resolve/v2/files/audio/interactive/11/${fileA256}`)) {
+        return new Response(JSON.stringify({ result: 'CDN', cdnurl: [`https://audio4-fa.scdn.co/audio/${fileA256}`] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes(`/metadata/4/track/${gidB}`)) {
+        return new Response(
+          JSON.stringify({ file: [{ file_id: fileB128, format: 'MP4_128' }, { file_id: fileB256, format: 'MP4_256' }] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      if (url.includes(`/storage-resolve/v2/files/audio/interactive/11/${fileB256}`)) {
+        return new Response(JSON.stringify({ result: 'CDN', cdnurl: [cdnB] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.startsWith(`https://audio4-fa.scdn.co/audio/${fileB256}`)) {
+        const range = h.get('range') ?? ''
+        const m = range.match(/bytes=(\d+)-(\d+)/)
+        if (m && Number(m[1]) >= audioPayloadB.length) {
+          const outSlice = new Uint8Array([0xfe, 0xed, 0xfa, 0xce])
+          return new Response(outSlice, {
+            status: 206,
+            headers: {
+              'Content-Type': 'audio/mp4',
+              'Content-Range': `bytes ${m[1]}-${Number(m[1]) + 3}/${totalLenB}`,
+            },
+          })
+        }
+        return new Response(audioPayloadB, {
+          status: 206,
+          headers: {
+            'Content-Type': 'audio/mp4',
+            'Content-Range': `bytes 0-${audioPayloadB.length - 1}/${totalLenB}`,
+          },
+        })
+      }
+      return new Response('{}', { status: 404 })
+    }
+
+    class FakeXHR extends EventTarget {
+      readyState = 0
+      status = 0
+      statusText = ''
+      responseType = ''
+      response: unknown = null
+      responseText = ''
+      responseURL = ''
+      sentCount = 0
+      open(_method: string, _url: string) {}
+      setRequestHeader(_k: string, _v: string) {}
+      abort() {}
+      send() {
+        this.sentCount++
+      }
+      getResponseHeader(_name: string): string | null {
+        return null
+      }
+      getAllResponseHeaders(): string {
+        return ''
+      }
+    }
+
+    const prefetchCalls: string[] = []
+    const win = {
+      location: { origin: 'https://open.spotify.com' },
+      fetch: fetchMock,
+      WebSocket: Socket,
+      XMLHttpRequest: FakeXHR,
+      navigator: { mediaSession: { playbackState: 'playing', metadata: {} } },
+      document: {
+        readyState: 'complete',
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        getElementById: (id: string) =>
+          id === 'session'
+            ? { textContent: JSON.stringify({ accessToken: 'B'.repeat(48), accessTokenExpirationTimestampMs: Date.now() + 600_000, isAnonymous: false }) }
+            : null,
+      },
+    } as Record<string, unknown>
+    const context = {
+      window: win,
+      document: win.document,
+      URL,
+      URLSearchParams,
+      Request,
+      Response,
+      Headers,
+      MessageEvent,
+      Event,
+      structuredClone,
+      setTimeout,
+      clearTimeout,
+      queueMicrotask,
+    }
+    runInNewContext(source, context)
+
+    const lab = win.__nocturneSpotifyLab as {
+      warmNextTrack: (id: string | null) => boolean
+      stats: () => { preloaded: number; preloadHits: number; preloadedTrackId: string; preloadStage: string }
+    }
+    // Register Harmony with a native prefetch hook (on the VM realm's Object.prototype!)
+    const player = {
+      playTracks: async () => {},
+      addListener: () => {},
+      _streamer: { prefetch: (uri: string) => { prefetchCalls.push(uri) } },
+    }
+    const host = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    host._harmony = player
+
+    // Step 1: Passively observe Harmony playing Track A with MP4_256 and custom query params
+    await (win.fetch as typeof fetch)(`https://spclient.wg.spotify.com/metadata/4/track/${gidA}?market=from_token`, {
+      headers: { authorization: 'Bearer ' + 'B'.repeat(48), 'client-token': 'C'.repeat(32) },
+    })
+    await (win.fetch as typeof fetch)(
+      `https://spclient.wg.spotify.com/storage-resolve/v2/files/audio/interactive/11/${fileA256}?version=10000000&product=9&platform=40&alt=json`,
+      { headers: { authorization: 'Bearer ' + 'B'.repeat(48) } },
+    )
+    await Promise.resolve()
+
+    // Step 2: Background preload Track B (Icalled5times)
+    networkLog.length = 0
+    expect(lab.warmNextTrack(trackB)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().preloadStage).toBe('audio'), { timeout: 1500 })
+    expect(prefetchCalls).toEqual([])
+    expect(lab.stats().preloaded).toBe(1)
+    expect(lab.stats().preloadedTrackId).toBe(trackB)
+    // Observed MP4_256 + platform=40 template was used!
+    expect(networkLog.some((r) => r.url.includes(`/storage-resolve/v2/files/audio/interactive/11/${fileB256}?version=10000000&product=9&platform=40&alt=json`))).toBe(true)
+    expect(networkLog.some((r) => r.url === cdnB && r.range === 'bytes=0-524287')).toBe(true)
+
+    // Step 3: Harmony protobuf requests MUST NEVER get cached JSON (pass straight through to network!),
+    // while JSON metadata/resolve + binary MP4 audio range slices hit RAM in 0ms!
+    networkLog.length = 0
+    await (win.fetch as typeof fetch)(`https://spclient.wg.spotify.com/metadata/4/track/${gidB}?market=from_token`, {
+      headers: { Accept: 'application/protobuf' },
+    })
+    await (win.fetch as typeof fetch)(
+      `https://spclient.wg.spotify.com/storage-resolve/v2/files/audio/interactive/11/${fileB256}?version=10000000&product=9&platform=40`,
+    )
+    expect(networkLog).toHaveLength(2)
+
+    networkLog.length = 0
+    const metaHit = await (win.fetch as typeof fetch)(`https://spclient.wg.spotify.com/metadata/4/track/${gidB}?market=from_token`, {
+      headers: { Accept: 'application/json' },
+    })
+    expect(metaHit.status).toBe(200)
+    expect((await metaHit.json()).file[1].file_id).toBe(fileB256)
+
+    const resolveHit = await (win.fetch as typeof fetch)(
+      `https://spclient.wg.spotify.com/storage-resolve/v2/files/audio/interactive/11/${fileB256}?version=10000000&product=9&platform=40&alt=json`,
+    )
+    expect(resolveHit.status).toBe(200)
+    expect((await resolveHit.json()).cdnurl[0]).toBe(cdnB)
+
+    const initSlice = await (win.fetch as typeof fetch)(cdnB, { headers: { Range: 'bytes=0-1023' } })
+    expect(initSlice.status).toBe(206)
+    expect(initSlice.headers.get('content-range')).toBe(`bytes 0-1023/${totalLenB}`)
+    const initBytes = new Uint8Array(await initSlice.arrayBuffer())
+    expect(initBytes).toEqual(audioPayloadB.slice(0, 1024))
+
+    // Also verify XMLHttpRequest (arraybuffer) audio range gets 0ms RAM slice!
+    const xhr = new FakeXHR()
+    xhr.responseType = 'arraybuffer'
+    xhr.open('GET', cdnB)
+    xhr.setRequestHeader('Range', 'bytes=1024-8191')
+    const xhrDone = new Promise<void>((resolve) => { xhr.addEventListener('load', () => resolve()) })
+    xhr.send()
+    await xhrDone
+    expect(xhr.sentCount).toBe(0)
+    expect(xhr.status).toBe(206)
+    expect(xhr.getResponseHeader('content-range')).toBe(`bytes 1024-8191/${totalLenB}`)
+    expect(new Uint8Array(xhr.response as ArrayBuffer)).toEqual(audioPayloadB.slice(1024, 8192))
+
+    expect(networkLog).toHaveLength(0)
+    expect(lab.stats().preloadHits).toBe(4)
+
+    // Step 4: Range beyond preloaded buffer falls straight through to network cleanly
+    const farSlice = await (win.fetch as typeof fetch)(cdnB, { headers: { Range: 'bytes=700000-700003' } })
+    expect(farSlice.status).toBe(206)
+    expect(new Uint8Array(await farSlice.arrayBuffer())).toEqual(new Uint8Array([0xfe, 0xed, 0xfa, 0xce]))
+    expect(networkLog).toHaveLength(1)
+
+    // Step 5: Clearing preload frees cache cleanly
+    expect(lab.warmNextTrack(null)).toBe(false)
+    expect(lab.stats().preloadedTrackId).toBe('')
+    expect(lab.stats().preloadStage).toBe('')
+  })
+
+  test('adopts gapless Harmony transition into preloadedNextTrackId without muting/pausing and auto-resumes start micro-pause in 0ms', async () => {
+    const trackA = '1111111111111111111111'
+    const trackB = '3KVOuPRavcPzqbKd6yJig7'
+    const trackC = '2222222222222222222222'
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    const playCalls: string[] = []
+    let pauseCalls = 0
+    let resumeCalls = 0
+    const hState: Record<string, unknown> = {
+      paused: false,
+      loading: false,
+      position: 179_000,
+      duration: 180_000,
+      timestamp: Date.now(),
+      track_window: {
+        current_track: { uri: `spotify:track:${trackA}`, name: 'm3 killa laharl' },
+        previous_tracks: [],
+      },
+    }
+    class MockMedia extends EventTarget {
+      tagName = 'AUDIO'
+      paused = false
+      ended = false
+      currentTime = 179
+      duration = 180
+      _vol = 0.8
+      _muted = false
+      get volume() { return this._vol }
+      set volume(v: number) { this._vol = v }
+      get muted() { return this._muted }
+      set muted(m: boolean) { this._muted = m }
+      play() { this.paused = false; return Promise.resolve() }
+      pause() { this.paused = true }
+      load() {}
+    }
+    const el = new MockMedia()
+    const win = {
+      location: { origin: 'https://open.spotify.com' },
+      fetch: async () => new Response('{}', { status: 404 }),
+      WebSocket: Socket,
+      HTMLMediaElement: { prototype: MockMedia.prototype },
+      navigator: { mediaSession: { playbackState: 'playing', metadata: {} } },
+      document: { querySelector: () => null, querySelectorAll: () => [el] },
+    } as Record<string, unknown>
+    runInNewContext(source, {
+      window: win,
+      document: win.document,
+      URL,
+      URLSearchParams,
+      Request,
+      Response,
+      Headers,
+      MessageEvent,
+      Event,
+      structuredClone,
+      setTimeout,
+      clearTimeout,
+    })
+
+    const harmony = {
+      _state: hState,
+      playTracks: async () => {},
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+      pause: () => { pauseCalls++; hState.paused = true },
+      resume: () => { resumeCalls++; hState.paused = false },
+    }
+    const lab = win.__nocturneSpotifyLab as {
+      playTrack: (id: string, startAt: number, vol: number, muted: boolean) => boolean
+      warmNextTrack: (id: string | null) => boolean
+      stats: () => { trackEnded: boolean; endedTrackId: string; lastPlayMethod: string; startPending: boolean }
+    }
+    const api = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    api.skipToNext = () => {}
+    api.pause = () => { pauseCalls++; hState.paused = true }
+    api.resume = () => { resumeCalls++; hState.paused = false }
+    api.play = async (ctx: { uri?: string }) => {
+      playCalls.push(String(ctx?.uri ?? ''))
+      hState.track_window = { current_track: { uri: ctx?.uri, name: 'Playing' }, previous_tracks: [] }
+      hState.position = 100
+      hState.duration = 172_000
+      hState.paused = false
+      hState.timestamp = Date.now()
+    }
+    api._harmony = harmony
+
+    // Track A plays and Track B (Icalled5times) is registered as next preload
+    expect(lab.playTrack(trackA, 0, 0.8, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+    hState.track_window = { current_track: { uri: `spotify:track:${trackA}`, name: 'm3 killa laharl' }, previous_tracks: [] }
+    hState.position = 179_000
+    hState.duration = 180_000
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    lab.warmNextTrack(trackB)
+
+    // Case 1: Harmony transitions gaplessly from Track A -> Track B (matches preloadedNextTrackId!)
+    playCalls.length = 0
+    pauseCalls = 0
+    hState.track_window = {
+      current_track: { uri: `spotify:track:${trackB}`, name: 'Icalled5times' },
+      previous_tracks: [{ uri: `spotify:track:${trackA}` }],
+    }
+    hState.position = 120
+    hState.duration = 172_000
+    hState.paused = false
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+
+    // Must NOT mute or pause Track B, while still signaling Track A ended!
+    expect(pauseCalls).toBe(0)
+    expect(el._muted).toBe(false)
+    expect(el.paused).toBe(false)
+    expect(lab.stats().trackEnded).toBe(true)
+    expect(lab.stats().endedTrackId).toBe(trackA)
+
+    // Nocturne advances queue -> playTrack(trackB, 0) adopts it seamlessly without calling api.play() again!
+    expect(lab.playTrack(trackB, 0, 0.8, false)).toBe(true)
+    expect(playCalls).toHaveLength(0)
+    expect(lab.stats().lastPlayMethod).toBe('harmony.seamless')
+    expect(lab.stats().trackEnded).toBe(false)
+
+    // Case 2: Cold switch to Track C -> starts playing, then a stale async pause() RPC arrives 250ms in -> 0ms auto-resume!
+    resumeCalls = 0
+    expect(lab.playTrack(trackC, 0, 0.8, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+    hState.track_window = { current_track: { uri: `spotify:track:${trackC}`, name: 'Track C' }, previous_tracks: [] }
+    hState.position = 200
+    hState.paused = false
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    // Now stale pause hits at 250ms
+    hState.position = 250
+    hState.paused = true
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(resumeCalls).toBe(1)
+    expect(hState.paused).toBe(false)
+  })
+
+  test('leftover ended song/ad audio elements and stale previous_tracks entries NEVER false-end newly started tracks', async () => {
+    const trackPrev = '4m7862vHSGJ6gR0gygAhxB'
+    const trackNew = '6tN4klJcATg8aTSXkAsK6V'
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    const hState: Record<string, unknown> = {
+      paused: false,
+      loading: false,
+      position: 0,
+      duration: 188_000,
+      timestamp: Date.now(),
+      track_window: {
+        current_track: { uri: `spotify:track:${trackPrev}`, name: 'HOLLOWS OF SORROWS' },
+        previous_tracks: [{ uri: `spotify:track:${trackNew}` }],
+      },
+    }
+    class MockMedia extends EventTarget {
+      tagName = 'AUDIO'
+      paused = true
+      ended = false
+      currentTime = 0
+      duration = 188
+      mediaKeys: object | null = {}
+      isConnected = false
+      _vol = 0.8
+      _muted = false
+      get volume() { return this._vol }
+      set volume(v: number) { this._vol = v }
+      get muted() { return this._muted }
+      set muted(m: boolean) { this._muted = m }
+      play() { this.paused = false; this.ended = false; return Promise.resolve() }
+      pause() { this.paused = true }
+      load() {}
+    }
+    const oldEndedSongEl = new MockMedia()
+    oldEndedSongEl.ended = true
+    oldEndedSongEl.paused = true
+    oldEndedSongEl.duration = 183
+    oldEndedSongEl.currentTime = 183
+
+    const oldEndedAdEl = new MockMedia()
+    oldEndedAdEl.ended = true
+    oldEndedAdEl.paused = true
+    oldEndedAdEl.duration = 30
+    oldEndedAdEl.currentTime = 30
+
+    const newTrackEl = new MockMedia()
+    newTrackEl.paused = true
+    newTrackEl.ended = false
+    newTrackEl.duration = 188
+    newTrackEl.currentTime = 0.5
+
+    const win = {
+      location: { origin: 'https://open.spotify.com' },
+      fetch: async () => new Response('{}', { status: 404 }),
+      WebSocket: Socket,
+      HTMLMediaElement: { prototype: MockMedia.prototype },
+      navigator: { mediaSession: { playbackState: 'playing', metadata: {} } },
+      document: { querySelector: () => null, querySelectorAll: () => [oldEndedSongEl, oldEndedAdEl, newTrackEl] },
+    } as Record<string, unknown>
+    runInNewContext(source, {
+      window: win,
+      document: win.document,
+      URL,
+      URLSearchParams,
+      Request,
+      Response,
+      Headers,
+      MessageEvent,
+      Event,
+      structuredClone,
+      setTimeout,
+      clearTimeout,
+    })
+
+    const lab = win.__nocturneSpotifyLab as {
+      playTrack: (id: string, startAt: number, vol: number, muted: boolean) => boolean
+      stats: () => { trackEnded: boolean; startPending: boolean }
+      nowPlaying: () => { trackEnded?: boolean; trackId?: string | null; paused?: boolean } | null
+    }
+    const api = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+    api.skipToNext = () => {}
+    api.play = async () => {}
+    api._harmony = {
+      _state: hState,
+      playTracks: async () => {},
+      addListener: (ev: string, fn: (e: unknown) => void) => {
+        const list = listeners.get(ev) ?? []
+        list.push(fn)
+        listeners.set(ev, list)
+      },
+    }
+
+    // Start new track while oldEndedSongEl (183s) and oldEndedAdEl (30s) are still ended=true in DOM/media[]
+    expect(lab.playTrack(trackNew, 0, 0.8, false)).toBe(true)
+    await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+
+    // Even if a transition frame arrives while current_track is still trackPrev and previous_tracks had trackNew -> MUST NOT end trackNew!
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(lab.stats().trackEnded).toBe(false)
+
+    // Switch Harmony to trackNew; even when newTrackEl briefly pauses/buffers while oldEndedSongEl & oldEndedAdEl remain ended=true -> MUST NOT report trackEnded!
+    hState.track_window = { current_track: { uri: `spotify:track:${trackNew}`, name: 'undøne' }, previous_tracks: [] }
+    hState.position = 500
+    hState.paused = false
+    for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+    expect(lab.stats().trackEnded).toBe(false)
+    expect(lab.nowPlaying()?.trackEnded).toBe(false)
+    expect(lab.nowPlaying()?.paused).toBe(false)
+  })
+
+  test('early-start ad interruption never false-ends desired track even across a 30s ad, while uninterrupted full-length playback triggers post-roll trackEnded', async () => {
+    const trackShortStart = '6tN4klJcATg8aTSXkAsK6V'
+    const trackFull = '4m7862vHSGJ6gR0gygAhxB'
+    const trackRandom = '9999999999999999999999'
+    const listeners = new Map<string, Array<(ev: unknown) => void>>()
+    let fakeNow = 1_700_000_000_000
+    const dateNowSpy = vi.spyOn(Date, 'now').mockImplementation(() => fakeNow)
+    try {
+      const hState: Record<string, unknown> = {
+        paused: false,
+        loading: false,
+        position: 500,
+        duration: 188_000,
+        timestamp: fakeNow,
+        track_window: {
+          current_track: { uri: `spotify:track:${trackShortStart}`, name: 'undøne' },
+          previous_tracks: [] as Array<{ uri: string }>,
+        },
+      }
+      class MockMedia extends EventTarget {
+        tagName = 'AUDIO'
+        paused = false
+        ended = false
+        duration = 188
+        currentTime = 0.5
+        readyState = 4
+        _vol = 1
+        _muted = false
+        get volume() { return this._vol }
+        set volume(v: number) { this._vol = v }
+        get muted() { return this._muted }
+        set muted(m: boolean) { this._muted = m }
+        play() { this.paused = false; return Promise.resolve() }
+        pause() { this.paused = true }
+      }
+      const el = new MockMedia()
+      const win: Record<string, unknown> = {
+        location: { origin: 'https://open.spotify.com', href: 'https://open.spotify.com/' },
+        fetch: async () => new Response('{}', { status: 200 }),
+        WebSocket: class {
+          url: string
+          constructor(url: string) { this.url = url }
+          addEventListener() {}
+          removeEventListener() {}
+        },
+        HTMLMediaElement: MockMedia,
+        document: {
+          head: { appendChild: () => {} },
+          createElement: () => new MockMedia(),
+          querySelector: () => null,
+          querySelectorAll: (sel: string) => (sel.replace(/\s+/g, '') === 'audio,video' ? [el] : []),
+        },
+        navigator: { mediaSession: { playbackState: 'playing', metadata: { title: 'undøne', artist: '', album: '', artwork: [] } } },
+      }
+      runInNewContext(source, {
+        window: win,
+        document: win.document,
+        URL,
+        URLSearchParams,
+        Request,
+        Response,
+        Headers,
+        MessageEvent,
+        Event,
+        structuredClone,
+        Date,
+        setTimeout,
+        clearTimeout,
+      })
+
+      const lab = win.__nocturneSpotifyLab as {
+        playTrack: (id: string, startAt: number, vol: number, muted: boolean) => boolean
+        stats: () => { trackEnded: boolean; endedTrackId: string; startPending: boolean }
+      }
+      const api = Object.create(Object.getPrototypeOf(lab.stats())) as Record<string, unknown>
+      api.skipToNext = () => {}
+      api.play = async () => {}
+      api._harmony = {
+        _state: hState,
+        playTracks: async () => {},
+        addListener: (ev: string, fn: (e: unknown) => void) => {
+          const list = listeners.get(ev) ?? []
+          list.push(fn)
+          listeners.set(ev, list)
+        },
+      }
+
+      // 1. Track starts and plays for 0.5s (user hears it start), then Spotify Free interrupts with a 30s ad placing it in previous_tracks
+      expect(lab.playTrack(trackShortStart, 0, 0.8, false)).toBe(true)
+      await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+      for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+
+      fakeNow += 400
+      hState.track_window = {
+        current_track: { uri: 'spotify:ad:interrupt30', name: 'Реклама' },
+        previous_tracks: [{ uri: `spotify:track:${trackShortStart}` }],
+      }
+      hState.duration = 30_000
+      hState.position = 200
+      hState.timestamp = fakeNow
+      for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+      expect(lab.stats().trackEnded).toBe(false)
+
+      // 2. 30 seconds later the ad finishes and Harmony lands on a random track with previous_tracks still holding trackShortStart -> STILL NOT ended!
+      fakeNow += 30_000
+      hState.track_window = {
+        current_track: { uri: `spotify:track:${trackRandom}`, name: 'Random' },
+        previous_tracks: [{ uri: `spotify:track:${trackShortStart}` }],
+      }
+      hState.duration = 190_000
+      hState.position = 100
+      hState.timestamp = fakeNow
+      for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+      expect(lab.stats().trackEnded).toBe(false)
+
+      // 3. Contrast: uninterrupted 183s track starts at 0ms with NO intermediate state_changed events, plays 183s, and enters a post-roll ad -> MUST fire trackEnded immediately!
+      expect(lab.playTrack(trackFull, 0, 0.8, false)).toBe(true)
+      await vi.waitFor(() => expect(lab.stats().startPending).toBe(false), { timeout: 1000 })
+      hState.track_window = {
+        current_track: { uri: `spotify:track:${trackFull}`, name: 'HOLLOWS OF SORROWS' },
+        previous_tracks: [],
+      }
+      hState.duration = 183_000
+      hState.position = 0
+      hState.timestamp = fakeNow
+      for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+      expect(lab.stats().trackEnded).toBe(false)
+
+      fakeNow += 183_000
+      hState.track_window = {
+        current_track: { uri: 'spotify:ad:postroll30', name: 'Реклама' },
+        previous_tracks: [{ uri: `spotify:track:${trackFull}` }],
+      }
+      hState.duration = 30_000
+      hState.position = 100
+      hState.timestamp = fakeNow
+      for (const fn of listeners.get('state_changed') ?? []) fn({ data: { state: hState } })
+      expect(lab.stats().trackEnded).toBe(true)
+      expect(lab.stats().endedTrackId).toBe(trackFull)
+    } finally {
+      dateNowSpy.mockRestore()
+    }
+  })
 })

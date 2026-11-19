@@ -188,8 +188,10 @@ describe('normalizeFriend / normalizeUser', () => {
     expect(normalizeFriend({ id: 5, first_name: 'A', last_name: 'B', can_see_audio: 1, deactivated: 'deleted' }).canSeeAudio).toBe(false)
   })
 
-  test('user prefers the larger photo', () => {
+  test('user prefers the larger photo and omits missing name parts cleanly', () => {
     expect(normalizeUser({ id: 1, first_name: 'A', last_name: 'B', photo_100: 'https://s', photo_200: 'https://l' })).toEqual({ id: 1, name: 'A B', photo: 'https://l' })
+    expect(normalizeUser({ id: 2, first_name: 'Solo', last_name: undefined as unknown as string })).toEqual({ id: 2, name: 'Solo', photo: undefined })
+    expect(normalizeFriend({ id: 3, first_name: 'Solo', last_name: undefined as unknown as string }).name).toBe('Solo')
   })
 })
 

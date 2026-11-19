@@ -77,8 +77,9 @@ describe('prev', () => {
     expect(prev(createQueue(['a', 'b'], 0, false, 'off'), ok)).toBeNull()
   })
 
-  test('wraps to the last track with repeat all', () => {
+  test('wraps to the last track with repeat all or repeat one', () => {
     expect(current(prev(createQueue(['a', 'b', 'c'], 0, false, 'all'), ok)!)).toBe('c')
+    expect(current(prev(createQueue(['a', 'b', 'c'], 0, false, 'one'), ok)!)).toBe('c')
   })
 
   test('skips unplayable tracks backwards', () => {

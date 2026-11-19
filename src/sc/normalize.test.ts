@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
+import { queryClient } from '../app/queryClient'
 import { serviceOf } from '../vk/models'
 import { albumRaw, blocked, encryptedOnly, playlistRaw, snippedOnly, snipPolicy, streamRaw, systemPlaylistRaw, trackRaw, userRaw } from './fixtures'
 import { artwork, normalizeScComment, normalizeScPlaylist, normalizeScTrack, normalizeScUser, streamItems } from './normalize'
@@ -38,6 +39,11 @@ describe('SoundCloud tracks', () => {
     expect(normalizeScTrack(trackRaw(402, 'x', { artwork_url: null })).cover?.l).toContain('avatars-000501')
     expect(normalizeScTrack(trackRaw(402, 'x', { artwork_url: null, user: { ...userRaw, avatar_url: null } })).cover).toBeUndefined()
     expect(artwork(undefined)).toBeUndefined()
+  })
+
+  test('falls back to duration when full_duration is 0', () => {
+    const t = normalizeScTrack(trackRaw(402, 'x', { full_duration: 0, duration: 185_000 }))
+    expect(t.duration).toBe(185)
   })
 })
 
@@ -96,6 +102,12 @@ describe('protected SoundCloud tracks', () => {
     expect(playableTrack(ctr('audio/mpeg'))).toBe(false)
     setDrmAvailable(false)
     expect(playableTrack(ctr('audio/mp4; codecs="mp4a.40.2"'))).toBe(false)
+    setDrmAvailable(true)
+
+    const invSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    setDrmAvailable(false)
+    expect(invSpy).toHaveBeenCalledOnce()
+    invSpy.mockRestore()
     setDrmAvailable(true)
   })
 })

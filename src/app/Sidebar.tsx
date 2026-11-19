@@ -27,9 +27,8 @@ import { Spinner } from '../components/controls'
 const ic = { size: 18, strokeWidth: 2 } as const
 
 function NavItem({ route, icon, label }: { route: Route; icon: ReactNode; label: string }) {
-  const current = useRouter((r) => r.route)
-  const push = useRouter((r) => r.push)
-  const active = current.name === route.name
+  const active = useRouter((r) => r.route.name === route.name)
+  const push = useRouter.getState().push
   return (
     <button type="button" className={s.item} aria-current={active ? 'page' : undefined} onClick={() => push(route)}>
       <span className={s.itemIcon}>{icon}</span>
@@ -41,8 +40,7 @@ function NavItem({ route, icon, label }: { route: Route; icon: ReactNode; label:
 /** The search of the selected service: VK's `search`, SoundCloud's `sc-search`, or Spotify's `spotify-search`. */
 function SearchField() {
   const route = useRouter((r) => r.route)
-  const push = useRouter((r) => r.push)
-  const replace = useRouter((r) => r.replace)
+  const { push, replace } = useRouter.getState()
   const service = useService((x) => x.current)
   const page = service === 'spotify' ? 'spotify-search' : service === 'sc' ? 'sc-search' : 'search'
   const here = route.name === page
@@ -52,6 +50,7 @@ function SearchField() {
 
   useEffect(() => {
     if (!here || rawRouteQ.startsWith('genre:')) setValue('')
+    else if (document.activeElement !== ref.current) setValue(rawRouteQ)
   }, [here, rawRouteQ])
 
   const update = (q: string) => {

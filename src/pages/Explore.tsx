@@ -40,7 +40,7 @@ export function Explore() {
               variant="tinted"
               onClick={() => {
                 void catalog.refetch()
-                void q.refetch()
+                if (sectionId) void q.refetch()
               }}
             >
               <RefreshCw size={15} /> Повторить

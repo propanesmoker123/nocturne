@@ -42,6 +42,8 @@
 }
 .list[data-reordering] .row {
   content-visibility: visible;
+}
+.list[data-reordering] .row[data-dragging] {
   will-change: transform;
 }
 .row[data-can-drag] {

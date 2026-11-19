@@ -16,6 +16,7 @@ static POPUPS: AtomicU32 = AtomicU32::new(0);
 pub struct SpotifyState {
     enabled: AtomicBool,
     ready: AtomicBool,
+    harmony_ready: AtomicBool,
     cookie_checked: AtomicBool,
     has_cookie: AtomicBool,
     gate: tokio::sync::Mutex<()>,
@@ -28,6 +29,7 @@ impl SpotifyState {
         Self {
             enabled: AtomicBool::new(true),
             ready: AtomicBool::new(false),
+            harmony_ready: AtomicBool::new(false),
             cookie_checked: AtomicBool::new(false),
             has_cookie: AtomicBool::new(false),
             gate: tokio::sync::Mutex::new(()),
@@ -70,7 +72,7 @@ pub fn prewarm_if_active(app: AppHandle) {
         let Ok(url) = rules::target_url("home", None) else { return };
         let st = app.state::<SpotifyState>();
         let _gate = st.gate.lock().await;
-        let _ = ensure_webview(&app, &st, hidden_rect(), url, false);
+        let _ = ensure_webview(&app, &st, hidden_rect(), url, false, false);
     });
 }
 fn main_only(window: &Webview) -> Result<(), String> {
@@ -109,12 +111,14 @@ fn checked_bounds(app: &AppHandle, b: &Bounds) -> Result<Rect, String> {
     Ok(Rect { position: LogicalPosition::new(b.x,b.y).into(), size: LogicalSize::new(b.width,b.height).into() })
 }
 
-fn ensure_webview(app: &AppHandle, st: &SpotifyState, rect: Rect, url: url::Url, visible: bool) -> Result<Webview, String> {
+fn ensure_webview(app: &AppHandle, st: &SpotifyState, rect: Rect, url: url::Url, visible: bool, update_bounds: bool) -> Result<(Webview, bool), String> {
     let target_rect = if visible { rect } else { hidden_rect() };
     if let Some(view) = app.get_webview(LABEL) {
-        view.set_bounds(target_rect).map_err(script_error)?;
-        let _ = view.show();
-        return Ok(view);
+        if update_bounds {
+            view.set_bounds(target_rect).map_err(script_error)?;
+            let _ = view.show();
+        }
+        return Ok((view, false));
     }
     let profile = app.path().app_local_data_dir().map_err(script_error)?.join("spotify-webview");
     let popup_profile = profile.clone();
@@ -157,16 +161,23 @@ fn ensure_webview(app: &AppHandle, st: &SpotifyState, rect: Rect, url: url::Url,
             }
         })
         .on_page_load(move |view, payload| {
-            if payload.event() == PageLoadEvent::Finished {
-                let enabled = page_app.state::<SpotifyState>().enabled.load(Ordering::Relaxed);
-                let _ = view.eval(format!("window.__nocturneSpotifyLab?.configure({enabled})"));
-                let _ = page_app.emit_to("main","spotify:page",());
+            match payload.event() {
+                PageLoadEvent::Started => {
+                    let st = page_app.state::<SpotifyState>();
+                    st.ready.store(false, Ordering::Relaxed);
+                    st.harmony_ready.store(false, Ordering::Relaxed);
+                }
+                PageLoadEvent::Finished => {
+                    let enabled = page_app.state::<SpotifyState>().enabled.load(Ordering::Relaxed);
+                    let _ = view.eval(format!("window.__nocturneSpotifyLab?.configure({enabled})"));
+                    let _ = page_app.emit_to("main","spotify:page",());
+                }
             }
         });
     let parent = app.get_window("main").ok_or("Главное окно закрыто")?;
     let child = parent.add_child(builder, target_rect.position, target_rect.size).map_err(script_error)?;
     let _ = child.show();
-    Ok(child)
+    Ok((child, true))
 }
 
 async fn hidden_ready_view(app: &AppHandle, st: &SpotifyState) -> Result<Webview, String> {
@@ -178,7 +189,7 @@ async fn hidden_ready_view(app: &AppHandle, st: &SpotifyState) -> Result<Webview
     } else {
         st.ready.store(false, Ordering::Relaxed);
         let _gate = st.gate.lock().await;
-        ensure_webview(app, st, hidden_rect(), rules::target_url("home", None)?, false)?
+        ensure_webview(app, st, hidden_rect(), rules::target_url("home", None)?, false, false)?.0
     };
     let ready = tokio::time::timeout(Duration::from_secs(12), async {
         for step in 0..70 {
@@ -199,13 +210,23 @@ async fn hidden_ready_view(app: &AppHandle, st: &SpotifyState) -> Result<Webview
 
 async fn run_lab_job(view: &Webview, spec: Value) -> Result<Value, String> {
     let key = uuid::Uuid::new_v4().simple().to_string();
+    let key_json = serde_json::to_string(&key).unwrap();
     let kind = spec["kind"].as_str().unwrap_or("unknown");
     let target = spec["path"].as_str().and_then(|p| p.split('?').next()).unwrap_or("");
-    let started = eval(view, &format!("window.__nocturneSpotifyLab?.startJob({}, {}) ?? false", serde_json::to_string(&key).unwrap(), spec)).await?;
+    let started = eval(view, &format!("window.__nocturneSpotifyLab?.startJob({key_json}, {spec}) ?? false")).await?;
     if started != "true" { return Err("Плеер Spotify не готов".into()); }
+    let drop_job = || {
+        let _ = view.eval(format!("window.__nocturneSpotifyLab?.dropJob?.({key_json})"));
+    };
     for step in 0..120 {
-        let raw = eval(view, &format!("window.__nocturneSpotifyLab?.pollJob({}) ?? {{done:true,ok:false,error:'MISSING'}}", serde_json::to_string(&key).unwrap())).await?;
-        let poll: Value = serde_json::from_str(&raw).map_err(script_error)?;
+        let raw = match eval(view, &format!("window.__nocturneSpotifyLab?.pollJob({key_json}) ?? {{done:true,ok:false,error:'MISSING'}}")).await {
+            Ok(r) => r,
+            Err(e) => { drop_job(); return Err(e); }
+        };
+        let poll: Value = match serde_json::from_str(&raw) {
+            Ok(p) => p,
+            Err(e) => { drop_job(); return Err(script_error(e)); }
+        };
         if poll["done"].as_bool() == Some(true) {
             if poll["ok"].as_bool() == Some(true) { return Ok(poll["data"].clone()); }
             let code = poll["error"].as_str().unwrap_or("ERROR");
@@ -219,6 +240,7 @@ async fn run_lab_job(view: &Webview, spec: Value) -> Result<Value, String> {
         let delay_ms = if step < 12 { 15 } else if step < 25 { 35 } else if step < 40 { 65 } else { 100 };
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     }
+    drop_job();
     crate::journal::write("spotify", &format!("lab {kind} {target} timed out"));
     Err("Превышено время ожидания ответа от Spotify".into())
 }
@@ -229,8 +251,12 @@ pub async fn spotify_open(app: AppHandle, window: Webview, bounds: Bounds, page:
     let _gate = st.gate.lock().await;
     let rect = checked_bounds(&app, &bounds)?;
     let url = rules::target_url(&page,value.as_deref())?;
-    let view = ensure_webview(&app, &st, rect, url.clone(), visible)?;
-    if page != "resume" { view.navigate(url).map_err(script_error)?; }
+    let (view, created) = ensure_webview(&app, &st, rect, url.clone(), visible, true)?;
+    if !created && page != "resume" {
+        st.ready.store(false, Ordering::Relaxed);
+        st.harmony_ready.store(false, Ordering::Relaxed);
+        view.navigate(url).map_err(script_error)?;
+    }
     Ok(())
 }
 
@@ -260,11 +286,19 @@ pub async fn spotify_close(app: AppHandle, window: Webview, st: State<'_, Spotif
     main_only(&window)?;
     st.next_playback_revision();
     st.ready.store(false, Ordering::Relaxed);
+    st.harmony_ready.store(false, Ordering::Relaxed);
     st.cookie_checked.store(false, Ordering::Relaxed);
+    let prev_login = st.login.lock().await.take();
+    if let Some(login) = prev_login { login.close().await; }
     let _gate = st.gate.lock().await;
-    if let Some(login) = st.login.lock().await.take() { login.close().await; }
     for (label, popup) in app.webview_windows() { if label.starts_with(POPUP) { let _ = popup.destroy(); } }
-    if let Some(view) = app.get_webview(LABEL) { view.close().map_err(script_error)?; }
+    if let Some(view) = app.get_webview(LABEL) {
+        view.close().map_err(script_error)?;
+        for _ in 0..40 {
+            if app.get_webview(LABEL).is_none() { break; }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
     Ok(())
 }
 #[tauri::command]
@@ -280,11 +314,28 @@ pub async fn spotify_control(app: AppHandle, window: Webview, action: String, va
         None
     };
     let Some(view) = app.get_webview(LABEL) else { return Ok(false) };
-    if action == "reload" { view.reload().map_err(script_error)?; return Ok(true); }
+    if action == "reload" {
+        st.ready.store(false, Ordering::Relaxed);
+        st.harmony_ready.store(false, Ordering::Relaxed);
+        view.reload().map_err(script_error)?;
+        return Ok(true);
+    }
     let value = value.map_or_else(|| "null".to_owned(), |value| value.to_string());
     let raw = eval(&view,&format!("window.__nocturneSpotifyLab?.control({}, {value}) ?? false", serde_json::to_string(&action).unwrap())).await?;
     Ok(raw == "true")
 }
+
+fn sanitize_fallback_embed(raw: Option<&Value>) -> Value {
+    let Some(obj) = raw.and_then(Value::as_object) else { return Value::Null };
+    let Some(entity) = obj.get("entity").and_then(Value::as_str).filter(|e| matches!(*e, "playlist" | "album" | "artist" | "track")) else {
+        return Value::Null;
+    };
+    let Some(id) = obj.get("id").and_then(Value::as_str).filter(|id| rules::valid_spotify_id(id)) else {
+        return Value::Null;
+    };
+    json!({ "entity": entity, "id": id })
+}
+
 #[tauri::command]
 pub async fn spotify_status(app: AppHandle, window: Webview, request: Option<Value>, st: State<'_,SpotifyState>) -> Result<Value,String> {
     main_only(&window)?;
@@ -299,18 +350,48 @@ pub async fn spotify_status(app: AppHandle, window: Webview, request: Option<Val
             view.eval(format!("window.__nocturneSpotifyLab?.setVolume({vol}, {muted})")).map_err(script_error)?;
             return Ok(json!({ "ok": true }));
         }
+        if kind == "warm" {
+            let Some(view) = app.get_webview(LABEL) else { return Ok(json!({ "ok": false })) };
+            let id_arg = match req.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                Some(id) if rules::valid_spotify_id(id) => serde_json::to_string(id).unwrap(),
+                Some(_) => return Err("Некорректный ID трека Spotify".into()),
+                None => "null".to_owned(),
+            };
+            let _ = view.eval(format!("window.__nocturneSpotifyLab?.warmNextTrack?.({id_arg})"));
+            return Ok(json!({ "ok": true }));
+        }
+        if kind == "logout" {
+            let active_login = st.login.lock().await.take();
+            if let Some(login) = active_login {
+                login.close().await;
+            }
+            let _gate = st.gate.lock().await;
+            let _dispatch = st.playback_dispatch.lock().await;
+            st.ready.store(false, Ordering::Relaxed);
+            st.harmony_ready.store(false, Ordering::Relaxed);
+            st.cookie_checked.store(false, Ordering::Relaxed);
+            st.has_cookie.store(false, Ordering::Relaxed);
+            for (label, popup) in app.webview_windows() {
+                if label.starts_with(POPUP) {
+                    let _ = popup.destroy();
+                }
+            }
+            let home_url = rules::target_url("home", None)?;
+            let view = match app.get_webview(LABEL) {
+                Some(v) => Some(v),
+                None => ensure_webview(&app, &st, hidden_rect(), home_url.clone(), false, false).ok().map(|(v, _)| v),
+            };
+            if let Some(view) = view {
+                session_cookies::clear(&view).await;
+                let _ = view.clear_all_browsing_data();
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let _ = view.navigate(home_url);
+            }
+            return Ok(json!({ "ok": true }));
+        }
         let view = hidden_ready_view(&app, &st).await?;
         if kind != "init" {
             return match kind {
-                "logout" => {
-                    st.ready.store(false, Ordering::Relaxed);
-                    st.cookie_checked.store(false, Ordering::Relaxed);
-                    st.has_cookie.store(false, Ordering::Relaxed);
-                    session_cookies::clear(&view).await;
-                    let _ = view.clear_all_browsing_data();
-                    let _ = view.navigate(rules::target_url("home", None)?);
-                    Ok(json!({ "ok": true }))
-                }
                 "play" => {
                     let revision = play_revision.ok_or("Missing playback revision")?;
                     if !st.is_current_playback(revision) { return Ok(json!({ "ok": false })); }
@@ -328,26 +409,31 @@ pub async fn spotify_status(app: AppHandle, window: Webview, request: Option<Val
                         "trackUid": track_uid,
                         "preferContext": prefer_context,
                     });
-                    let _ = tokio::time::timeout(Duration::from_secs(3), async {
-                        for _ in 0..12 {
-                            if !st.is_current_playback(revision) { break; }
-                            let ready = eval(&view, "(() => { const s = window.__nocturneSpotifyLab?.stats(); return Boolean(s && (s.hasHarmony || s.hasApi)) || window.__nocturneSpotifyLab?.account() === 'out'; })()").await.unwrap_or_default();
-                            if ready == "true" { break; }
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                    }).await;
+                    if !st.harmony_ready.load(Ordering::Relaxed) {
+                        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+                            for _ in 0..12 {
+                                if !st.is_current_playback(revision) { break; }
+                                let ready = eval(&view, "(() => { const s = window.__nocturneSpotifyLab?.stats(); return Boolean(s && (s.hasHarmony || s.hasApi)) || window.__nocturneSpotifyLab?.account() === 'out'; })()").await.unwrap_or_default();
+                                if ready == "true" { break; }
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                        }).await;
+                    }
                     let _dispatch = st.playback_dispatch.lock().await;
                     if !st.is_current_playback(revision) { return Ok(json!({ "ok": false })); }
                     let raw = eval(
                         &view,
                         &format!(
-                            "(() => {{ const ok = window.__nocturneSpotifyLab?.playTrack({}, {start_at}, {vol_arg}, {muted_arg}, {}) ?? false; const st = window.__nocturneSpotifyLab?.stats() ?? {{}}; const diag = window.__nocturneSpotifyLab?.takeDiagnostics?.() ?? []; return {{ ok, drm: window.__nocturneSpotifyDrm ?? null, hasHarmony: Boolean(st.hasHarmony), err: st.lastPlayError || '', method: st.lastPlayMethod || '', diag }}; }})()",
+                            "(() => {{ const ok = window.__nocturneSpotifyLab?.playTrack({}, {start_at}, {vol_arg}, {muted_arg}, {}) ?? false; const st = window.__nocturneSpotifyLab?.stats() ?? {{}}; const diag = window.__nocturneSpotifyLab?.takeDiagnostics?.() ?? []; return {{ ok, drm: window.__nocturneSpotifyDrm ?? null, hasHarmony: Boolean(st.hasHarmony || st.hasApi), err: st.lastPlayError || '', method: st.lastPlayMethod || '', diag }}; }})()",
                             serde_json::to_string(id).unwrap(),
                             serde_json::to_string(&context_arg).unwrap()
                         ),
                     ).await?;
                     let res: Value = serde_json::from_str(&raw).map_err(script_error)?;
                     let ok = res["ok"].as_bool() == Some(true);
+                    if res["hasHarmony"].as_bool() == Some(true) {
+                        st.harmony_ready.store(true, Ordering::Relaxed);
+                    }
                     flush_diag(res.get("diag"));
                     if res["drm"].as_bool() == Some(false) {
                         crate::journal::write("spotify", "play requested while Widevine DRM unavailable");
@@ -373,18 +459,21 @@ pub async fn spotify_status(app: AppHandle, window: Webview, request: Option<Val
                 "api" => {
                     let method = req["method"].as_str().unwrap_or("GET");
                     let path = req["path"].as_str().filter(|p| rules::valid_api_path(method, p)).ok_or("Недопустимый запрос к API Spotify")?;
-                    let fallback = req.get("fallbackEmbed").cloned().unwrap_or(Value::Null);
+                    let fallback = sanitize_fallback_embed(req.get("fallbackEmbed"));
                     run_lab_job(&view, json!({ "kind": "api", "method": method, "path": path, "fallbackEmbed": fallback })).await
                 }
                 _ => Err("Неизвестный запрос к Spotify".into()),
             };
         }
     }
-    let login_waiting = {
+    let (login_waiting, expired_login) = {
         let mut login = st.login.lock().await;
-        if login.as_mut().is_some_and(|login| login.expired()) { login.take(); }
-        login.is_some()
+        let expired = if login.as_mut().is_some_and(|l| l.expired()) { login.take() } else { None };
+        (login.is_some(), expired)
     };
+    if let Some(l) = expired_login {
+        l.close().await;
+    }
     let Some(view) = app.get_webview(LABEL) else { return Ok(json!({"open":false,"enabled":st.enabled.load(Ordering::Relaxed),"loginWaiting":login_waiting})) };
     let raw = eval(&view, r#"(() => {
       const origin=location.origin;
@@ -393,24 +482,35 @@ pub async fn spotify_status(app: AppHandle, window: Webview, request: Option<Val
       return {open:true,phase,title:document.title.slice(0,160),drm:window.__nocturneSpotifyDrm??null,playing:window.__nocturneSpotifyLab?.playing()??null,nowPlaying:window.__nocturneSpotifyLab?.nowPlaying()??null,account:window.__nocturneSpotifyLab?.account()??null,diag,...(window.__nocturneSpotifyLab?.stats()??{})};
     })()"#).await?;
     let mut status: Value = serde_json::from_str(&raw).map_err(script_error)?;
+    if !status.is_object() {
+        return Err(script_error("invalid status payload"));
+    }
     let diag = status.as_object_mut().and_then(|o| o.remove("diag"));
     flush_diag(diag.as_ref());
     if status["phase"].as_str() == Some("ready") {
         st.ready.store(true, Ordering::Relaxed);
     }
-    if status["account"].as_str() == Some("in") {
-        st.has_cookie.store(true, Ordering::Relaxed);
-        st.cookie_checked.store(true, Ordering::Relaxed);
-    } else {
-        let has_cookie = if !st.cookie_checked.swap(true, Ordering::Relaxed) || login_waiting {
-            let c = has_sp_dc(&view);
-            st.has_cookie.store(c, Ordering::Relaxed);
-            c
-        } else {
-            st.has_cookie.load(Ordering::Relaxed)
-        };
-        if has_cookie {
-            status["account"] = json!("in");
+    match status["account"].as_str() {
+        Some("in") => {
+            st.has_cookie.store(true, Ordering::Relaxed);
+            st.cookie_checked.store(true, Ordering::Relaxed);
+        }
+        Some("out") => {
+            // Explicit "out" from the page (login button or anonymous token): never overwrite with stale cached has_cookie.
+            st.has_cookie.store(false, Ordering::Relaxed);
+            st.cookie_checked.store(true, Ordering::Relaxed);
+        }
+        _ => {
+            let has_cookie = if !st.cookie_checked.swap(true, Ordering::Relaxed) || login_waiting {
+                let c = has_sp_dc(&view);
+                st.has_cookie.store(c, Ordering::Relaxed);
+                c
+            } else {
+                st.has_cookie.load(Ordering::Relaxed)
+            };
+            if has_cookie {
+                status["account"] = json!("in");
+            }
         }
     }
     status["loginWaiting"] = json!(login_waiting);
@@ -422,20 +522,41 @@ async fn complete_login(app: &AppHandle, st: &SpotifyState) -> Result<(), String
         v
     } else {
         let _gate = st.gate.lock().await;
-        ensure_webview(app, st, hidden_rect(), rules::target_url("home", None)?, false)?
+        ensure_webview(app, st, hidden_rect(), rules::target_url("home", None)?, false, false)?.0
     };
-    let _gate = st.gate.lock().await;
-    let mut login = st.login.lock().await;
-    if login.is_none() && has_sp_dc(&view) {
-        return Ok(());
-    }
-    let cookies = login.as_mut().ok_or("Сначала нажмите «Войти через Chrome»")?.cookies().await?;
+    let probe = {
+        let mut login = st.login.lock().await;
+        match login.as_mut() {
+            Some(l) => Some((l.id(), l.probe_info()?)),
+            None => None,
+        }
+    };
+    let Some((login_id, (port, client))) = probe else {
+        if has_sp_dc(&view) {
+            return Ok(());
+        }
+        return Err("Сначала нажмите «Войти через Chrome»".into());
+    };
+    let cookies = browser_login::BrowserLogin::fetch_cookies(port, client).await?;
     let expected = cookies.iter().find(|cookie| cookie.cookie.name() == "sp_dc").map(|cookie| cookie.cookie.value().to_owned()).ok_or("Spotify не подтвердил вход")?;
-    session_cookies::write(&view, cookies).await?;
-    let imported = view.cookies_for_url("https://open.spotify.com/".parse().unwrap()).map_err(|_| "Не удалось проверить вход в плеер Spotify")?;
-    if !imported.iter().any(|cookie| cookie.name() == "sp_dc" && cookie.value() == expected) { return Err("Вход пока не передан в плеер. Оставьте окно Chrome открытым и повторите попытку.".into()); }
-    view.navigate(rules::target_url("home",None)?).map_err(script_error)?;
-    if let Some(login) = login.take() { login.close().await; }
+    {
+        let _gate = st.gate.lock().await;
+        session_cookies::write(&view, cookies).await?;
+        let imported = view.cookies_for_url("https://open.spotify.com/".parse().unwrap()).map_err(|_| "Не удалось проверить вход в плеер Spotify")?;
+        if !imported.iter().any(|cookie| cookie.name() == "sp_dc" && cookie.value() == expected) {
+            return Err("Вход пока не передан в плеер. Оставьте окно Chrome открытым и повторите попытку.".into());
+        }
+        st.ready.store(false, Ordering::Relaxed);
+        st.harmony_ready.store(false, Ordering::Relaxed);
+        st.has_cookie.store(true, Ordering::Relaxed);
+        st.cookie_checked.store(true, Ordering::Relaxed);
+        view.navigate(rules::target_url("home",None)?).map_err(script_error)?;
+    }
+    let finished_login = {
+        let mut login = st.login.lock().await;
+        if login.as_ref().is_some_and(|l| l.id() == login_id) { login.take() } else { None }
+    };
+    if let Some(login) = finished_login { login.close().await; }
     if let Some(main) = app.get_window("main") { let _ = main.unminimize(); let _ = main.show(); let _ = main.set_focus(); }
     let _ = app.emit_to("main","spotify:page",());
     Ok(())
@@ -444,33 +565,51 @@ async fn complete_login(app: &AppHandle, st: &SpotifyState) -> Result<(), String
 #[tauri::command]
 pub async fn spotify_login_start(app: AppHandle, window: Webview, st: State<'_, SpotifyState>) -> Result<(), String> {
     main_only(&window)?;
-    let mut login = st.login.lock().await;
-    if login.as_mut().is_some_and(|login| !login.expired()) { return Ok(()); }
-    login.take();
+    let expired_prev = {
+        let mut login = st.login.lock().await;
+        if login.as_mut().is_some_and(|login| !login.expired()) { return Ok(()); }
+        login.take()
+    };
+    if let Some(prev) = expired_prev {
+        prev.close().await;
+    }
     let root = app.path().app_local_data_dir().map_err(script_error)?.join("spotify-chrome-login");
-    *login = Some(browser_login::BrowserLogin::start(root).await?);
-    let id = login.as_ref().unwrap().id();
-    drop(login);
+    let started = browser_login::BrowserLogin::start(root).await?;
+    let id = started.id();
+    {
+        let mut login = st.login.lock().await;
+        if login.as_mut().is_some_and(|l| !l.expired()) {
+            drop(login);
+            started.close().await;
+            return Ok(());
+        }
+        *login = Some(started);
+    }
     tauri::async_runtime::spawn(async move {
         let state = app.state::<SpotifyState>();
         for _ in 0..400 {
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            let active = {
+            let (active, expired) = {
                 let mut login = state.login.lock().await;
                 if login.as_mut().is_some_and(|l| l.id() == id && l.expired()) {
-                    if let Some(l) = login.take() { l.close().await; }
-                    let _ = app.emit_to("main", "spotify:page", ());
-                    false
+                    (false, login.take())
                 } else {
-                    login.as_ref().is_some_and(|l| l.id() == id)
+                    (login.as_ref().is_some_and(|l| l.id() == id), None)
                 }
             };
+            if let Some(l) = expired {
+                l.close().await;
+                let _ = app.emit_to("main", "spotify:page", ());
+            }
             if !active { return; }
             if complete_login(&app, &state).await.is_ok() { return; }
         }
-        let mut login = state.login.lock().await;
-        if login.as_ref().is_some_and(|login| login.id() == id) {
-            if let Some(login) = login.take() { login.close().await; }
+        let timed_out = {
+            let mut login = state.login.lock().await;
+            if login.as_ref().is_some_and(|l| l.id() == id) { login.take() } else { None }
+        };
+        if let Some(login) = timed_out {
+            login.close().await;
             let _ = app.emit_to("main", "spotify:page", ());
         }
     });
@@ -484,6 +623,29 @@ pub async fn spotify_login_finish(app: AppHandle, window: Webview, st: State<'_,
 #[tauri::command]
 pub async fn spotify_login_cancel(window: Webview, st: State<'_, SpotifyState>) -> Result<(), String> {
     main_only(&window)?;
-    if let Some(login) = st.login.lock().await.take() { login.close().await; }
+    let active = st.login.lock().await.take();
+    if let Some(login) = active { login.close().await; }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitizes_fallback_embed_strictly() {
+        let valid = json!({ "entity": "playlist", "id": "37i9dQZF1DXcBWIGoYBM5M", "extra": "dropped" });
+        assert_eq!(
+            sanitize_fallback_embed(Some(&valid)),
+            json!({ "entity": "playlist", "id": "37i9dQZF1DXcBWIGoYBM5M" })
+        );
+        for invalid in [
+            json!(null),
+            json!("playlist"),
+            json!({ "entity": "evil", "id": "37i9dQZF1DXcBWIGoYBM5M" }),
+            json!({ "entity": "playlist", "id": "../bad" }),
+        ] {
+            assert_eq!(sanitize_fallback_embed(Some(&invalid)), Value::Null);
+        }
+    }
 }

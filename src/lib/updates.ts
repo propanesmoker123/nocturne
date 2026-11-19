@@ -62,7 +62,7 @@ export const useUpdates = create<UpdateState>((set, get) => ({
     }
   },
   async install() {
-    if (!pending) return
+    if (!pending || get().phase === 'downloading') return
     set({ phase: 'downloading', progress: 0 })
     // a release or two may have come out since this one was found: the newest goes in, not every one in turn
     try {
@@ -94,12 +94,18 @@ export const useUpdates = create<UpdateState>((set, get) => ({
   },
 }))
 
+let checksStarted = false
+
 /** Checks shortly after start, every half hour, and when the window comes back from the tray. */
 export function startUpdateChecks() {
-  if (!isTauri()) return
+  if (!isTauri() || checksStarted) return
+  checksStarted = true
   const check = (gap?: number) => void useUpdates.getState().check(false, gap)
   setTimeout(() => check(), 8000)
-  setInterval(() => check(), 5 * 60_000)
+  setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+    check()
+  }, 5 * 60_000)
   document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && check(ON_RETURN_MS))
   window.addEventListener('focus', () => check(ON_RETURN_MS))
 }

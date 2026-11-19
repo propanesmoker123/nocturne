@@ -143,16 +143,14 @@ export function buildFeedItems(
     })
   }
 
-  // Replies and announcements first if recent; otherwise newest timestamp first, prioritizing available update / replies cleanly.
-  return out.sort((a, b) => {
-    const weight = (x: NotificationItem) => (x.kind === 'reply' ? 2 : x.kind === 'release' && x.isAvailable ? 1 : 0)
-    const wa = weight(a)
-    const wb = weight(b)
-    if (wa !== wb && Math.abs(b.sortAt - a.sortAt) < 7 * 86_400_000) {
-      return wb - wa
-    }
-    return b.sortAt - a.sortAt
-  })
+  // Monotonic per-item score ensures strict weak ordering while floating recent replies and available updates to the top.
+  const BOOST_MS = 7 * 86_400_000
+  const score = (x: NotificationItem) => {
+    if (x.kind === 'reply') return x.sortAt + BOOST_MS * 2
+    if (x.kind === 'release' && x.isAvailable) return x.sortAt + BOOST_MS
+    return x.sortAt
+  }
+  return out.sort((a, b) => score(b) - score(a) || b.sortAt - a.sortAt || a.itemId.localeCompare(b.itemId))
 }
 
 export function seedInitialSeenIds(currentVersion: string, items: NotificationItem[], existingSeen: string[]): string[] {
@@ -338,8 +336,11 @@ export const useNotifications = create<NotificationsStore>((set, get) => ({
   },
 }))
 
+let checksStarted = false
+
 export function startNotificationChecks() {
-  if (!isTauri()) return
+  if (!isTauri() || checksStarted) return
+  checksStarted = true
   void useNotifications.getState().hydrate().then(() => useNotifications.getState().refresh(true))
 
   let lastAvailKey = ''
@@ -374,7 +375,10 @@ export function startNotificationChecks() {
       void useNotifications.getState().refresh(true)
     }
   }
-  setInterval(() => void useNotifications.getState().refresh(true), POLL_EVERY_MS)
+  setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+    void useNotifications.getState().refresh(true)
+  }, POLL_EVERY_MS)
   document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && maybeRefresh())
   window.addEventListener('focus', maybeRefresh)
 }

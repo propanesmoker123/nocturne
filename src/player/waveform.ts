@@ -28,15 +28,21 @@ export { useWaveform }
  */
 export async function readWhole(url: string, rawUrl?: string): Promise<ArrayBuffer> {
   if (url.startsWith('blob:')) {
-    const preloaded = takePreloadedBlobBytes(url)
-    if (preloaded) return preloaded
+    const preloaded = await takePreloadedBlobBytes(url)
+    if (preloaded && preloaded.byteLength > 0) return preloaded
     try {
       return await (await fetch(url)).arrayBuffer()
     } catch (e) {
-      if (rawUrl && isTauri()) return invoke<ArrayBuffer>('proxy_fetch', { url: rawUrl })
+      if (rawUrl) {
+        const rawPre = await takePreloadedBlobBytes(rawUrl)
+        if (rawPre && rawPre.byteLength > 0) return rawPre
+        if (isTauri()) return invoke<ArrayBuffer>('proxy_fetch', { url: rawUrl })
+      }
       throw e
     }
   }
+  const preloaded = await takePreloadedBlobBytes(url)
+  if (preloaded && preloaded.byteLength > 0) return preloaded
   if (isTauri()) return invoke<ArrayBuffer>('proxy_fetch', { url })
   return (await fetch(url)).arrayBuffer()
 }
@@ -104,15 +110,28 @@ interface InitTrack {
   container?: string
 }
 
+interface RawSegment {
+  id: string
+  sn?: number
+  start: number
+  duration: number
+  bytes: Uint8Array
+}
+
 const MAX_RAW_CHUNK_BYTES = 14 * 1024 * 1024
 
 class Capture {
   private acc: PeakAcc = newAcc()
   private beatAcc: BeatAcc
+  private lastBeats: Float32Array | null = null
+  private lastVocal: Float32Array | null = null
+  private lastEnvelopeAt = 0
+  private lastFullFallbackCount = 0
   init: Uint8Array | null = null
   container = 'audio/mp4'
+  getDuration?: () => number
   private seen = new Set<string>()
-  rawSegments = new Map<string, { start: number; bytes: Uint8Array }>()
+  rawSegments = new Map<string, RawSegment>()
   private rawBytes = 0
   private chain: Promise<void> = Promise.resolve()
   private failures = 0
@@ -124,6 +143,12 @@ class Capture {
     readonly decodePeaks = true,
   ) {
     this.beatAcc = createBeatAcc(duration)
+  }
+
+  kill() {
+    this.alive = false
+    this.rawSegments.clear()
+    this.rawBytes = 0
   }
 
   onInit(tracks: Record<string, InitTrack | undefined>) {
@@ -143,11 +168,13 @@ class Capture {
     this.seen.add(id)
     const bytes = d.data.slice()
     const start = d.frag.start
+    const duration = typeof d.frag.duration === 'number' && Number.isFinite(d.frag.duration) && d.frag.duration > 0 ? d.frag.duration : 0
+    const sn = typeof d.frag.sn === 'number' ? d.frag.sn : undefined
     if (this.rawBytes + bytes.byteLength <= MAX_RAW_CHUNK_BYTES) {
-      this.rawSegments.set(id, { start, bytes })
+      this.rawSegments.set(id, { id, sn, start, duration, bytes })
       this.rawBytes += bytes.byteLength
     }
-    if (this.decodePeaks) this.enqueue(() => this.decode(bytes, start))
+    if (this.decodePeaks) this.enqueue(() => this.decode(bytes, start, id))
   }
 
   /** Demo mode / non-HLS sources (VK's mp3 links): decode the whole file at once. */
@@ -175,29 +202,49 @@ class Capture {
     }
   }
 
+  private resolveDuration(audio: AudioBuffer, start: number): number {
+    if (this.container === 'file') return audio.duration
+    if (this.duration > 0) return this.duration
+    const dyn = this.getDuration?.() ?? 0
+    if (Number.isFinite(dyn) && dyn > 0) return dyn
+    const mediaDur = activeSourceMeta?.hls?.media?.duration ?? 0
+    if (Number.isFinite(mediaDur) && mediaDur > 0) return mediaDur
+    return Math.max(audio.duration, start + audio.duration)
+  }
+
   private applyDecoded(audio: AudioBuffer, start: number, resetAccumulators: boolean) {
     if (!this.alive) return
     const channels = Array.from({ length: Math.min(audio.numberOfChannels, 2) }, (_, i) => audio.getChannelData(i))
-    const effectiveDur = this.container === 'file' ? audio.duration : this.duration
+    const effectiveDur = this.resolveDuration(audio, start)
     if (resetAccumulators) {
       this.acc = newAcc()
       this.beatAcc = createBeatAcc(effectiveDur)
+      this.lastBeats = null
+      this.lastVocal = null
+      this.lastEnvelopeAt = 0
     }
     // A whole file knows its own length better than the track metadata does
     accumulate(this.acc, channels, audio.sampleRate, start, effectiveDur)
     if (this.beatAcc.bins === 0 && effectiveDur > 0) this.beatAcc = createBeatAcc(effectiveDur)
     accumulateBeatPcm(this.beatAcc, channels, audio.sampleRate, start)
     const peaks = toPeaks(this.acc)
-    const beats = this.beatAcc.bins > 0 ? finalizeBeatEnvelope(this.beatAcc) : null
-    const vocal = this.beatAcc.bins > 0 ? finalizeVocalEnvelope(this.beatAcc) : null
+    const complete = isComplete(this.acc)
+    const now = Date.now()
+    if (this.beatAcc.bins > 0 && (complete || !this.lastBeats || now - this.lastEnvelopeAt >= 1200)) {
+      this.lastBeats = finalizeBeatEnvelope(this.beatAcc)
+      this.lastVocal = finalizeVocalEnvelope(this.beatAcc)
+      this.lastEnvelopeAt = now
+    }
+    const beats = this.lastBeats
+    const vocal = this.lastVocal
     useWaveform.setState({ key: this.key, peaks, beats, vocal })
-    if (isComplete(this.acc)) {
+    if (complete) {
       remember(this.key, peaks, beats, vocal)
       if (import.meta.env.DEV) journal('player', `waveform complete (${this.container})`)
     }
   }
 
-  private async decode(bytes: Uint8Array, start: number) {
+  private async decode(bytes: Uint8Array, start: number, segId?: string) {
     if (!this.alive) return
     const whole = this.container === 'audio/mp4' && this.init ? concat(this.init, bytes) : bytes
     try {
@@ -208,12 +255,48 @@ class Capture {
       if (this.container !== 'audio/mp4' || this.rawSegments.size <= 1) throw firstErr
     }
 
-    // Fallback for fMP4 streams whose isolated middle fragments lack priming frames without preceding segments.
+    // Split segments into contiguous runs (breaking on seek gaps > 1.5s) so discontinuous segments never merge.
     const ordered = [...this.rawSegments.values()].sort((a, b) => a.start - b.start)
     if (!ordered.length) return
-    const parts = this.init ? [this.init, ...ordered.map((s) => s.bytes)] : ordered.map((s) => s.bytes)
+    const runs: RawSegment[][] = []
+    for (const seg of ordered) {
+      const curRun = runs[runs.length - 1]
+      if (!curRun) {
+        runs.push([seg])
+        continue
+      }
+      const prev = curRun[curRun.length - 1]!
+      const prevEnd = prev.duration > 0 ? prev.start + prev.duration : prev.start + 10
+      const hasSnGap = typeof seg.sn === 'number' && typeof prev.sn === 'number' && seg.sn !== prev.sn + 1
+      const hasTimeGap = seg.start - prevEnd > 1.5
+      if (hasSnGap || hasTimeGap) {
+        runs.push([seg])
+      } else {
+        curRun.push(seg)
+      }
+    }
+
+    // First try prepending ONLY the immediately preceding contiguous segment (O(1) instead of O(N²)).
+    const targetRun = runs.find((r) => r.some((s) => (segId ? s.id === segId : s.start === start))) ?? runs[runs.length - 1]!
+    const idxInRun = targetRun.findIndex((s) => (segId ? s.id === segId : s.start === start))
+    const prevSeg = idxInRun > 0 ? targetRun[idxInRun - 1] : undefined
+    if (prevSeg) {
+      try {
+        const pair = this.init ? [this.init, prevSeg.bytes, bytes] : [prevSeg.bytes, bytes]
+        const audio = await this.decodeBuf(concatMany(pair), true)
+        this.applyDecoded(audio, prevSeg.start, false)
+        return
+      } catch {
+        // Fall through to throttled contiguous-run decode if 2-segment pair is insufficient.
+      }
+    }
+
+    if (targetRun.length <= 1) return
+    if (this.lastFullFallbackCount > 0 && ordered.length - this.lastFullFallbackCount < 4) return
+    this.lastFullFallbackCount = ordered.length
+    const parts = this.init ? [this.init, ...targetRun.map((s) => s.bytes)] : targetRun.map((s) => s.bytes)
     const audio = await this.decodeBuf(concatMany(parts), true)
-    this.applyDecoded(audio, ordered[0]!.start, true)
+    this.applyDecoded(audio, targetRun[0]!.start, runs.length === 1)
   }
 }
 
@@ -295,12 +378,16 @@ export async function warmProviderWaveform(trackKey: string, waveformUrl: string
     } catch {}
 }
 
+/** Clears any active waveform capture and releases buffered segments on player stop. */
+export function clearWaveformCapture() {
+  current?.kill()
+  current = null
+  activeSourceMeta = null
+}
+
 /** Called right before a track starts loading. */
 export function beginWaveform(key: string, duration: number) {
-  if (current) {
-    current.alive = false
-    current.rawSegments.clear()
-  }
+  current?.kill()
   activeSourceMeta = null
   const cached = cache.get(key)
   current = new Capture(key, duration, !cached)
@@ -345,6 +432,7 @@ export function ensureSpotifyWaveform(trackKey: string, seedOrId: string, durati
 export function captureSource(src: EngineSource) {
   const cap = current
   if (!cap) return
+  cap.getDuration = src.getDuration
   activeSourceMeta = {
     key: cap.key,
     url: src.url,

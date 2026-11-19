@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSettings } from '../lib/settings'
 import { usePlayer } from '../player/store'
 import { getComments } from '../sc/api'
@@ -19,16 +19,19 @@ const PLATE_HALF = 140
  * at all for a VK track, while signed out, offline, or with the setting off.
  */
 export function WaveComments({ size }: { size: number }) {
-  const current = usePlayer((p) => p.current)
-  const durationS = usePlayer((p) => p.duration || p.current?.duration || 0)
-  const positionMs = usePlayer((p) => p.position * 1000)
   const on = useSettings((x) => x.waveComments)
   const signedIn = useScSession((x) => x.phase === 'signed-in')
-  const trackId = current && serviceOf(current) === 'sc' ? current.id : undefined
+  const trackId = usePlayer((p) => (p.current && serviceOf(p.current) === 'sc' ? p.current.id : undefined))
+  if (!on || !signedIn || trackId === undefined) return null
+  return <ActiveWaveComments trackId={trackId} size={size} />
+}
+
+function ActiveWaveComments({ trackId, size }: { trackId: number; size: number }) {
+  const durationS = usePlayer((p) => p.duration || p.current?.duration || 0)
+  const positionMs = usePlayer((p) => p.position * 1000)
   const q = useQuery({
-    queryKey: scKeys.comments(trackId ?? 0),
-    queryFn: () => getComments(trackId!),
-    enabled: on && signedIn && trackId !== undefined,
+    queryKey: scKeys.comments(trackId),
+    queryFn: () => getComments(trackId),
     staleTime: 10 * 60_000,
     retry: false,
   })
@@ -46,10 +49,12 @@ export function WaveComments({ size }: { size: number }) {
     const ro = new ResizeObserver(([e]) => setWidth(Math.floor(e.contentRect.width)))
     ro.observe(el)
     return () => ro.disconnect()
-  }, [trackId, on])
+  }, [trackId])
 
-  if (!on || trackId === undefined) return null
-  const slots = placeComments(commentsOf(q.data, trackId), durationS * 1000, width, size)
+  const slots = useMemo(
+    () => placeComments(commentsOf(q.data, trackId), durationS * 1000, width, size),
+    [q.data, trackId, durationS, width, size],
+  )
   return (
     <div ref={box} className={s.layer} style={{ ['--size' as string]: `${size}px` }}>
       {slots.map((slot) => (

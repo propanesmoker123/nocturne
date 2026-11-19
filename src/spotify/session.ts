@@ -33,6 +33,15 @@ interface SpotifySessionState {
 
 const MOCK_USER: SpotifyUser = { id: 'spotify_listener', name: 'Spotify Listener' }
 
+let sessionEpoch = 0
+let refreshInFlight: { epoch: number; init: boolean; promise: Promise<void> } | null = null
+const profileRetryTimers = new Set<ReturnType<typeof setTimeout>>()
+
+function clearProfileRetries() {
+  for (const t of profileRetryTimers) clearTimeout(t)
+  profileRetryTimers.clear()
+}
+
 export const useSpotifySession = create<SpotifySessionState>((set, get) => ({
   phase: 'checking',
   user: null,
@@ -49,97 +58,121 @@ export const useSpotifySession = create<SpotifySessionState>((set, get) => ({
       set({ phase: 'signed-in', user: MOCK_USER })
       return
     }
-    try {
-      const raw = await invoke<unknown>('spotify_status', init ? { request: { kind: 'init' } } : undefined)
-      const st = readSpotifyStatus(raw, get().filterEnabled)
-      const regionBlocked = st.phase === 'region'
-      let account = st.account
-      let user = get().user
-      const wasSignedIn = get().phase === 'signed-in'
+    if (refreshInFlight && refreshInFlight.epoch === sessionEpoch && (!init || refreshInFlight.init)) {
+      return refreshInFlight.promise
+    }
+    const myEpoch = sessionEpoch
+    const run = (async () => {
+      try {
+        const raw = await invoke<unknown>('spotify_status', init ? { request: { kind: 'init' } } : undefined)
+        if (myEpoch !== sessionEpoch) return
+        const st = readSpotifyStatus(raw, get().filterEnabled)
+        const regionBlocked = st.phase === 'region'
+        let account = st.account
+        let user = get().user
+        const wasSignedIn = get().phase === 'signed-in'
 
-      if (account === 'in') {
-        set({
-          phase: 'signed-in',
-          user: user ?? { id: 'spotify_user', name: 'Spotify' },
-          filterEnabled: st.enabled,
-          loginWaiting: st.loginWaiting,
-          regionBlocked: false,
-          drm: st.drm,
-          patchedCount: st.patchedCount,
-          error: null,
-        })
-      }
-
-      if ((st.phase === 'ready' || account === 'in') && account !== 'out') {
-        try {
-          const me = await getMe()
-          if (me) {
-            user = me
-            account = 'in'
-          }
-        } catch {
-          // Never force account='out' when sp_dc cookie or session is still warming up.
+        if (account === 'in') {
+          set({
+            phase: 'signed-in',
+            user: user ?? { id: 'spotify_user', name: 'Spotify' },
+            filterEnabled: st.enabled,
+            loginWaiting: st.loginWaiting,
+            regionBlocked: false,
+            drm: st.drm,
+            patchedCount: st.patchedCount,
+            error: null,
+          })
         }
-      }
 
-      if (account === 'in') {
-        const finalUser = user ?? { id: 'spotify_user', name: 'Spotify' }
-        writeSpotifySessionSnapshot(true, finalUser)
-        set({
-          phase: 'signed-in',
-          user: finalUser,
-          filterEnabled: st.enabled,
-          loginWaiting: st.loginWaiting,
-          regionBlocked: false,
-          drm: st.drm,
-          patchedCount: st.patchedCount,
-          error: null,
-        })
-        if (!wasSignedIn) {
-          void queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sp-') })
-        }
-        if (finalUser.id === 'spotify_user') {
-          const retryProfile = () => {
-            if (get().phase === 'signed-in' && get().user?.id === 'spotify_user') {
-              void getMe().then((me) => {
-                if (me && me.id !== 'spotify_user') {
-                  writeSpotifySessionSnapshot(true, me)
-                  set({ user: me })
-                }
-              }).catch(() => {})
+        if ((st.phase === 'ready' || account === 'in') && account !== 'out') {
+          try {
+            const me = await getMe()
+            if (myEpoch !== sessionEpoch) return
+            if (me) {
+              user = me
+              account = 'in'
             }
+          } catch {
+            // Never force account='out' when sp_dc cookie or session is still warming up.
           }
-          setTimeout(retryProfile, 1800)
-          setTimeout(retryProfile, 4500)
         }
-      } else if (account === 'out' || regionBlocked) {
-        clearSpotifyCache()
-        queryClient.removeQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sp-') })
-        set({
-          phase: 'signed-out',
-          user: null,
-          filterEnabled: st.enabled,
-          loginWaiting: st.loginWaiting,
-          regionBlocked,
-          drm: st.drm,
-          patchedCount: st.patchedCount,
-        })
-      } else {
+        if (myEpoch !== sessionEpoch) return
+
+        if (account === 'in') {
+          const finalUser = user ?? { id: 'spotify_user', name: 'Spotify' }
+          writeSpotifySessionSnapshot(true, finalUser)
+          set({
+            phase: 'signed-in',
+            user: finalUser,
+            filterEnabled: st.enabled,
+            loginWaiting: st.loginWaiting,
+            regionBlocked: false,
+            drm: st.drm,
+            patchedCount: st.patchedCount,
+            error: null,
+          })
+          if (!wasSignedIn) {
+            void queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sp-') })
+          }
+          clearProfileRetries()
+          if (finalUser.id === 'spotify_user') {
+            const scheduleRetry = (delayMs: number) => {
+              const t = setTimeout(() => {
+                profileRetryTimers.delete(t)
+                if (myEpoch !== sessionEpoch) return
+                if (get().phase === 'signed-in' && get().user?.id === 'spotify_user') {
+                  void getMe()
+                    .then((me) => {
+                      if (myEpoch !== sessionEpoch) return
+                      if (me && me.id !== 'spotify_user') {
+                        writeSpotifySessionSnapshot(true, me)
+                        set({ user: me })
+                      }
+                    })
+                    .catch(() => {})
+                }
+              }, delayMs)
+              profileRetryTimers.add(t)
+            }
+            scheduleRetry(1800)
+            scheduleRetry(4500)
+          }
+        } else if (account === 'out' || regionBlocked) {
+          clearProfileRetries()
+          clearSpotifyCache()
+          queryClient.removeQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sp-') })
+          set({
+            phase: 'signed-out',
+            user: null,
+            filterEnabled: st.enabled,
+            loginWaiting: st.loginWaiting,
+            regionBlocked,
+            drm: st.drm,
+            patchedCount: st.patchedCount,
+          })
+        } else {
+          set({
+            phase: get().phase === 'checking' ? 'signed-out' : get().phase,
+            filterEnabled: st.enabled,
+            loginWaiting: st.loginWaiting,
+            regionBlocked,
+            drm: st.drm,
+            patchedCount: st.patchedCount,
+          })
+        }
+      } catch (e) {
+        if (myEpoch !== sessionEpoch) return
         set({
           phase: get().phase === 'checking' ? 'signed-out' : get().phase,
-          filterEnabled: st.enabled,
-          loginWaiting: st.loginWaiting,
-          regionBlocked,
-          drm: st.drm,
-          patchedCount: st.patchedCount,
+          error: typeof e === 'string' ? e : e instanceof Error ? e.message : null,
         })
       }
-    } catch (e) {
-      set({
-        phase: get().phase === 'checking' ? 'signed-out' : get().phase,
-        error: typeof e === 'string' ? e : e instanceof Error ? e.message : null,
-      })
-    }
+    })().finally(() => {
+      if (refreshInFlight?.promise === run) refreshInFlight = null
+    })
+    refreshInFlight = { epoch: myEpoch, init, promise: run }
+    return run
   },
 
   async startLogin() {
@@ -184,12 +217,15 @@ export const useSpotifySession = create<SpotifySessionState>((set, get) => ({
   },
 
   async logout() {
-    if (isTauri()) {
-      await invoke('spotify_status', { request: { kind: 'logout' } }).catch(() => {})
-    }
+    sessionEpoch++
+    refreshInFlight = null
+    clearProfileRetries()
     clearSpotifyCache()
     queryClient.removeQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sp-') })
     set({ phase: 'signed-out', user: null, loginWaiting: false, error: null })
+    if (isTauri()) {
+      await invoke('spotify_status', { request: { kind: 'logout' } }).catch(() => {})
+    }
   },
 }))
 

@@ -98,8 +98,44 @@ const FX_ALT_RGB: Partial<Record<WordFx, readonly [number, number, number]>> = {
 const STAR_FX = new Set<WordFx>(['cash', 'flash', 'glow', 'ice', 'metal', 'big', 'orbit'])
 
 function readAccentRgb(el: HTMLElement): [number, number, number] {
-  const parsed = parseCssRgb(getComputedStyle(el).getPropertyValue('--accent'))
+  const inline = document.documentElement.style.getPropertyValue('--accent').trim()
+  const parsed = parseCssRgb(inline || getComputedStyle(el).getPropertyValue('--accent'))
   return parsed ? [parsed.r, parsed.g, parsed.b] : [255, 84, 118]
+}
+
+function makeRadialSprite(
+  size: number,
+  stops: ReadonlyArray<[number, string]>,
+): HTMLCanvasElement {
+  const c = document.createElement('canvas')
+  c.width = size
+  c.height = size
+  const g = c.getContext('2d')
+  if (g) {
+    const half = size * 0.5
+    const grad = g.createRadialGradient(half, half, 0, half, half, half)
+    for (const [offset, color] of stops) grad.addColorStop(offset, color)
+    g.fillStyle = grad
+    g.fillRect(0, 0, size, size)
+  }
+  return c
+}
+
+const sparkGlowSprites = new Map<string, HTMLCanvasElement>()
+
+function getSparkGlowSprite(r: number, g: number, b: number, coreAlpha: number, midStop: number, midAlpha: number): HTMLCanvasElement {
+  const key = `${r},${g},${b},${coreAlpha},${midStop},${midAlpha}`
+  let sprite = sparkGlowSprites.get(key)
+  if (!sprite) {
+    if (sparkGlowSprites.size >= 64) sparkGlowSprites.clear()
+    sprite = makeRadialSprite(64, [
+      [0, `rgba(255, 255, 255, ${coreAlpha})`],
+      [midStop, `rgba(${r}, ${g}, ${b}, ${midAlpha})`],
+      [1, `rgba(${r}, ${g}, ${b}, 0)`],
+    ])
+    sparkGlowSprites.set(key, sprite)
+  }
+  return sprite
 }
 
 function spawnWordSparks(out: WordSpark[], burst: WordBurst): void {
@@ -166,14 +202,11 @@ function drawWordSparks(ctx: CanvasRenderingContext2D, sparks: WordSpark[], dt: 
       ctx.stroke()
     } else if (sp.kind === 'star') {
       const rad = sp.size * (0.75 + 0.45 * (1 - u))
-      const glow = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, rad * 2.8)
-      glow.addColorStop(0, `rgba(255, 255, 255, ${a.toFixed(3)})`)
-      glow.addColorStop(0.35, `rgba(${r}, ${g}, ${b}, ${(a * 0.72).toFixed(3)})`)
-      glow.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`)
-      ctx.fillStyle = glow
-      ctx.beginPath()
-      ctx.arc(sp.x, sp.y, rad * 2.8, 0, Math.PI * 2)
-      ctx.fill()
+      const glowR = rad * 2.8
+      const sprite = getSparkGlowSprite(r, g, b, 1, 0.35, 0.72)
+      ctx.globalAlpha = a
+      ctx.drawImage(sprite, sp.x - glowR, sp.y - glowR, glowR * 2, glowR * 2)
+      ctx.globalAlpha = 1
 
       ctx.save()
       ctx.translate(sp.x, sp.y)
@@ -195,14 +228,10 @@ function drawWordSparks(ctx: CanvasRenderingContext2D, sparks: WordSpark[], dt: 
       ctx.restore()
     } else {
       const rad = sp.size * 3.1
-      const glow = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, rad)
-      glow.addColorStop(0, `rgba(255, 255, 255, ${(a * 0.85).toFixed(3)})`)
-      glow.addColorStop(0.38, `rgba(${r}, ${g}, ${b}, ${(a * 0.68).toFixed(3)})`)
-      glow.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`)
-      ctx.fillStyle = glow
-      ctx.beginPath()
-      ctx.arc(sp.x, sp.y, rad, 0, Math.PI * 2)
-      ctx.fill()
+      const sprite = getSparkGlowSprite(r, g, b, 0.85, 0.38, 0.68)
+      ctx.globalAlpha = a
+      ctx.drawImage(sprite, sp.x - rad, sp.y - rad, rad * 2, rad * 2)
+      ctx.globalAlpha = 1
     }
   }
 }
@@ -226,6 +255,7 @@ export function ParticlesCanvas({
   const embersRef = useRef<Ember[] | null>(null)
   const sparksRef = useRef<WordSpark[]>([])
   const beatRef = useRef({ kick: 0, energy: 0 })
+  const kickRafRef = useRef<(() => void) | null>(null)
 
   const liveRef = useRef<{
     playing: boolean
@@ -244,6 +274,10 @@ export function ParticlesCanvas({
     beats: waveKey === trackKey ? waveBeats : null,
     peaks: waveKey === trackKey ? wavePeaks : null,
   }
+
+  useEffect(() => {
+    if (playing) kickRafRef.current?.()
+  }, [playing])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -287,10 +321,74 @@ export function ParticlesCanvas({
     const beatState = beatRef.current
     const accentRgb: [number, number, number] = readAccentRgb(canvas)
     let targetAccentRgb: [number, number, number] = [...accentRgb]
-    let accentTick = 0
+
+    // Pre-rendered radial glow sprites: replaces ~98 createRadialGradient() + ~294 rgba() allocations per frame
+    const whiteOrbSprite = isSparks
+      ? null
+      : makeRadialSprite(128, [
+          [0, 'rgba(255, 255, 255, 1)'],
+          [0.55, 'rgba(255, 255, 255, 0.36)'],
+          [1, 'rgba(255, 255, 255, 0)'],
+        ])
+    const whiteEmberSprite = isSparks
+      ? null
+      : makeRadialSprite(64, [
+          [0, 'rgba(255, 255, 255, 1)'],
+          [0.45, 'rgba(255, 255, 255, 0.42)'],
+          [1, 'rgba(255, 255, 255, 0)'],
+        ])
+    let accentOrbSprite: HTMLCanvasElement | null = null
+    let accentEmberSprite: HTMLCanvasElement | null = null
+    let spriteR = -999
+    let spriteG = -999
+    let spriteB = -999
+
+    const syncAccentSprites = (ar: number, ag: number, ab: number) => {
+      if (
+        accentOrbSprite &&
+        accentEmberSprite &&
+        Math.abs(ar - spriteR) < 2 &&
+        Math.abs(ag - spriteG) < 2 &&
+        Math.abs(ab - spriteB) < 2
+      ) {
+        return
+      }
+      spriteR = ar
+      spriteG = ag
+      spriteB = ab
+      accentOrbSprite = makeRadialSprite(128, [
+        [0, `rgba(${ar}, ${ag}, ${ab}, 1)`],
+        [0.55, `rgba(${ar}, ${ag}, ${ab}, 0.36)`],
+        [1, `rgba(${ar}, ${ag}, ${ab}, 0)`],
+      ])
+      const er = Math.min(255, ar + 55)
+      const eg = Math.min(255, ag + 55)
+      const eb = Math.min(255, ab + 55)
+      accentEmberSprite = makeRadialSprite(64, [
+        [0, `rgba(${er}, ${eg}, ${eb}, 1)`],
+        [0.45, `rgba(${er}, ${eg}, ${eb}, 0.42)`],
+        [1, `rgba(${er}, ${eg}, ${eb}, 0)`],
+      ])
+    }
+
     let raf = 0
     let last = performance.now()
     let disposed = false
+
+    const scheduleFrame = () => {
+      if (disposed || raf) return
+      last = performance.now()
+      raf = requestAnimationFrame(frame)
+    }
+
+    const mo =
+      !isSparks && typeof MutationObserver !== 'undefined'
+        ? new MutationObserver(() => {
+            targetAccentRgb = readAccentRgb(canvas)
+            scheduleFrame()
+          })
+        : null
+    mo?.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-theme'] })
 
     const frame = (now: number) => {
       if (disposed) return
@@ -318,13 +416,14 @@ export function ParticlesCanvas({
         return
       }
 
-      if (++accentTick % 12 === 0) {
-        targetAccentRgb = readAccentRgb(canvas)
-      }
       const colorStep = 1 - Math.exp(-dt * 5.2)
       accentRgb[0] += (targetAccentRgb[0] - accentRgb[0]) * colorStep
       accentRgb[1] += (targetAccentRgb[1] - accentRgb[1]) * colorStep
       accentRgb[2] += (targetAccentRgb[2] - accentRgb[2]) * colorStep
+      const colorSettling =
+        Math.abs(targetAccentRgb[0] - accentRgb[0]) > 0.6 ||
+        Math.abs(targetAccentRgb[1] - accentRgb[1]) > 0.6 ||
+        Math.abs(targetAccentRgb[2] - accentRgb[2]) > 0.6
 
       let targetKick = 0
       let targetEnergy = 0
@@ -335,7 +434,7 @@ export function ParticlesCanvas({
       }
       stepBeatEnvelope(beatState, targetKick, targetEnergy, dtMs)
       const beat = beatState
-      const settling = beat.kick > 0.002 || beat.energy > 0.002
+      const settling = beat.kick > 0.002 || beat.energy > 0.002 || colorSettling
       const speedScale = live ? 1 + beat.energy * 0.55 + beat.kick * 1.15 : settling ? 0.25 : 0
       const area = width * height
       const activeOrbs = Math.min(orbs.length, Math.max(14, Math.round(area / 48000)))
@@ -344,7 +443,10 @@ export function ParticlesCanvas({
 
       ctx.clearRect(0, 0, width, height)
 
-      const [ar, ag, ab] = [Math.round(accentRgb[0]), Math.round(accentRgb[1]), Math.round(accentRgb[2])]
+      const ar = Math.round(accentRgb[0])
+      const ag = Math.round(accentRgb[1])
+      const ab = Math.round(accentRgb[2])
+      syncAccentSprites(ar, ag, ab)
 
       // Soft studio bokeh layer
       for (let i = 0; i < activeOrbs; i++) {
@@ -365,16 +467,12 @@ export function ParticlesCanvas({
 
         const ox = orb.nx * width
         const oy = orb.ny * height
-        const alpha = orb.alpha * (0.86 + Math.sin(t * 1.1 + orb.phase) * 0.14) + beat.kick * 0.055
-        const [r, g, b] = orb.warm ? [ar, ag, ab] : [255, 255, 255]
-        const grad = ctx.createRadialGradient(ox, oy, 0, ox, oy, radius)
-        grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`)
-        grad.addColorStop(0.55, `rgba(${r}, ${g}, ${b}, ${(alpha * 0.36).toFixed(3)})`)
-        grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`)
-        ctx.fillStyle = grad
-        ctx.beginPath()
-        ctx.arc(ox, oy, radius, 0, Math.PI * 2)
-        ctx.fill()
+        const alpha = Math.max(0, Math.min(1, orb.alpha * (0.86 + Math.sin(t * 1.1 + orb.phase) * 0.14) + beat.kick * 0.055))
+        const sprite = orb.warm ? accentOrbSprite : whiteOrbSprite
+        if (sprite) {
+          ctx.globalAlpha = alpha
+          ctx.drawImage(sprite, ox - radius, oy - radius, radius * 2, radius * 2)
+        }
       }
 
       // Ambient drifting embers
@@ -396,19 +494,15 @@ export function ParticlesCanvas({
         const px = p.nx * width
         const py = p.ny * height
         const pulse = 0.74 + 0.26 * Math.sin(t * 2.1 + p.phase)
-        const alpha = Math.min(0.44, p.alpha * pulse + beat.kick * 0.12)
+        const alpha = Math.max(0, Math.min(0.44, p.alpha * pulse + beat.kick * 0.12))
         const haloR = p.r * (4.1 + beat.kick * 1.9)
-        const [cr, cg, cb] = p.accented ? [Math.min(255, ar + 55), Math.min(255, ag + 55), Math.min(255, ab + 55)] : [255, 255, 255]
-
-        const halo = ctx.createRadialGradient(px, py, 0, px, py, haloR)
-        halo.addColorStop(0, `rgba(${cr}, ${cg}, ${cb}, ${alpha.toFixed(3)})`)
-        halo.addColorStop(0.45, `rgba(${cr}, ${cg}, ${cb}, ${(alpha * 0.42).toFixed(3)})`)
-        halo.addColorStop(1, `rgba(${cr}, ${cg}, ${cb}, 0)`)
-        ctx.fillStyle = halo
-        ctx.beginPath()
-        ctx.arc(px, py, haloR, 0, Math.PI * 2)
-        ctx.fill()
+        const sprite = p.accented ? accentEmberSprite : whiteEmberSprite
+        if (sprite) {
+          ctx.globalAlpha = alpha
+          ctx.drawImage(sprite, px - haloR, py - haloR, haloR * 2, haloR * 2)
+        }
       }
+      ctx.globalAlpha = 1
 
       if (live || settling) {
         raf = requestAnimationFrame(frame)
@@ -419,6 +513,8 @@ export function ParticlesCanvas({
       }
     }
 
+    kickRafRef.current = scheduleFrame
+
     const resize = () => {
       if (!canvas) return
       width = Math.max(1, canvas.clientWidth)
@@ -427,7 +523,7 @@ export function ParticlesCanvas({
       canvas.width = Math.round(width * dpr)
       canvas.height = Math.round(height * dpr)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      if (!raf) raf = requestAnimationFrame(frame)
+      scheduleFrame()
     }
     resize()
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null
@@ -435,10 +531,12 @@ export function ParticlesCanvas({
 
     return () => {
       disposed = true
+      if (kickRafRef.current === scheduleFrame) kickRafRef.current = null
       if (raf) cancelAnimationFrame(raf)
+      mo?.disconnect()
       ro?.disconnect()
     }
-  }, [enabled, mode, burstsRef, playing, visible])
+  }, [enabled, mode, burstsRef, visible])
 
   if (!enabled) return null
   return <canvas ref={canvasRef} className={className} aria-hidden="true" />

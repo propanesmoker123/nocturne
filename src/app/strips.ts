@@ -8,9 +8,19 @@ export const STRIP_SIZE = 18
 export const CARDS_SHOWN = 4
 
 /** Blocks that came without a «Показать все» section, kept while the app runs so their page can show them whole. */
+const MAX_BLOCKS = 64
 const blocks = new Map<string, Block>()
-export const rememberBlock = (b: Block) => void blocks.set(b.id, b)
+export function rememberBlock(b: Block): void {
+  if (blocks.has(b.id)) blocks.delete(b.id)
+  blocks.set(b.id, b)
+  while (blocks.size > MAX_BLOCKS) {
+    const oldest = blocks.keys().next().value
+    if (oldest === undefined) break
+    blocks.delete(oldest)
+  }
+}
 export const rememberedBlock = (id: string): Block | undefined => blocks.get(id)
+export const clearRememberedBlocks = (): void => void blocks.clear()
 
 /**
  * Where a strip's title leads: your own tracks open «Моя музыка», a VK block with «Показать все»

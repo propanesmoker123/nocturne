@@ -78,7 +78,9 @@ export const useAlbums = create<AlbumsState>((set, get) => {
   const setDoc = (id: string, doc: AlbumDoc) => set({ docs: { ...get().docs, [id]: doc } })
   // each field of the list carries its own time (see ListEntry): callers set it with the field
   const setEntry = (id: string, patch: Partial<ListEntry>) => set({ list: get().list.map((e) => (e.id === id ? { ...e, ...patch } : e)) })
-  const codeAt = (id: string) => Math.max(Date.now(), (get().list.find((e) => e.id === id)?.codeAt ?? 0) + 1)
+  const after = (prev?: number) => Math.max(Date.now(), (prev ?? 0) + 1)
+  const entryOf = (id: string) => get().list.find((e) => e.id === id)
+  const codeAt = (id: string) => after(entryOf(id)?.codeAt)
   const edit = (id: string, fn: (d: AlbumDoc, now: number, by: string) => AlbumDoc) => {
     const d = get().docs[id]
     if (!d) return
@@ -100,8 +102,9 @@ export const useAlbums = create<AlbumsState>((set, get) => {
     rename(id, name) {
       const d = get().docs[id]
       if (!d) return
-      setDoc(id, renameAlbum(d, name, Date.now(), me()))
-      setEntry(id, { name, updatedAt: Date.now(), by: me() })
+      const now = after(entryOf(id)?.updatedAt)
+      setDoc(id, renameAlbum(d, name, now, me()))
+      setEntry(id, { name, updatedAt: now, by: me() })
       changed([id])
     },
     add(id, tracks, at) {
@@ -118,23 +121,36 @@ export const useAlbums = create<AlbumsState>((set, get) => {
     removeEntry: (id, eid) => edit(id, (d, now, by) => removeEntry(d, eid, now, by)),
     move: (id, eid, toIndex) => edit(id, (d, now, by) => moveEntry(d, eid, toIndex, now, by)),
     deleteForAll(id) {
+      const e = entryOf(id)
+      const now = after(Math.max(e?.removedAt ?? 0, e?.joinedAt ?? 0))
       const d = get().docs[id]
-      if (d) setDoc(id, deleteAlbum(d, Date.now(), me()))
-      setEntry(id, { removedAt: Date.now() })
+      if (d) setDoc(id, deleteAlbum(d, now, me()))
+      setEntry(id, { removedAt: now })
       changed([id])
     },
     leave(id) {
+      const e = entryOf(id)
+      const now = after(Math.max(e?.removedAt ?? 0, e?.joinedAt ?? 0))
       const docs = { ...get().docs }
       delete docs[id]
       set({ docs })
-      setEntry(id, { removedAt: Date.now() })
+      setEntry(id, { removedAt: now })
       changed([id])
     },
     join(code, doc) {
-      const now = Date.now()
-      const existing = get().list.find((e) => e.id === doc.id)
+      const existing = entryOf(doc.id)
+      const now = after(existing?.updatedAt)
       // a new code for an album already here moves it to that code; one left before comes back
-      const entry: ListEntry = { id: doc.id, code, codeAt: codeAt(doc.id), name: doc.meta.name, shared: true, updatedAt: now, by: me(), joinedAt: Math.max(now, (existing?.removedAt ?? 0) + 1) }
+      const entry: ListEntry = {
+        id: doc.id,
+        code,
+        codeAt: codeAt(doc.id),
+        name: doc.meta.name,
+        shared: true,
+        updatedAt: now,
+        by: me(),
+        joinedAt: after(Math.max(existing?.removedAt ?? 0, existing?.joinedAt ?? 0)),
+      }
       set({
         docs: { ...get().docs, [doc.id]: get().docs[doc.id] ? mergeAlbum(get().docs[doc.id], doc) : doc },
         list: existing ? get().list.map((e) => (e.id === doc.id ? entry : e)) : [...get().list, entry],
@@ -196,15 +212,52 @@ export const useAlbums = create<AlbumsState>((set, get) => {
 // album's code, and a device that leaves forgets its albums
 onUnlink((kind) => (kind === 'all' ? useAlbums.getState().rotateAll() : useAlbums.getState().wipe()))
 
+function isValidEntry(v: unknown): v is ListEntry {
+  if (!v || typeof v !== 'object') return false
+  const e = v as Partial<ListEntry>
+  return (
+    typeof e.id === 'string' &&
+    e.id.length > 0 &&
+    typeof e.code === 'string' &&
+    e.code.length > 0 &&
+    typeof e.name === 'string' &&
+    typeof e.shared === 'boolean' &&
+    typeof e.updatedAt === 'number' &&
+    Number.isFinite(e.updatedAt) &&
+    typeof e.by === 'string'
+  )
+}
+
+function isValidDoc(v: unknown): v is AlbumDoc {
+  if (!v || typeof v !== 'object') return false
+  const d = v as Partial<AlbumDoc>
+  return (
+    typeof d.id === 'string' &&
+    d.id.length > 0 &&
+    !!d.meta &&
+    typeof d.meta === 'object' &&
+    typeof d.meta.name === 'string' &&
+    !!d.entries &&
+    typeof d.entries === 'object' &&
+    !Array.isArray(d.entries)
+  )
+}
+
 /**
  * Reads what the last run kept (call once, at start). Anything made before it came is merged
  * with it, never dropped, and the two are saved together.
  */
 export async function loadAlbums(): Promise<void> {
-  const saved = await loadJSON<Saved>('albums')
+  const saved = await loadJSON<Partial<Saved>>('albums')
+  const rawList = Array.isArray(saved?.list) ? saved.list.filter(isValidEntry) : []
   // a list from before codes had their own time
-  const list = (saved?.list ?? []).map((e) => ({ ...e, codeAt: e.codeAt ?? e.updatedAt }))
-  const docs = { ...(saved?.docs ?? {}) }
+  const list = rawList.map((e) => ({ ...e, codeAt: e.codeAt ?? e.updatedAt ?? 0 }))
+  const docs: Record<string, AlbumDoc> = {}
+  if (saved?.docs && typeof saved.docs === 'object' && !Array.isArray(saved.docs)) {
+    for (const [id, doc] of Object.entries(saved.docs)) {
+      if (isValidDoc(doc)) docs[id] = doc
+    }
+  }
   const made = useAlbums.getState()
   for (const [id, d] of Object.entries(made.docs)) docs[id] = docs[id] ? mergeAlbum(docs[id], d) : d
   useAlbums.setState({ ready: true, docs, list: mergeList(list, made.list) })

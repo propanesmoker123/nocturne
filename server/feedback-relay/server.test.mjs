@@ -237,4 +237,116 @@ describe('feedback relay server', () => {
     expect(store.getInbox(clientId).replies).toEqual([])
     expect(store.findReportByMessageId(808)).toBeNull()
   })
+
+  it('ignores spoofed X-Real-Ip when X-Forwarded-For is set by reverse proxy and ignores forwarded headers from non-loopback peers', () => {
+    expect(
+      clientIp({
+        headers: { 'x-real-ip': '10.0.0.1', 'x-forwarded-for': '203.0.113.1, 198.51.100.7' },
+        socket: { remoteAddress: '127.0.0.1' },
+      }),
+    ).toBe('198.51.100.7')
+
+    expect(
+      clientIp({
+        headers: { 'x-real-ip': '10.0.0.1', 'x-forwarded-for': '198.51.100.7' },
+        socket: { remoteAddress: '203.0.113.42' },
+      }),
+    ).toBe('203.0.113.42')
+  })
+
+  it('bounds rate-limiter map size under distinct-IP floods without losing recent entries', () => {
+    const allow = createRateLimiter({ max: 1, windowMs: 60_000, maxKeys: 16 })
+    for (let i = 0; i < 64; i++) {
+      expect(allow(`198.51.100.${i}`, 1000 + i)).toBe(true)
+    }
+    // Most recent IP is still rate-limited within the window
+    expect(allow('198.51.100.63', 2000)).toBe(false)
+    // Oldest IP was evicted due to bounded capacity
+    expect(allow('198.51.100.0', 2000)).toBe(true)
+  })
+
+  it('does not register a new client when Telegram delivery fails', async () => {
+    const store = createRelayStore()
+    const clientId = 'failed-delivery-12345678'
+    const clientToken = 'secret-token-0123456789abcdef'
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({ ok: false }),
+    }))
+    const handler = createRelayHandler({
+      token: 'BOT_TOKEN',
+      chatId: '999',
+      fetchImpl: fetchMock,
+      store,
+      readBody: async () => ({
+        kind: 'bug',
+        message: 'Broken upstream',
+        version: '0.3.9',
+        platform: 'windows',
+        arch: 'x86_64',
+        clientId,
+        clientToken,
+      }),
+    })
+    const res = { writeHead: vi.fn(), end: vi.fn() }
+    await handler({ method: 'POST', url: '/', headers: {}, socket: { remoteAddress: '127.0.0.1' } }, res)
+    expect(res.writeHead).toHaveBeenCalledWith(502, expect.any(Object))
+    expect(store.verifyClient(clientId, clientToken)).toBe('unknown')
+  })
+
+  it('keeps Telegram sendMessage plain text within 4096 chars even for MAX_MESSAGE_CHARS payloads', () => {
+    const longMsg = 'A'.repeat(4000)
+    const html = formatTelegramHtml({
+      kind: 'bug',
+      message: longMsg,
+      contact: '@someone_with_long_handle_1234567890',
+      version: '0.3.9',
+      platform: 'windows',
+      arch: 'x86_64',
+      ip: '203.0.113.9',
+      clientId: 'client_1234567890abcdef',
+    })
+    const plain = html.replace(/<[^>]+>/g, '')
+    expect(plain.length).toBeLessThanOrEqual(4096)
+  })
+
+  it('respects numeric TELEGRAM_CHAT_ID over stale persisted ownerChatId and accepts channel_post announcements', async () => {
+    const store = createRelayStore()
+    store.setOwnerChatId('111111')
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: { message_id: 10 } }),
+    }))
+
+    // Old cached ownerChatId must NOT be authorized when configured chatId is a different numeric ID
+    const staleRes = await processTelegramUpdate(
+      {
+        update_id: 10,
+        message: {
+          message_id: 800,
+          chat: { id: 111111, type: 'private' },
+          from: { id: 111111, is_bot: false },
+          text: '/announce Stale\nShould be ignored',
+        },
+      },
+      { store, token: 'BOT_TOKEN', chatId: '-100222333444', fetchImpl: fetchMock },
+    )
+    expect(staleRes.handled).toBe(false)
+
+    // Channel posts from the configured numeric channel ID are handled
+    const chanRes = await processTelegramUpdate(
+      {
+        update_id: 11,
+        channel_post: {
+          message_id: 801,
+          chat: { id: -100222333444, type: 'channel' },
+          text: '/announce Канал\nНовость из канала',
+        },
+      },
+      { store, token: 'BOT_TOKEN', chatId: '-100222333444', fetchImpl: fetchMock },
+    )
+    expect(chanRes).toMatchObject({ handled: true, action: 'announce' })
+  })
 })

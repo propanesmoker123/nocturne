@@ -111,4 +111,14 @@ describe('likes per service', () => {
     expect([likeLabel(vkTrack, false), likeLabel(vkTrack, true)]).toEqual(['Добавить в Мою музыку', 'Удалить из Моей музыки'])
     expect([likeLabel(sc(false), false), likeLabel(sc(true), true)]).toEqual(['Нравится', 'Убрать из лайков'])
   })
+
+  test('deleting an owned VK track clears isInLibrary until restored', async () => {
+    const ownVk = { id: 99, ownerId: 1, key: '1_99', liked: false } as Track
+    expect(isInLibrary(ownVk)).toBe(true)
+    await toggleLibrary(ownVk)
+    expect(isInLibrary(ownVk)).toBe(false)
+    expect(h.toasts[0]).toMatchObject({ m: 'Удалено из Моей музыки', action: { label: 'Вернуть' } })
+    h.toasts[0].action!.run()
+    await vi.waitFor(() => expect(isInLibrary(ownVk)).toBe(true))
+  })
 })

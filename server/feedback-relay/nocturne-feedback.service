@@ -5,6 +5,8 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/nocturne-feedback
+StateDirectory=nocturne-feedback
+Environment=DATA_DIR=/var/lib/nocturne-feedback
 EnvironmentFile=/opt/nocturne-feedback/.env
 ExecStart=/usr/bin/node /opt/nocturne-feedback/server.mjs
 Restart=always

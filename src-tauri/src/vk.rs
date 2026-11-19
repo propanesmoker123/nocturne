@@ -87,11 +87,21 @@ pub fn valid_method(method: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
-/// JSON params → form pairs (strings verbatim, numbers, bools as 1/0, arrays comma-joined, null skipped).
+const RESERVED_PARAMS: &[&str] = &["access_token", "v", "client_id"];
+
+fn is_reserved_param(key: &str) -> bool {
+    RESERVED_PARAMS.iter().any(|r| r.eq_ignore_ascii_case(key))
+}
+
+/// JSON params → form pairs (strings verbatim, numbers, bools as 1/0, arrays comma-joined, null
+/// and reserved auth/API keys skipped).
 pub fn params_to_form(params: &Map<String, Value>) -> Vec<(String, String)> {
     params
         .iter()
         .filter_map(|(k, v)| {
+            if is_reserved_param(k) {
+                return None;
+            }
             let s = match v {
                 Value::Null => return None,
                 Value::String(s) => s.clone(),
@@ -117,9 +127,9 @@ pub enum ApiOutcome {
     Err { code: i64, message: String, captcha_sid: Option<String>, captcha_img: Option<String>, redirect_uri: Option<String> },
 }
 
-pub fn parse_api_response(body: Value) -> ApiOutcome {
-    if let Some(r) = body.get("response") {
-        return ApiOutcome::Ok(r.clone());
+pub fn parse_api_response(mut body: Value) -> ApiOutcome {
+    if let Some(r) = body.as_object_mut().and_then(|m| m.remove("response")) {
+        return ApiOutcome::Ok(r);
     }
     if let Some(e) = body.get("error") {
         let text = |k: &str| e.get(k).and_then(|v| v.as_str()).map(String::from);
@@ -156,7 +166,11 @@ impl Limiter {
 
 pub(crate) async fn send(http: &Http, method: &str, form: &[(String, String)], token: &str) -> Result<Value, VkError> {
     let url = format!("{API_BASE}{method}?v={API_VERSION}&client_id={CLIENT_ID}");
-    let mut body: Vec<(&str, &str)> = form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut body: Vec<(&str, &str)> = form
+        .iter()
+        .filter(|(k, _)| !is_reserved_param(k))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     body.push(("access_token", token));
     let resp = http
         .client
@@ -191,13 +205,14 @@ pub async fn vk_api(app: AppHandle, http: State<'_, Http>, limiter: State<'_, Li
                 Decision::Retry { refresh, delay } => {
                     crate::journal::write("vk", &format!("{method}: error {code}, retrying"));
                     if refresh {
-                        app.state::<session::SessionState>().invalidate();
+                        app.state::<session::SessionState>().invalidate_if_matches(&token);
                     }
                     tokio::time::sleep(delay).await;
                 }
                 Decision::GiveUp => {
                     crate::journal::write("vk", &format!("{method}: error {code}: {message}"));
                     if classify(code) == ErrorAction::RefreshAndRetry {
+                        app.state::<session::SessionState>().invalidate_if_matches(&token);
                         return Err(VkError::Auth { message });
                     }
                     return Err(VkError::Vk { code, message, captcha_sid, captcha_img, redirect_uri });
@@ -263,7 +278,18 @@ mod tests {
 
     #[test]
     fn converts_params_to_form() {
-        let p = json!({ "owner_id": -5, "q": "кино", "need": true, "skip": null, "ids": ["1_2", "3_4"], "f": 0.5 });
+        let p = json!({
+            "owner_id": -5,
+            "q": "кино",
+            "need": true,
+            "skip": null,
+            "ids": ["1_2", "3_4"],
+            "f": 0.5,
+            "access_token": "spoofed",
+            "v": "5.000",
+            "client_id": "999",
+            "ACCESS_TOKEN": "spoofed2"
+        });
         let mut form = params_to_form(p.as_object().unwrap());
         form.sort();
         assert_eq!(

@@ -27,17 +27,7 @@ if (repo.startsWith('REPLACE_ME/')) {
   process.exit(1)
 }
 
-// 1. Version everywhere.
-conf.version = version
-writeFileSync(confPath, `${JSON.stringify(conf, null, 2)}\n`)
-const pkgPath = join(root, 'package.json')
-const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
-pkg.version = version
-writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`)
-const cargoPath = join(root, 'src-tauri', 'Cargo.toml')
-writeFileSync(cargoPath, readFileSync(cargoPath, 'utf8').replace(/^version = ".*"$/m, `version = "${version}"`))
-
-// 2. Signed build.
+// 1. Pre-flight checks before mutating any version files.
 const keyFile = join(homedir(), '.tauri', 'nocturne.key')
 const env = { ...process.env }
 if (!env.TAURI_SIGNING_PRIVATE_KEY) {
@@ -48,6 +38,18 @@ if (!env.TAURI_SIGNING_PRIVATE_KEY) {
   env.TAURI_SIGNING_PRIVATE_KEY = readFileSync(keyFile, 'utf8')
 }
 env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ??= ''
+
+// 2. Version everywhere.
+conf.version = version
+writeFileSync(confPath, `${JSON.stringify(conf, null, 2)}\n`)
+const pkgPath = join(root, 'package.json')
+const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+pkg.version = version
+writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`)
+const cargoPath = join(root, 'src-tauri', 'Cargo.toml')
+writeFileSync(cargoPath, readFileSync(cargoPath, 'utf8').replace(/^version = ".*"$/m, `version = "${version}"`))
+
+// 3. Signed build.
 const build = spawnSync('npx', ['tauri', 'build'], { cwd: root, env, stdio: 'inherit', shell: true })
 if (build.status !== 0) process.exit(build.status ?? 1)
 
@@ -78,6 +80,13 @@ if (!hasGh) {
   console.log(`\nGitHub CLI не найден. Создайте релиз v${version} в https://github.com/${repo}/releases/new и приложите:\n  ${exe}\n  ${manifestPath}`)
   process.exit(0)
 }
+try {
+  const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()
+  if (dirty) {
+    console.warn(`\nВнимание: рабочее дерево содержит незакоммиченные изменения (включая bump версии ${version}).\nЗакоммитьте и запушьте изменения перед публикацией тега, иначе v${version} укажет на предыдущий коммит.\nУстановщик и манифест готовы; для публикации выполните:\n  git add -A && git commit -m "release: ${version}" && git push\n  gh release create v${version} "${exe}" "${manifestPath}" --repo ${repo} --title "Nocturne ${version}"`)
+    process.exit(0)
+  }
+} catch {}
 const gh = spawnSync(
   ghBin,
   ['release', 'create', `v${version}`, exe, manifestPath, '--repo', repo, '--title', `Nocturne ${version}`, '--notes', notes || `Nocturne ${version}`],

@@ -45,7 +45,11 @@ export class TauriLoader implements Loader<LoaderContext> {
     const range = context.rangeEnd ? [context.rangeStart ?? 0, context.rangeEnd] : undefined
     const pre = range ? null : getPreloadedResource(context.url)
     const fetchBytes = () => invoke<ArrayBuffer>('proxy_fetch', { url: context.url, ...(range ? { range } : {}) })
-    const req = pre ? Promise.resolve(pre).catch(() => this.abortRequest === abort ? fetchBytes() : null) : fetchBytes()
+    const req = pre
+      ? Promise.resolve(pre)
+          .then((buf) => (buf && buf.byteLength > 0 ? buf : this.abortRequest === abort ? fetchBytes() : null))
+          .catch(() => (this.abortRequest === abort ? fetchBytes() : null))
+      : fetchBytes()
     req
       .then((buf) => {
         if (!buf || !finish()) return

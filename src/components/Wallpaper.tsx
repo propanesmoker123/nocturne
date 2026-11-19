@@ -1,3 +1,4 @@
+import { useUi } from '../app/ui'
 import type { WallpaperConfig, WallpaperPreset } from '../lib/settings'
 import { wallpaperUrl } from '../lib/wallpaper'
 import { usePlayer } from '../player/store'
@@ -18,7 +19,7 @@ export interface WallpaperLook {
 }
 
 function DynamicArt() {
-  const src = usePlayer((p) => p.current?.cover?.m)
+  const src = usePlayer((p) => p.current?.cover?.m || p.current?.cover?.l || p.current?.cover?.s)
   if (!src) return <PresetLayer preset="dusk" />
   return (
     <div className={s.dynamic} aria-hidden="true">
@@ -54,13 +55,15 @@ function WallpaperVideo({ src, active }: { src: string; active: boolean }) {
 
 export function Wallpaper({ config, look }: { config: WallpaperConfig; look: WallpaperLook }) {
   const visible = useWindowVisibility((state) => state.visible)
+  const coveredByNowPlaying = useUi((u) => u.nowPlaying)
+  const active = visible && !coveredByNowPlaying
   const vars = { ['--wp-blur' as string]: `${look.blur}px`, ['--wp-dim' as string]: String(look.dim) }
   return (
-    <div className={s.layer} style={vars} data-paused={!visible || undefined} aria-hidden="true">
+    <div className={s.layer} style={vars} data-paused={!active || undefined} aria-hidden="true">
       {config.kind === 'dynamic' && <DynamicArt />}
       {config.kind === 'preset' && <PresetLayer preset={config.preset} />}
       {config.kind === 'image' && <img className={s.media} src={wallpaperUrl(config.src)} alt="" />}
-      {config.kind === 'video' && <WallpaperVideo src={wallpaperUrl(config.src)} active={visible} />}
+      {config.kind === 'video' && <WallpaperVideo src={wallpaperUrl(config.src)} active={active} />}
       {config.kind !== 'none' && <div className={s.dim} />}
       <div className={s.vignette} />
     </div>

@@ -83,8 +83,20 @@ async function getPipeline(modelSize: WhisperModelSize, jobId: number): Promise<
   const modelId = modelSize === 'base' ? 'onnx-community/whisper-base' : 'onnx-community/whisper-tiny'
   if (pipePromise && cachedModelId === modelId) return pipePromise
 
+  if (pipePromise && cachedModelId !== modelId) {
+    const prev = pipePromise
+    pipePromise = null
+    cachedModelId = ''
+    try {
+      const oldPipe = await prev
+      await (oldPipe as unknown as { dispose?: () => Promise<void> }).dispose?.()
+    } catch {
+      /* ignore previous pipeline load/dispose failure */
+    }
+  }
+
   cachedModelId = modelId
-  pipePromise = pipeline('automatic-speech-recognition', modelId, {
+  const created = pipeline('automatic-speech-recognition', modelId, {
     device: 'wasm',
     dtype: 'q8',
     progress_callback: (info: { status?: string; file?: string; progress?: number }) => {
@@ -96,12 +108,15 @@ async function getPipeline(modelSize: WhisperModelSize, jobId: number): Promise<
       })
     },
   }).catch((err: unknown) => {
-    pipePromise = null
-    cachedModelId = ''
+    if (pipePromise === created) {
+      pipePromise = null
+      cachedModelId = ''
+    }
     throw err
   })
+  pipePromise = created
 
-  return pipePromise
+  return created
 }
 
 function normalizeChunks(raw: unknown): WhisperWordChunk[] {
@@ -123,13 +138,23 @@ function normalizeChunks(raw: unknown): WhisperWordChunk[] {
       continue
     }
 
-    const totalLen = tokens.reduce((s, t) => s + t.length, 0) || tokens.length
-    let cursor = bMs
+    const totalLen = tokens.reduce((s, t) => s + (t.length || 1), 0) || tokens.length
     const span = eMs - bMs
+    const minStep = span >= tokens.length * 40 ? 40 : 0
+    let accLen = 0
+    let cursor = bMs
     for (let i = 0; i < tokens.length; i++) {
-      const slice = i === tokens.length - 1 ? eMs - cursor : Math.max(40, Math.round((span * tokens[i].length) / totalLen))
-      words.push({ text: tokens[i], beginMs: cursor, endMs: cursor + slice })
-      cursor += slice
+      accLen += tokens[i].length || 1
+      const remaining = tokens.length - 1 - i
+      const idealEnd = i === tokens.length - 1 ? eMs : Math.round(bMs + (span * accLen) / totalLen)
+      const maxAllowedEnd = eMs - remaining * minStep
+      const end =
+        i === tokens.length - 1
+          ? Math.max(cursor, eMs)
+          : Math.min(maxAllowedEnd, Math.max(cursor + minStep, idealEnd))
+      const clampedEnd = Math.max(cursor, end)
+      words.push({ text: tokens[i], beginMs: cursor, endMs: clampedEnd })
+      cursor = clampedEnd
     }
   }
 

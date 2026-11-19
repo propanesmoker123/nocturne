@@ -399,13 +399,15 @@ export function describeLyricsMethod(
 ): LyricsMethodInfo {
   const cr = lyrics?.credits ?? ''
   let sourceLabel = '\u0412\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u0435'
-  if (lyrics?.source === 'spotify' || cr.includes('Spotify')) sourceLabel = 'Spotify'
+  if (lyrics?.source === 'ai') sourceLabel = 'Whisper AI'
+  else if (lyrics?.source === 'spotify' || cr.includes('Spotify')) sourceLabel = 'Spotify'
   else if (lyrics?.source === 'netease' || cr.includes('NetEase')) sourceLabel = 'NetEase'
   else if (lyrics?.source === 'lrclib' || cr.includes('LRCLIB')) sourceLabel = 'LRCLIB'
   else if (lyrics?.source === 'kugou' || cr.includes('Kugou')) sourceLabel = 'Kugou'
   else if (lyrics?.source === 'qq' || cr.includes('QQ')) sourceLabel = 'QQ Music'
   else if (lyrics?.source === 'genius' || cr.includes('Genius')) sourceLabel = 'Genius'
   else if (lyrics?.source === 'ovh' || cr.includes('Lyrics.ovh')) sourceLabel = 'Lyrics.ovh'
+  else if (cr.includes('Whisper AI')) sourceLabel = 'Whisper AI'
   else if (lyrics?.source === 'vk' || fromVk || cr.includes('\u0412\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u0435')) sourceLabel = '\u0412\u041a\u043e\u043d\u0442\u0430\u043a\u0442\u0435'
 
   const hasWords = !!lyrics?.lines.some((l) => l.words && l.words.length > 0)

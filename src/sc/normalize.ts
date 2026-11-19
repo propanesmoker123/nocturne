@@ -1,3 +1,4 @@
+import { queryClient } from '../app/queryClient'
 import type { Cover, Playlist, Track } from '../vk/models'
 import type { RawScComment, RawScPlaylist, RawScStreamItem, RawScTrack, RawScUser } from './types'
 
@@ -30,7 +31,11 @@ export function artwork(url: string | null | undefined): Cover | undefined {
 /** This computer plays protected (CTR) streams: set at start by `probeDrm` (playback.ts). */
 let drmAvailable = true
 export function setDrmAvailable(on: boolean) {
+  const prev = drmAvailable
   drmAvailable = on
+  if (prev && !on) {
+    void queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sc-') })
+  }
 }
 
 /** Clear HLS (AAC or MP3), or CTR HLS in MP4 where this computer has Widevine/PlayReady; full tracks only. CBC requires FairPlay. */
@@ -47,7 +52,7 @@ export function playableTrack(r: RawScTrack): boolean {
 export function normalizeScTrack(r: RawScTrack, liked = false): Track {
   const user = r.user
   const artist = r.publisher_metadata?.artist?.trim() || user?.username || ''
-  const ms = r.full_duration ?? r.duration ?? 0
+  const ms = (r.full_duration && r.full_duration > 0 ? r.full_duration : r.duration) ?? 0
   return {
     service: 'sc',
     key: `sc_${r.id}`,

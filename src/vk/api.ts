@@ -11,7 +11,17 @@ type CaptchaHandler = (e: VkError) => Promise<string | null>
 
 let transport: Transport | null = null
 let captchaHandler: CaptchaHandler | null = null
+let captchaQueue: Promise<unknown> = Promise.resolve()
 let meId = 0
+
+function enqueueCaptcha(err: VkError, handler: CaptchaHandler): Promise<string | null> {
+  const next = captchaQueue.then(
+    () => handler(err),
+    () => handler(err),
+  )
+  captchaQueue = next.catch(() => {})
+  return next
+}
 
 const defaultTransport: Transport = async (method, params) => {
   if (isTauri()) return invoke('vk_api', { method, params })
@@ -44,7 +54,7 @@ export async function call<T>(method: string, params: Params = {}): Promise<T> {
   } catch (raw) {
     const err = VkError.from(raw)
     if (!err.isCaptcha || !captchaHandler || !err.captchaSid) throw err
-    const key = await captchaHandler(err)
+    const key = await enqueueCaptcha(err, captchaHandler)
     if (!key) throw err
     try {
       return (await send(method, { ...params, captcha_sid: err.captchaSid, captcha_key: key })) as T
@@ -60,21 +70,24 @@ export interface Page<T> {
   nextFrom?: string
 }
 
-const tracksPage = (r: RawList<RawAudio>): Page<Track> => {
+const tracksPage = (r: RawList<RawAudio> | null | undefined): Page<Track> => {
   const now = Date.now()
-  return { count: r.count, items: r.items.map((a) => normalizeTrack(a, now)), nextFrom: r.next_from }
+  const items = Array.isArray(r?.items) ? r.items : []
+  return { count: r?.count ?? items.length, items: items.map((a) => normalizeTrack(a, now)), nextFrom: r?.next_from }
 }
 
 // ── Account ──────────────────────────────────────────────────────────────
 
 export async function getMe(): Promise<User> {
   const r = await call<RawUser[]>('users.get', { fields: 'photo_100,photo_200' })
+  if (!Array.isArray(r) || !r[0]) throw new VkError('invalid', 'Empty users.get response')
   return normalizeUser(r[0])
 }
 
 export async function getFriends(): Promise<Friend[]> {
   const r = await call<RawList<RawUser>>('friends.get', { fields: 'photo_100,can_see_audio', order: 'hints', count: 5000 })
-  return r.items.map(normalizeFriend)
+  const items = Array.isArray(r?.items) ? r.items : []
+  return items.map(normalizeFriend)
 }
 
 // ── Messages ─────────────────────────────────────────────────────────────
@@ -97,7 +110,7 @@ export async function getByIds(tracks: Pick<Track, 'ownerId' | 'id' | 'accessKey
   if (tracks.length === 0) return []
   const r = await call<RawAudio[]>('audio.getById', { audios: tracks.map(trackKeyWithAccess).join(',') })
   const now = Date.now()
-  return r.map((a) => normalizeTrack(a, now))
+  return (Array.isArray(r) ? r : []).map((a) => normalizeTrack(a, now))
 }
 
 /** Adds a track to "Моя музыка"; returns the id of the new copy. */
@@ -120,7 +133,7 @@ export async function searchTracks(q: string, offset = 0, count = 60): Promise<P
 export async function getStreamMix(count = 20): Promise<Track[]> {
   const r = await call<RawAudio[]>('audio.getStreamMixAudios', { mix_id: 'common', count })
   const now = Date.now()
-  return r.map((a) => normalizeTrack(a, now))
+  return (Array.isArray(r) ? r : []).map((a) => normalizeTrack(a, now))
 }
 
 export async function getArtistTracks(artistId: string, offset = 0, count = 100): Promise<Page<Track>> {
@@ -132,17 +145,18 @@ export async function getLyrics(t: Track): Promise<Lyrics | null> {
   return normalizeLyrics(await call<RawLyrics>('audio.getLyrics', { audio_id: `${t.ownerId}_${t.id}` }))
 }
 
-/** Puts the track into the VK status; a SoundCloud track clears it (its ids mean nothing to VK). */
+/** Puts the track into the VK status; non-VK tracks (SoundCloud, Spotify) clear it. */
 export async function setBroadcast(t: Track | null): Promise<void> {
-  const audio = t && serviceOf(t) !== 'sc' ? `${t.ownerId}_${t.id}` : null
+  const audio = t && serviceOf(t) === 'vk' ? `${t.ownerId}_${t.id}` : null
   await call('audio.setBroadcast', audio ? { audio } : {})
 }
 
 // ── Playlists ────────────────────────────────────────────────────────────
 
-const playlistsPage = (r: RawList<RawPlaylist>): Page<Playlist> => {
-  const names = ownerNamesFrom(r.profiles, r.groups)
-  return { count: r.count, items: r.items.map((p) => normalizePlaylist(p, meId, names)), nextFrom: r.next_from }
+const playlistsPage = (r: RawList<RawPlaylist> | null | undefined): Page<Playlist> => {
+  const names = ownerNamesFrom(r?.profiles, r?.groups)
+  const items = Array.isArray(r?.items) ? r.items : []
+  return { count: r?.count ?? items.length, items: items.map((p) => normalizePlaylist(p, meId, names)), nextFrom: r?.next_from }
 }
 
 export async function getPlaylists(ownerId: number, offset = 0, count = 100): Promise<Page<Playlist>> {
@@ -180,10 +194,12 @@ export async function followPlaylist(p: Pick<Playlist, 'ownerId' | 'id' | 'acces
 }
 
 export async function addToPlaylist(p: Pick<Playlist, 'ownerId' | 'id'>, tracks: Track[]): Promise<void> {
+  if (tracks.length === 0) return
   await call('audio.addToPlaylist', { owner_id: p.ownerId, playlist_id: p.id, audio_ids: tracks.map(trackKeyWithAccess).join(',') })
 }
 
 export async function removeFromPlaylist(p: Pick<Playlist, 'ownerId' | 'id'>, tracks: Track[]): Promise<void> {
+  if (tracks.length === 0) return
   await call('audio.removeFromPlaylist', { owner_id: p.ownerId, playlist_id: p.id, audio_ids: tracks.map((t) => `${t.ownerId}_${t.id}`).join(',') })
 }
 

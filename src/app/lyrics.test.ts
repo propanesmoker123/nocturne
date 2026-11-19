@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   tauri: false,
   fetchedUrls: [] as string[],
   fetchReply: (_url: string): string => '',
+  failAll: false,
 }))
 
 vi.mock('../lib/tauri', () => ({
@@ -20,6 +21,7 @@ vi.mock('../lib/tauri', () => ({
     if (cmd === 'lyrics_fetch') {
       const url = String(args?.url ?? '')
       h.fetchedUrls.push(url)
+      if (h.failAll) throw new Error('offline')
       return h.fetchReply(url)
     }
     throw new Error(`unexpected invoke: ${cmd}`)
@@ -28,10 +30,12 @@ vi.mock('../lib/tauri', () => ({
 
 vi.mock('../vk/api', () => ({
   searchTracks: async (q: string) => {
+    if (h.failAll) throw new Error('offline')
     h.searched.push(q)
     return { count: h.found.length, items: h.found }
   },
   getLyrics: async (t: Track) => {
+    if (h.failAll) throw new Error('offline')
     h.lyricsOf.push(t.key)
     return h.vkLyrics
   },
@@ -39,10 +43,14 @@ vi.mock('../vk/api', () => ({
 
 vi.mock('../spotify/api', () => ({
   search: async (q: string) => {
+    if (h.failAll) throw new Error('offline')
     h.spSearched.push(q)
     return { tracks: h.spFound, artists: [], playlists: [], albums: [] }
   },
-  getSpotifyLyrics: async () => h.spLyrics,
+  getSpotifyLyrics: async () => {
+    if (h.failAll) throw new Error('offline')
+    return h.spLyrics
+  },
 }))
 
 const { findLyrics, lyricsMatch } = await import('./lyrics')
@@ -85,6 +93,7 @@ beforeEach(() => {
   h.tauri = false
   h.fetchedUrls.length = 0
   h.fetchReply = () => ''
+  h.failAll = false
   ;(globalThis as Record<string, unknown>).localStorage = undefined
 })
 
@@ -361,5 +370,33 @@ describe('lyrics for a SoundCloud track come from the same song in VK', () => {
     expect(a).toEqual(b)
     expect(a?.lines[0].text).toBe('Concurrent line')
     expect(h.fetchedUrls.filter((u) => u.startsWith('https://lrclib.net/api/get'))).toHaveLength(1)
+  })
+
+  test('does not poison the negative cache when all network providers fail transiently', async () => {
+    ;(globalThis as Record<string, unknown>).localStorage = memoryStorage()
+    h.tauri = true
+    h.failAll = true
+
+    const t = track({
+      key: 'vk_offline_1',
+      hasLyrics: false,
+      artist: 'Offline Artist',
+      title: 'Offline Song',
+      duration: 180,
+    })
+
+    expect(await findLyrics(t)).toBeNull()
+
+    // Once back online, a subsequent call must re-fetch rather than serving a stale cached null.
+    h.failAll = false
+    h.fetchedUrls.length = 0
+    h.fetchReply = (url) =>
+      url.startsWith('https://lrclib.net/api/get')
+        ? JSON.stringify({ artistName: 'Offline Artist', trackName: 'Offline Song', duration: 180, syncedLyrics: '[00:01.00]Back online' })
+        : ''
+
+    const recovered = await findLyrics(t)
+    expect(recovered?.lines[0].text).toBe('Back online')
+    expect(h.fetchedUrls.length).toBeGreaterThan(0)
   })
 })

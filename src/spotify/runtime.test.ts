@@ -4,12 +4,12 @@ import type { PlayerCommand } from '../lib/events'
 const h = vi.hoisted(() => {
   const listeners = new Set<(state: { isPlaying: boolean }, previous: { isPlaying: boolean }) => void>()
   const player = { current: null as { service: 'spotify' } | null, isPlaying: false, toggle: vi.fn(), play: vi.fn(), pause: vi.fn(), next: vi.fn(), prev: vi.fn(), seekBy: vi.fn(), nudgeVolume: vi.fn() }
-  const invoke = vi.fn(async () => true)
+  const invoke = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => true)
   return { player, listeners, invoke }
 })
 vi.mock('../player/store', () => ({ usePlayer: { getState: () => h.player, subscribe: (callback: (state: { isPlaying: boolean }, previous: { isPlaying: boolean }) => void) => { h.listeners.add(callback); return () => h.listeners.delete(callback) } } }))
 vi.mock('../lib/tauri', () => ({ isTauri: () => true, invoke: h.invoke }))
-import { claimSpotifyPlayback, readSpotifyTrack, releaseSpotifyPlayback, spotifyOwnsPlayback, spotifyPosition, startSpotifyBridge, useSpotify } from './runtime'
+import { claimSpotifyPlayback, readSpotifyTrack, releaseSpotifyPlayback, spotifyOwnsPlayback, spotifyPosition, spotifyStatus, startSpotifyBridge, useSpotify } from './runtime'
 import { runCommand } from '../player/commands'
 
 beforeEach(() => { vi.useFakeTimers(); vi.clearAllTimers(); releaseSpotifyPlayback(); h.listeners.clear(); h.player.current = null; h.player.isPlaying = false; vi.clearAllMocks() })
@@ -71,4 +71,110 @@ test('starting VK or SoundCloud takes ownership and pauses Spotify; closing rest
   expect(spotifyOwnsPlayback()).toBe(false)
   off()
   expect(h.listeners.size).toBe(0)
+})
+
+test('stale in-flight spotifyStatus poll does not steal ownership or pause a newly started VK/SC track', async () => {
+  const off = startSpotifyBridge()
+  let resolvePoll: ((v: unknown) => void) | undefined
+  h.invoke.mockImplementationOnce(() => new Promise((r) => { resolvePoll = r }))
+  const pending = spotifyStatus()
+
+  // VK/SC starts playing while spotify_status is still in flight
+  h.player.isPlaying = true
+  h.listeners.forEach((listener) => listener({ isPlaying: true }, { isPlaying: false }))
+  h.player.pause.mockClear()
+
+  resolvePoll?.({
+    open: true,
+    phase: 'ready',
+    account: 'in',
+    playing: true,
+    nowPlaying: { title: 'Stale', artist: 'Spotify', album: '', position: 5, duration: 120, liked: false, shuffle: false, repeat: 'off', volume: 0.8 },
+  })
+  await pending
+
+  expect(spotifyOwnsPlayback()).toBe(false)
+  expect(h.player.pause).not.toHaveBeenCalled()
+  off()
+})
+
+test('hidden Spotify ad or rogue background playback NEVER hijacks VK, pauses VK, or renders an ad track, and is actively paused', async () => {
+  const off = startSpotifyBridge()
+  h.player.current = { key: '1_1', service: 'vk' } as unknown as { service: 'spotify' }
+  h.player.isPlaying = true
+
+  // Background Spotify poll reports an active 29s muted ad ("Реклама") while user is listening to VK
+  h.invoke.mockResolvedValueOnce({
+    open: true,
+    phase: 'ready',
+    account: 'in',
+    playing: true,
+    nowPlaying: {
+      isAd: true,
+      title: 'Реклама',
+      artist: '',
+      album: '',
+      position: 2,
+      duration: 29,
+      liked: null,
+      shuffle: false,
+      repeat: 'off',
+      volume: 0,
+    },
+  })
+  await spotifyStatus()
+
+  expect(spotifyOwnsPlayback()).toBe(false)
+  expect(useSpotify.getState().owner).toBe(false)
+  expect(useSpotify.getState().track).toBeNull()
+  expect(h.player.pause).not.toHaveBeenCalled()
+  expect(h.invoke).toHaveBeenCalledWith('spotify_control', { action: 'pause' })
+
+  // Even a non-ad rogue stream in the hidden WebView never hijacks VK and gets silenced after throttle window
+  vi.advanceTimersByTime(1600)
+  h.invoke.mockClear()
+  h.invoke.mockResolvedValueOnce({
+    open: true,
+    phase: 'ready',
+    account: 'in',
+    playing: true,
+    nowPlaying: {
+      isAd: false,
+      title: 'Rogue Song',
+      artist: 'Someone',
+      album: '',
+      position: 5,
+      duration: 180,
+      liked: false,
+      shuffle: false,
+      repeat: 'off',
+      volume: 0.8,
+    },
+  })
+  await spotifyStatus()
+
+  expect(spotifyOwnsPlayback()).toBe(false)
+  expect(useSpotify.getState().owner).toBe(false)
+  expect(useSpotify.getState().track).toBeNull()
+  expect(h.player.pause).not.toHaveBeenCalled()
+  expect(h.invoke).toHaveBeenCalledWith('spotify_control', { action: 'pause' })
+
+  // readSpotifyTrack rejects ads unconditionally
+  expect(readSpotifyTrack({ isAd: true, title: 'Реклама', artist: '', duration: 29, position: 2 })).toBeNull()
+  off()
+})
+
+test('switching directly from a playing Spotify track to a playing VK track clears ownership and pauses hidden Spotify', () => {
+  const off = startSpotifyBridge()
+  claimSpotifyPlayback()
+  h.invoke.mockClear()
+  h.listeners.forEach((listener) =>
+    (listener as unknown as (s: unknown, p: unknown) => void)(
+      { current: { key: '1_42', service: 'vk' }, isPlaying: true },
+      { current: { key: 'sp_1', service: 'spotify' }, isPlaying: true },
+    ),
+  )
+  expect(spotifyOwnsPlayback()).toBe(false)
+  expect(h.invoke).toHaveBeenCalledWith('spotify_control', { action: 'pause' })
+  off()
 })

@@ -9,8 +9,8 @@
   overflow: hidden;
 }
 
-.wrap[data-effects='true'][data-playing='true']::before {
-  content: '';
+.glow {
+  display: none;
   position: absolute;
   inset: -12% -8%;
   pointer-events: none;
@@ -23,6 +23,10 @@
   opacity: calc(0.08 + var(--energy, 0) * 0.24 + var(--beat, 0) * 0.38);
   transform: scale(calc(0.95 + var(--beat, 0) * 0.14));
   will-change: opacity, transform;
+}
+
+.wrap[data-effects='true'][data-playing='true'] .glow {
+  display: block;
 }
 
 .particles {
@@ -80,7 +84,6 @@
   cursor: pointer;
   transform-origin: left center;
   transition: opacity 320ms cubic-bezier(0.22, 1, 0.36, 1), filter 320ms ease, transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform, opacity, filter;
 }
 
 .wrap[data-theater='true'] .line {
@@ -132,16 +135,17 @@
   filter: blur(0) drop-shadow(0 0 calc(10px + var(--energy, 0) * 10px + var(--beat, 0) * 20px) rgba(255, 255, 255, 0.34));
   transform: translateZ(0) scale(1.022);
   transition: opacity 280ms ease, filter 260ms ease, transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, opacity, filter;
 }
 
 .lineInner {
   display: inline-block;
   transform-origin: left center;
-  will-change: transform;
 }
 
 .wrap[data-synced='true'] .line[data-active='true'] .lineInner {
   transform: scale(calc(1 + var(--energy, 0) * 0.014 + var(--beat, 0) * 0.034));
+  will-change: transform;
 }
 
 .wrap[data-effects='true'][data-synced='true'] .line[data-active='true'][data-text-fx='big'] {
@@ -186,7 +190,6 @@
   padding: 0 2px;
   vertical-align: baseline;
   transition: transform 95ms cubic-bezier(0.16, 1, 0.3, 1), filter 110ms ease-out;
-  will-change: transform, filter;
 }
 
 /* Match typography family on wordUnit too so attr(data-text) echo/split layers share exact glyph geometry */
@@ -429,11 +432,11 @@
   transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1),
     transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
     filter 180ms ease-out;
-  will-change: transform, opacity;
 }
 
 .wrap[data-effects='true'] .line[data-active='true'] .word[data-word-lit='true'] + .wordEmoji {
   opacity: 1;
+  will-change: transform, opacity;
   transform: translate3d(0, calc(var(--beat, 0) * -4.5px), 0)
     scale(calc(1 + var(--beat, 0) * 0.24))
     rotate(calc((var(--beat, 0) - 0.25) * 8deg));
@@ -525,6 +528,7 @@
 .wrap[data-synced='true'] .line[data-active='true'] .word[data-word-active='true'] {
   transform: translateY(calc(-1.5px - var(--beat, 0) * 3.4px)) scale(calc(1.032 + var(--beat, 0) * 0.058));
   filter: drop-shadow(0 0 calc(10px + var(--beat, 0) * 18px) rgba(255, 255, 255, 0.62));
+  will-change: transform, filter;
 }
 
 .wrap[data-synced='true'] .line[data-active='true'] .word[data-word-lit='true']:not([data-word-active='true']) {
@@ -792,6 +796,10 @@
 
 .wrap[data-effects='true'][data-playing='false'] .word[data-fx] {
   animation-play-state: paused;
+}
+
+.wrap[data-effects='true'][data-synced='false'] .word[data-fx] {
+  animation: none;
 }
 
 /* ══ KEYFRAMES (SMOOTH ENTRANCE & LAYERED OPTICAL CHOREOGRAPHY) ═══════════ */

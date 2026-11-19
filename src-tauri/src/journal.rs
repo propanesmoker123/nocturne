@@ -39,7 +39,13 @@ impl Journal {
 
     fn rotate(&mut self) {
         self.file = None;
-        let _ = fs::rename(self.dir.join(CURRENT), self.dir.join(PREVIOUS));
+        let cur = self.dir.join(CURRENT);
+        let prev = self.dir.join(PREVIOUS);
+        let renamed = fs::rename(&cur, &prev).is_ok()
+            || (fs::remove_file(&prev).is_ok() && fs::rename(&cur, &prev).is_ok());
+        if !renamed {
+            let _ = OpenOptions::new().create(true).write(true).truncate(true).open(&cur);
+        }
         self.reopen();
     }
 
@@ -84,12 +90,15 @@ fn read_tail(path: &Path, max_bytes: u64) -> Vec<u8> {
 
 /// One line per entry, bounded, so a hostile or huge message cannot bloat or forge entries.
 pub fn sanitize(msg: &str) -> String {
-    let flat: String = msg.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    let mut cut: String = flat.chars().take(MAX_LINE).collect();
-    if flat.chars().count() > MAX_LINE {
-        cut.push('…');
+    let mut out = String::new();
+    let mut chars = msg.chars().take(MAX_LINE + 1).map(|c| if c.is_control() { ' ' } else { c });
+    for ch in chars.by_ref().take(MAX_LINE) {
+        out.push(ch);
     }
-    cut
+    if chars.next().is_some() {
+        out.push('…');
+    }
+    out
 }
 
 /// "2026-10-06 13:45:07 UTC" from a Unix time in seconds.
@@ -144,16 +153,24 @@ pub fn journal_write(area: String, message: String) {
     }
 }
 
-#[tauri::command]
-pub fn journal_tail() -> String {
+pub fn tail() -> String {
     SINK.get().and_then(|s| s.lock().ok().map(|j| j.tail(TAIL_BYTES))).unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn journal_open_dir(app: AppHandle) -> Result<(), String> {
+pub async fn journal_tail() -> String {
+    tauri::async_runtime::spawn_blocking(tail).await.unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn journal_open_dir(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let dir = SINK.get().and_then(|s| s.lock().ok().map(|j| j.dir().to_path_buf())).ok_or("journal is off")?;
-    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -223,5 +240,20 @@ mod tests {
         assert!(!valid_area("Player"));
         assert!(!valid_area("a b"));
         assert!(!valid_area(&"a".repeat(17)));
+    }
+
+    #[test]
+    fn rotate_truncates_current_when_previous_cannot_be_replaced() {
+        let dir = temp_dir();
+        // Block PREVIOUS with a directory so both rename and remove_file fail.
+        fs::create_dir(dir.join(PREVIOUS)).unwrap();
+        let mut j = Journal::open(dir.clone(), 40);
+        for i in 0..6 {
+            j.append(&format!("line {i:02} ........\n"));
+        }
+        let cur = fs::read_to_string(dir.join(CURRENT)).unwrap();
+        assert_eq!(cur, "line 04 ........\nline 05 ........\n");
+        assert!(j.size <= 40);
+        let _ = fs::remove_dir_all(dir);
     }
 }

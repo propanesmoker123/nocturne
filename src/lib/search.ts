@@ -10,5 +10,21 @@ export const sameSong = (a: Track, b: Track) =>
 export function splitOwnFirst(library: Track[], global: Track[], q: string): { own: Track[]; others: Track[] } {
   const own = q.trim() ? filterTracks(library, q) : []
   if (own.length === 0) return { own, others: global }
-  return { own, others: global.filter((g) => !own.some((o) => sameSong(o, g))) }
+  const ownReleaseIds = new Set<string>()
+  const ownByKey = new Map<string, number[]>()
+  for (const o of own) {
+    if (o.releaseId) ownReleaseIds.add(o.releaseId)
+    const k = `${normalizeSearch(o.title)}\0${normalizeSearch(o.artist)}`
+    const durs = ownByKey.get(k)
+    if (durs) durs.push(o.duration)
+    else ownByKey.set(k, [o.duration])
+  }
+  return {
+    own,
+    others: global.filter((g) => {
+      if (g.releaseId && ownReleaseIds.has(g.releaseId)) return false
+      const durs = ownByKey.get(`${normalizeSearch(g.title)}\0${normalizeSearch(g.artist)}`)
+      return !(durs && durs.some((d) => Math.abs(d - g.duration) <= 2))
+    }),
+  }
 }

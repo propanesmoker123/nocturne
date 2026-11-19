@@ -1,4 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
+import { ScApiError } from '../sc/errors'
 import { VkError } from '../vk/errors'
 
 export const queryClient = new QueryClient({
@@ -8,6 +9,9 @@ export const queryClient = new QueryClient({
       gcTime: 15 * 60_000,
       refetchOnWindowFocus: false,
       retry: (count, err) => {
+        if (err instanceof ScApiError) {
+          return err.kind === 'network' && count < 2
+        }
         const e = VkError.from(err)
         if (e.isAccessDenied || e.isAuth || e.isCaptcha || e.kind === 'invalid') return false
         return count < 2

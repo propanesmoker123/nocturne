@@ -24,7 +24,10 @@ function MenuList({ items, x, y, onDone, nested }: { items: MenuItem[]; x: numbe
     const r = el.getBoundingClientRect()
     const sx = r.right + 4 + 240 > window.innerWidth ? r.left - 244 : r.right + 4
     setSub({ index, items: null, x: sx, y: r.top - 5 })
-    void item.submenu!().then((loaded) => setSub((cur) => (cur && cur.index === index ? { ...cur, items: loaded } : cur)))
+    void item
+      .submenu!()
+      .then((loaded) => setSub((cur) => (cur && cur.index === index ? { ...cur, items: loaded } : cur)))
+      .catch(() => setSub((cur) => (cur && cur.index === index ? null : cur)))
   }
 
   return (
@@ -87,12 +90,18 @@ export function ContextMenu() {
 
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
-    window.addEventListener('keydown', onKey)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        close()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
     window.addEventListener('blur', close)
     window.addEventListener('resize', close)
     return () => {
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('blur', close)
       window.removeEventListener('resize', close)
     }

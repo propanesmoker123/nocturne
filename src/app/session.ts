@@ -5,6 +5,8 @@ import { clearVkCache, hydrateVkSnapshots, markVkSnapshotsStale, readVkSessionSn
 import * as vk from '../vk/api'
 import type { User } from '../vk/models'
 import { queryClient } from './queryClient'
+import { clearDeletedOwnKeys } from './library'
+import { clearRememberedBlocks } from './strips'
 
 type Phase = 'pending' | 'none' | 'ready'
 
@@ -21,6 +23,19 @@ interface SessionState {
 }
 
 let liveReadyConfirmed = false
+let sessionEpoch = 0
+
+function clearVkQueries() {
+  clearDeletedOwnKeys()
+  clearRememberedBlocks()
+  // Only remove VK queries so SoundCloud, Spotify, and wallpaper caches remain intact.
+  queryClient.removeQueries({
+    predicate: (q) => {
+      const k = String(q.queryKey[0] ?? '')
+      return !k.startsWith('sc-') && !k.startsWith('sp-') && k !== 'wallpapers' && k !== 'lyrics'
+    },
+  })
+}
 
 export const useSession = create<SessionState>((set) => ({
   phase: 'pending',
@@ -36,6 +51,7 @@ export const useSession = create<SessionState>((set) => ({
     }
   },
   async resetLogin() {
+    sessionEpoch++
     set({ loggingIn: true })
     try {
       await invoke('session_logout')
@@ -45,13 +61,14 @@ export const useSession = create<SessionState>((set) => ({
     }
   },
   async logout() {
+    sessionEpoch++
     liveReadyConfirmed = false
+    clearVkQueries()
+    set({ phase: 'none', user: null, loggingIn: false })
     if (isTauri()) {
       clearVkCache()
       await invoke('session_logout').catch(() => {})
     }
-    queryClient.clear()
-    set({ phase: 'none', user: null, loggingIn: false })
   },
 }))
 
@@ -68,6 +85,7 @@ export function hydrateVkWarmState(): void {
 }
 
 async function becomeReady(userId: number) {
+  const myEpoch = ++sessionEpoch
   vk.setMeId(userId)
   useSession.setState({ phase: 'ready', loggingIn: false })
   if (isTauri()) {
@@ -79,6 +97,7 @@ async function becomeReady(userId: number) {
   }
   try {
     const user = await vk.getMe()
+    if (myEpoch !== sessionEpoch) return
     vk.setMeId(user.id)
     useSession.setState({ user })
     if (isTauri()) writeVkSessionSnapshot(true, user.id, user)
@@ -96,14 +115,16 @@ export async function initSession() {
   void listen<{ userId: number }>(EV.sessionReady, (e) => void becomeReady(e.payload.userId))
   void listen<boolean>(EV.sessionBusy, (e) => useSession.setState({ busy: !!e.payload }))
   void listen(EV.sessionLoggedOut, () => {
+    sessionEpoch++
     liveReadyConfirmed = false
     clearVkCache()
-    if (useSession.getState().phase === 'ready' && !useSession.getState().loggingIn) queryClient.clear()
+    if (useSession.getState().phase === 'ready' && !useSession.getState().loggingIn) clearVkQueries()
     useSession.setState({ phase: 'none', user: null })
   })
   const status = await invoke<{ state: Phase; userId?: number }>('session_status')
   if (status.state === 'ready' && status.userId) await becomeReady(status.userId)
   else if (status.state === 'none') {
+    sessionEpoch++
     liveReadyConfirmed = false
     clearVkCache()
     useSession.setState({ phase: 'none', user: null })

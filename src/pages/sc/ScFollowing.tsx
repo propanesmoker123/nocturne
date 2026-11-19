@@ -39,8 +39,10 @@ function FollowingBody() {
   return (
     <>
       <PageHeader title="Подписки" subtitle={people.length ? `${people.length}${q.hasNextPage ? '+' : ''} ${pluralRu(people.length, 'артист', 'артиста', 'артистов')}` : undefined} />
-      {q.isError && <EmptyState title="Подписки не загрузились" text={describeScError(q.error)} action={<Button onClick={() => void q.refetch()}>Повторить</Button>} />}
-      {q.data && !people.length && <EmptyState icon={<Users size={26} />} title="Вы пока ни на кого не подписаны" text="Подписки, сделанные на SoundCloud, появятся здесь." />}
+      {q.isError && people.length === 0 && (
+        <EmptyState title="Подписки не загрузились" text={describeScError(q.error)} action={<Button onClick={() => void q.refetch()}>Повторить</Button>} />
+      )}
+      {q.data && !people.length && !q.isError && <EmptyState icon={<Users size={26} />} title="Вы пока ни на кого не подписаны" text="Подписки, сделанные на SoundCloud, появятся здесь." />}
       {people.length > 0 && (
         <div className={c.peopleGrid}>
           {people.map((u) => (
@@ -52,7 +54,14 @@ function FollowingBody() {
           ))}
         </div>
       )}
-      {q.hasNextPage && (
+      {q.isError && people.length > 0 && (
+        <div className={c.more}>
+          <Button disabled={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
+            Повторить загрузку
+          </Button>
+        </div>
+      )}
+      {!q.isError && q.hasNextPage && (
         <div className={c.more}>
           <Button disabled={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
             Ещё

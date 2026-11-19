@@ -195,10 +195,16 @@ function useMonitors() {
   const [list, setList] = useState<string[]>([])
   useEffect(() => {
     if (!isTauri()) return
-    void import('@tauri-apps/api/window').then(async (w) => {
-      const ms = await w.availableMonitors()
-      setList(ms.map((m) => m.name ?? '').filter(Boolean))
-    })
+    let alive = true
+    void import('@tauri-apps/api/window')
+      .then((w) => w.availableMonitors())
+      .then((ms) => {
+        if (alive) setList(ms.map((m) => m.name ?? '').filter(Boolean))
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
   }, [])
   return list
 }
@@ -208,7 +214,16 @@ function AboutRow() {
   const [current, setCurrent] = useState('')
   useEffect(() => {
     if (!isTauri()) return
-    void import('@tauri-apps/api/app').then((m) => m.getVersion()).then(setCurrent)
+    let alive = true
+    void import('@tauri-apps/api/app')
+      .then((m) => m.getVersion())
+      .then((v) => {
+        if (alive) setCurrent(v)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
   }, [])
   const status =
     phase === 'checking'
@@ -240,6 +255,9 @@ function AboutRow() {
 export function SettingsPage() {
   const st = useSettings()
   const user = useSession((x) => x.user)
+  const vkPhase = useSession((x) => x.phase)
+  const vkLoggingIn = useSession((x) => x.loggingIn)
+  const vkLogin = useSession((x) => x.login)
   const devices = useDevices()
   const online = onlineDevices(devices.devices, Date.now())
   const logout = useSession((x) => x.logout)
@@ -257,14 +275,22 @@ export function SettingsPage() {
 
       <Group title="Аккаунты">
         <div className={s.row}>
-          {user?.photo ? <img className={s.avatar} src={user.photo} alt="" referrerPolicy="no-referrer" /> : <span className={s.avatar} />}
+          {user?.photo ? <img className={s.avatar} src={user.photo} alt="" referrerPolicy="no-referrer" /> : <ServiceLogo id="vk" size={36} />}
           <div className={s.rowText}>
             <div className={s.rowTitle}>{user?.name ?? 'Аккаунт VK'}</div>
-            <div className={s.rowSub}>Вход через веб-сессию VK. Доступ хранится только в памяти приложения.</div>
+            <div className={s.rowSub}>
+              {vkPhase === 'ready' ? 'Вход через веб-сессию VK. Доступ хранится только в памяти приложения.' : 'Вход не выполнен'}
+            </div>
           </div>
-          <Button variant="danger" onClick={() => void logout()}>
-            Выйти
-          </Button>
+          {vkPhase === 'ready' ? (
+            <Button variant="danger" onClick={() => void logout()}>
+              Выйти
+            </Button>
+          ) : (
+            <Button variant="primary" disabled={vkLoggingIn} onClick={() => void vkLogin()}>
+              {vkLoggingIn && <Spinner size={14} />} Войти в VK
+            </Button>
+          )}
         </div>
         <SoundCloudAccount />
         <SpotifyAccount />

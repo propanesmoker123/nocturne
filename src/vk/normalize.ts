@@ -29,7 +29,10 @@ export function coverFrom(p: RawPhotoSizes | undefined): Cover | undefined {
 
 export function normalizeTrack(raw: RawAudio, now: number = Date.now()): Track {
   const url = raw.url || undefined
-  const artists = [...(raw.main_artists ?? []), ...(raw.featured_artists ?? [])].map((a) => ({ id: a.id, name: decodeEntities(a.name) }))
+  const artists = [...(raw.main_artists ?? []), ...(raw.featured_artists ?? [])]
+    .filter(Boolean)
+    .map((a) => ({ id: a.id, name: decodeEntities(a?.name ?? '') }))
+    .filter((a) => a.name)
   const artist = decodeEntities(raw.artist ?? '')
   return {
     id: raw.id,
@@ -87,20 +90,21 @@ export function normalizePlaylist(raw: RawPlaylist, meId: number, ownerNames?: M
 export function normalizeFriend(raw: RawUser): Friend {
   return {
     id: raw.id,
-    name: `${raw.first_name} ${raw.last_name}`.trim(),
+    name: [raw.first_name, raw.last_name].filter(Boolean).join(' ').trim(),
     photo: raw.photo_100,
     canSeeAudio: raw.can_see_audio === 1 && !raw.deactivated,
   }
 }
 
 export function normalizeUser(raw: RawUser): User {
-  return { id: raw.id, name: `${raw.first_name} ${raw.last_name}`.trim(), photo: raw.photo_200 ?? raw.photo_100 }
+  return { id: raw.id, name: [raw.first_name, raw.last_name].filter(Boolean).join(' ').trim(), photo: raw.photo_200 ?? raw.photo_100 }
 }
 
-export function normalizeLyrics(raw: RawLyrics): Lyrics | null {
+export function normalizeLyrics(raw: RawLyrics | null | undefined): Lyrics | null {
+  if (!raw) return null
   const credits = raw.credits ? decodeEntities(raw.credits) : undefined
   const ts = raw.lyrics?.timestamps
-  if (ts && ts.length) {
+  if (Array.isArray(ts) && ts.length) {
     const lines = ts
       .filter((l) => !l.interlude)
       .map((l) => ({
@@ -111,8 +115,8 @@ export function normalizeLyrics(raw: RawLyrics): Lyrics | null {
     if (lines.length) return { synced: true, lines, credits }
   }
   const text = raw.lyrics?.text
-  if (text && text.length) {
-    return { synced: false, lines: text.map((t) => ({ text: decodeEntities(t) })), credits }
+  if (Array.isArray(text) && text.length) {
+    return { synced: false, lines: text.map((t) => ({ text: decodeEntities(t ?? '') })), credits }
   }
   return null
 }
@@ -120,7 +124,7 @@ export function normalizeLyrics(raw: RawLyrics): Lyrics | null {
 /** Builds an owner-id → display-name map from extended responses. */
 export function ownerNamesFrom(profiles?: RawUser[], groups?: { id: number; name: string }[]): Map<number, string> {
   const m = new Map<number, string>()
-  for (const p of profiles ?? []) m.set(p.id, `${p.first_name} ${p.last_name}`.trim())
-  for (const g of groups ?? []) m.set(-g.id, g.name)
+  for (const p of profiles ?? []) m.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(' ').trim())
+  for (const g of groups ?? []) m.set(-g.id, g.name ?? '')
   return m
 }

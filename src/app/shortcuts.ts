@@ -1,6 +1,7 @@
 import { usePlayer } from '../player/store'
 import { toggleLibrary } from './library'
 import { useRouter } from './router'
+import { useSheet } from './sheetStore'
 import { useUi } from './ui'
 import { runCommand } from '../player/commands'
 import type { PlayerCommand } from '../lib/events'
@@ -36,12 +37,16 @@ export function handleShortcutKeydown(e: KeyboardEvent): void {
   }
   const ctrl = e.ctrlKey || e.metaKey
   if (ctrl && !e.altKey && e.code === 'KeyF') {
+    if (useSheet.getState().sheet) return
     e.preventDefault()
+    if (useUi.getState().nowPlaying) useUi.getState().closeNowPlaying?.()
     document.getElementById('global-search')?.focus()
     return
   }
   if (ctrl && e.code === 'Comma') {
+    if (useSheet.getState().sheet) return
     e.preventDefault()
+    if (useUi.getState().nowPlaying) useUi.getState().closeNowPlaying?.()
     useRouter.getState().push({ name: 'settings' })
     return
   }

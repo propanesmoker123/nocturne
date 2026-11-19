@@ -18,10 +18,14 @@ export const useFollowing = (id: number) => useFollowings().includes(id)
 
 type Person = Pick<ScUser, 'id' | 'permalink'>
 
+const inFlight = new Set<number>()
+
 /** Follows or stops following: the button turns at once and turns back if it did not happen. */
 export async function toggleFollow(u: Person, deps = { follow, unfollow, open: openInSoundCloud }): Promise<void> {
   const me = getScMeId()
   if (!me) return toast('Войдите в SoundCloud', 'error')
+  if (inFlight.has(u.id)) return
+  inFlight.add(u.id)
   const key = scKeys.followings(me)
   const ids = () => queryClient.getQueryData<number[]>(key) ?? []
   const was = ids().includes(u.id)
@@ -29,19 +33,26 @@ export async function toggleFollow(u: Person, deps = { follow, unfollow, open: o
   const set = (on: boolean) => queryClient.setQueryData(key, [...ids().filter((x) => x !== u.id), ...(on ? [u.id] : [])])
   // An optional link to the profile after leaving someone.
   const site = u.permalink ? { label: 'Открыть в SoundCloud', run: () => void deps.open(u.permalink) } : undefined
-  set(!was)
-  // said at once with the button: the site's session takes a moment; a failure turns both back below
-  if (was) toast('Вы отписались', 'removed', site)
-  else toast('Вы подписались', 'added')
   try {
-    await (was ? deps.unfollow(u.id) : deps.follow(u))
+    const cancelPromise = queryClient.cancelQueries({ queryKey: key })
+    set(!was)
+    // said at once with the button: the site's session takes a moment; a failure turns both back below
+    if (was) toast('Вы отписались', 'removed', site)
+    else toast('Вы подписались', 'added')
+    await Promise.all([cancelPromise, was ? deps.unfollow(u.id) : deps.follow(u)])
+    if (getScMeId() !== me) return
+    set(!was)
+    void queryClient.invalidateQueries({ queryKey: key })
     void queryClient.invalidateQueries({ queryKey: scKeys.followingUsers(me) })
     queryClient.removeQueries({ queryKey: scKeys.feed(me) })
   } catch (e) {
+    if (getScMeId() !== me) return
     set(was)
     const err = ScApiError.from(e)
     // the button on screen is the one the person pressed, as it was before
     if (err.kind === 'challenge') return toast(`Пройдите проверку SoundCloud в открывшемся окне и нажмите «${was ? 'Вы подписаны' : 'Подписаться'}» ещё раз`, 'error')
     toast(describeScError(err), 'error')
+  } finally {
+    inFlight.delete(u.id)
   }
 }

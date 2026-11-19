@@ -549,6 +549,9 @@
 .mix[data-live] .mixAura i {
   opacity: 0.75;
 }
+.mix[data-paused] .mixAura i {
+  animation-play-state: paused;
+}
 /* in the wallpaper's colours: no accent tint in the glass itself */
 .mix[data-aura] {
   background: var(--mat-thin);

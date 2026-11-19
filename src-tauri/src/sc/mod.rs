@@ -83,25 +83,33 @@ pub struct ScStatus {
     pub user: Option<ScUser>,
 }
 
+struct ScInner {
+    token: Option<String>,
+    user: Option<ScUser>,
+    phase: ScPhase,
+    generation: u64,
+}
+
 pub struct ScState {
-    token: Mutex<Option<String>>,
-    user: Mutex<Option<ScUser>>,
-    phase: Mutex<ScPhase>,
+    inner: Mutex<ScInner>,
     ids: RwLock<Ids>,
     device_id: RwLock<String>,
     saved_path: Mutex<Option<PathBuf>>,
     /// The sign-in attempt under way, if any.
     pub(crate) pending: Mutex<Option<login::Pending>>,
-    /// When the site's ids were last looked up after a 401.
+    /// Do not look up the site's ids again until this deadline passes.
     pub(crate) rediscovered: Mutex<Option<Instant>>,
 }
 
 impl ScState {
     pub fn new() -> Self {
         Self {
-            token: Mutex::new(None),
-            user: Mutex::new(None),
-            phase: Mutex::new(ScPhase::SignedOut),
+            inner: Mutex::new(ScInner {
+                token: None,
+                user: None,
+                phase: ScPhase::SignedOut,
+                generation: 0,
+            }),
             ids: RwLock::new(fallback()),
             device_id: RwLock::new(String::new()),
             saved_path: Mutex::new(None),
@@ -110,47 +118,109 @@ impl ScState {
         }
     }
 
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, ScInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.lock_inner().generation
+    }
+
     pub fn token(&self) -> Option<String> {
-        self.token.lock().ok().and_then(|g| g.clone())
+        self.lock_inner().token.clone()
+    }
+
+    pub fn token_and_generation(&self) -> (Option<String>, u64) {
+        let g = self.lock_inner();
+        (g.token.clone(), g.generation)
     }
 
     pub fn set_token(&self, t: Option<String>) {
-        let checking = t.is_some();
-        if let Ok(mut g) = self.token.lock() {
-            *g = t;
-        }
-        if checking {
-            self.set_phase(ScPhase::Checking);
+        let mut g = self.lock_inner();
+        g.generation = g.generation.wrapping_add(1);
+        g.user = None;
+        if t.is_some() {
+            g.token = t;
+            g.phase = ScPhase::Checking;
+        } else {
+            g.token = None;
+            g.phase = ScPhase::SignedOut;
         }
     }
 
+    #[cfg(test)]
     pub fn set_signed_in(&self, user: Option<ScUser>) {
-        if let Ok(mut g) = self.user.lock() {
-            *g = user;
+        let mut g = self.lock_inner();
+        if g.token.is_none() {
+            return;
         }
-        self.set_phase(ScPhase::SignedIn);
+        g.user = user;
+        g.phase = ScPhase::SignedIn;
+    }
+
+    /// Commits a freshly exchanged token + profile atomically only if `generation` is unchanged.
+    /// Returns the new generation on success.
+    pub(crate) fn commit_signed_in_if_gen(&self, expected_gen: u64, token: String, user: Option<ScUser>) -> Option<u64> {
+        let mut g = self.lock_inner();
+        if g.generation != expected_gen {
+            return None;
+        }
+        g.generation = g.generation.wrapping_add(1);
+        g.token = Some(token);
+        g.user = user;
+        g.phase = ScPhase::SignedIn;
+        Some(g.generation)
+    }
+
+    /// Marks the session signed-in with `user` only if `generation` still matches and a token exists.
+    pub(crate) fn set_signed_in_if_gen(&self, expected_gen: u64, user: Option<ScUser>) -> bool {
+        let mut g = self.lock_inner();
+        if g.generation != expected_gen || g.token.is_none() {
+            return false;
+        }
+        g.user = user;
+        g.phase = ScPhase::SignedIn;
+        true
     }
 
     pub fn set_signed_out(&self) {
-        if let Ok(mut g) = self.token.lock() {
-            *g = None;
-        }
-        if let Ok(mut g) = self.user.lock() {
-            *g = None;
-        }
-        self.set_phase(ScPhase::SignedOut);
+        let mut g = self.lock_inner();
+        g.token = None;
+        g.user = None;
+        g.phase = ScPhase::SignedOut;
+        g.generation = g.generation.wrapping_add(1);
+        drop(g);
+        REPAIR_WAKE.notify_one();
     }
 
-    fn set_phase(&self, p: ScPhase) {
-        if let Ok(mut g) = self.phase.lock() {
-            *g = p;
+    /// Atomically signs out only if `failed` is still the current token.
+    pub(crate) fn sign_out_if_token(&self, failed: &str) -> bool {
+        let mut g = self.lock_inner();
+        if api::signs_out(g.token.as_deref(), failed) {
+            g.token = None;
+            g.user = None;
+            g.phase = ScPhase::SignedOut;
+            g.generation = g.generation.wrapping_add(1);
+            drop(g);
+            REPAIR_WAKE.notify_one();
+            true
+        } else {
+            false
         }
+    }
+
+    pub(crate) fn repair_target_generation(&self) -> Option<u64> {
+        let g = self.lock_inner();
+        (g.phase == ScPhase::SignedIn && g.token.is_some() && g.user.is_none()).then_some(g.generation)
+    }
+
+    pub(crate) fn needs_profile_repair(&self) -> bool {
+        self.repair_target_generation().is_some()
     }
 
     pub fn status(&self) -> ScStatus {
-        let state = self.phase.lock().map(|g| *g).unwrap_or(ScPhase::SignedOut);
-        let user = self.user.lock().ok().and_then(|g| g.clone());
-        ScStatus { state, user }
+        let g = self.lock_inner();
+        ScStatus { state: g.phase, user: g.user.clone() }
     }
 
     pub fn ids(&self) -> Ids {
@@ -221,9 +291,17 @@ pub fn init(app: &AppHandle) {
 const PROFILE_RETRY: [Duration; 4] = [Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30), Duration::from_secs(60)];
 /// One such loop at a time.
 static REPAIRING: AtomicBool = AtomicBool::new(false);
+/// Wakes a sleeping repair loop when a new sign-in or sign-out changes session generation.
+static REPAIR_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// Tries `fetch` until it gives the profile, while `alive` says the same sign-in still stands.
-pub(crate) async fn until_profile<F, Fut>(mut fetch: F, mut alive: impl FnMut() -> bool, delays: &[Duration]) -> Option<ScUser>
+/// Wakes early from sleep if `wake` is notified.
+pub(crate) async fn until_profile_notified<F, Fut>(
+    mut fetch: F,
+    mut alive: impl FnMut() -> bool,
+    delays: &[Duration],
+    wake: &tokio::sync::Notify,
+) -> Option<ScUser>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Option<ScUser>>,
@@ -236,47 +314,79 @@ where
         if let Some(user) = fetch().await {
             return Some(user);
         }
+        if !alive() {
+            return None;
+        }
         let wait = delays.get(round).or(delays.last()).copied().unwrap_or(Duration::from_secs(60));
-        tokio::time::sleep(wait).await;
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = wake.notified() => {
+                if !alive() {
+                    return None;
+                }
+            }
+        }
         round += 1;
     }
+}
+
+/// Tries `fetch` until it gives the profile, while `alive` says the same sign-in still stands.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn until_profile<F, Fut>(fetch: F, alive: impl FnMut() -> bool, delays: &[Duration]) -> Option<ScUser>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<ScUser>>,
+{
+    let wake = tokio::sync::Notify::new();
+    until_profile_notified(fetch, alive, delays, &wake).await
 }
 
 /// Signed in, but the profile did not come: without it likes and the person's own lists cannot
 /// work, so it is read again in the background until it comes (or the key changes).
 pub(crate) fn repair_profile(app: &AppHandle) {
-    if app.state::<ScState>().status().user.is_some() || REPAIRING.swap(true, Ordering::SeqCst) {
+    if !app.state::<ScState>().needs_profile_repair() {
+        return;
+    }
+    if REPAIRING.swap(true, Ordering::SeqCst) {
+        // Wake the active loop immediately so a new sign-in during a 60s sleep is never dropped.
+        REPAIR_WAKE.notify_one();
         return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let token = app.state::<ScState>().token();
-        let fetch = {
-            let app = app.clone();
-            move || {
+        loop {
+            let st = app.state::<ScState>();
+            let Some(target_gen) = st.repair_target_generation() else {
+                REPAIRING.store(false, Ordering::SeqCst);
+                // Re-check in case a new sign-in arrived right before we cleared REPAIRING.
+                if st.needs_profile_repair() && !REPAIRING.swap(true, Ordering::SeqCst) {
+                    continue;
+                }
+                break;
+            };
+            let fetch = {
                 let app = app.clone();
-                async move {
-                    let st = app.state::<ScState>();
-                    let t = st.token()?;
-                    api::me_with(&app.state::<crate::http::Http>(), &st.ids(), &t).await.ok()
+                move || {
+                    let app = app.clone();
+                    async move {
+                        match api::request(&app, "GET", "/me").await {
+                            Ok(v) => api::user_from_me(&v),
+                            Err(_) => None,
+                        }
+                    }
+                }
+            };
+            let alive = {
+                let app = app.clone();
+                move || app.state::<ScState>().repair_target_generation() == Some(target_gen)
+            };
+            let user = until_profile_notified(fetch, alive, &PROFILE_RETRY, &REPAIR_WAKE).await;
+            if let Some(user) = user {
+                if st.set_signed_in_if_gen(target_gen, Some(user)) {
+                    trace!("profile read");
+                    emit_status(&app);
                 }
             }
-        };
-        let alive = {
-            let app = app.clone();
-            let token = token.clone();
-            move || {
-                let st = app.state::<ScState>();
-                st.token().is_some() && st.token() == token && st.status().user.is_none()
-            }
-        };
-        let user = until_profile(fetch, alive, &PROFILE_RETRY).await;
-        REPAIRING.store(false, Ordering::SeqCst);
-        let st = app.state::<ScState>();
-        if let Some(user) = user.filter(|_| st.token() == token) {
-            trace!("profile read");
-            st.set_signed_in(Some(user));
-            emit_status(&app);
         }
     });
 }
@@ -285,19 +395,21 @@ pub(crate) fn repair_profile(app: &AppHandle) {
 /// not answer); a 401 goes the way of every request: the site's id, a silent sign-in, else out.
 async fn check_key(app: &AppHandle) {
     let st = app.state::<ScState>();
-    let Some(token) = st.token() else { return };
+    let (Some(token), gen0) = st.token_and_generation() else { return };
     let first = api::me_with(&app.state::<crate::http::Http>(), &st.ids(), &token).await;
-    match first {
-        Ok(user) => st.set_signed_in(Some(user)),
+    let committed = match first {
+        Ok(user) => st.set_signed_in_if_gen(gen0, Some(user)),
         Err(api::ScError::Http { status: 401 }) => match api::request(app, "GET", "/me").await {
-            Ok(v) => st.set_signed_in(api::user_from_me(&v)),
-            Err(api::ScError::SignedOut) => {}
-            Err(_) => st.set_signed_in(None),
+            Ok(v) => st.set_signed_in_if_gen(gen0, api::user_from_me(&v)),
+            Err(api::ScError::SignedOut) => false,
+            Err(_) => st.set_signed_in_if_gen(gen0, None),
         },
-        Err(_) => st.set_signed_in(None),
+        Err(_) => st.set_signed_in_if_gen(gen0, None),
+    };
+    if committed {
+        emit_status(app);
     }
-    emit_status(app);
-    if st.status().state == ScPhase::SignedIn {
+    if st.needs_profile_repair() {
         repair_profile(app);
     }
 }
@@ -371,5 +483,77 @@ mod tests {
         st.set_signed_in(Some(user()));
         let v = serde_json::to_value(st.status()).unwrap();
         assert_eq!(v, serde_json::json!({ "state": "signed-in", "user": { "id": 1, "name": "a", "avatar": null, "permalink": null } }));
+    }
+
+    #[test]
+    fn generation_prevents_stale_commits_and_split_brain_signed_in() {
+        let st = ScState::new();
+        // Cannot become SignedIn when token is None.
+        st.set_signed_in(Some(user()));
+        assert_eq!(st.status().state, ScPhase::SignedOut);
+        assert_eq!(st.status().user, None);
+
+        // Snapshot generation before an async exchange; a concurrent sign-out invalidates it.
+        let gen0 = st.generation();
+        st.set_signed_out();
+        assert_ne!(st.generation(), gen0);
+        assert_eq!(st.commit_signed_in_if_gen(gen0, "k1".to_string(), Some(user())), None);
+        assert_eq!(st.status().state, ScPhase::SignedOut);
+        assert_eq!(st.token(), None);
+
+        // With current generation, commit succeeds atomically and advances generation.
+        let gen1 = st.generation();
+        let gen2 = st.commit_signed_in_if_gen(gen1, "k2".to_string(), None).unwrap();
+        assert_ne!(gen2, gen1);
+        assert_eq!(st.status().state, ScPhase::SignedIn);
+        assert_eq!(st.token().as_deref(), Some("k2"));
+        assert_eq!(st.repair_target_generation(), Some(gen2));
+
+        // Stale check_key generation cannot overwrite profile or phase; matching generation can.
+        assert!(!st.set_signed_in_if_gen(gen1, Some(user())));
+        assert!(st.set_signed_in_if_gen(gen2, Some(user())));
+        assert_eq!(st.status().user, Some(user()));
+        assert_eq!(st.repair_target_generation(), None);
+
+        // Atomic sign_out_if_token only signs out matching token.
+        assert!(!st.sign_out_if_token("wrong"));
+        assert_eq!(st.status().state, ScPhase::SignedIn);
+        assert!(st.sign_out_if_token("k2"));
+        assert_eq!(st.status().state, ScPhase::SignedOut);
+        assert_eq!(st.token(), None);
+        assert_ne!(st.generation(), gen2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn profile_repair_wakes_immediately_from_long_sleep_on_session_change() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let alive_flag = Arc::new(AtomicBool::new(true));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let handle = {
+            let alive_flag = alive_flag.clone();
+            let wake = wake.clone();
+            tokio::spawn(async move {
+                until_profile_notified(
+                    || async { None },
+                    move || alive_flag.load(Ordering::SeqCst),
+                    &[Duration::from_secs(60)],
+                    &wake,
+                )
+                .await
+            })
+        };
+
+        // Let the task run its first failed fetch and enter the 60s sleep.
+        tokio::task::yield_now().await;
+        // Simulate a new sign-in/sign-out 1s into the 60s sleep.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        alive_flag.store(false, Ordering::SeqCst);
+        wake.notify_one();
+
+        let res = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(res.is_ok(), "repair loop must wake immediately instead of sleeping 60s");
+        assert_eq!(res.unwrap().unwrap(), None);
     }
 }

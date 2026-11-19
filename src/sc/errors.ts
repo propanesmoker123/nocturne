@@ -21,9 +21,16 @@ export class ScApiError extends Error {
     if (raw instanceof ScApiError) return raw
     if (raw && typeof raw === 'object') {
       const r = raw as { kind?: unknown; status?: unknown; message?: unknown }
-      const kind = KINDS.includes(r.kind as ScErrorKind) ? (r.kind as ScErrorKind) : 'invalid'
+      if (KINDS.includes(r.kind as ScErrorKind)) {
+        const kind = r.kind as ScErrorKind
+        const status = typeof r.status === 'number' ? r.status : undefined
+        return new ScApiError(kind, typeof r.message === 'string' ? r.message : String(r.kind ?? 'error'), status)
+      }
+      if (raw instanceof Error) {
+        return new ScApiError('network', raw.message)
+      }
       const status = typeof r.status === 'number' ? r.status : undefined
-      return new ScApiError(kind, typeof r.message === 'string' ? r.message : String(r.kind ?? 'error'), status)
+      return new ScApiError('invalid', typeof r.message === 'string' ? r.message : String(r.kind ?? 'error'), status)
     }
     return new ScApiError('invalid', String(raw))
   }

@@ -138,14 +138,19 @@ export function QuickSearchApp() {
     setRes(r)
   }, [])
 
-  // Shown again: keep the last query but select it, so typing starts a new one
+  // Shown again: keep the last query but select it, so typing starts a new one.
+  // Clear stale results immediately so Enter during debounce never plays a track from a previous service.
   const onOpen = useCallback(() => {
     setQueued(new Set())
     const el = input.current
     if (!el) return
     el.focus()
     el.select()
-    if (el.value.trim().length >= MIN_QUERY) sendQuery(el.value)
+    if (el.value.trim().length >= MIN_QUERY) {
+      setRes(null)
+      setSelKey(null)
+      sendQuery(el.value)
+    }
     // No entrance animation: Windows shows the window with its last frame already on screen,
     // so fading in from transparent would flash the panel away and back.
   }, [sendQuery])
@@ -155,6 +160,7 @@ export function QuickSearchApp() {
     const refocus = () => input.current?.focus()
     window.addEventListener('focus', refocus)
     return () => {
+      clearTimeout(timer.current)
       offs.forEach((p) => void p.then((off) => off()))
       window.removeEventListener('focus', refocus)
     }

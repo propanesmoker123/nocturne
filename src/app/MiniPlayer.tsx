@@ -56,15 +56,16 @@ export function VolumeControl({
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        e.stopPropagation()
+        e.preventDefault()
+        e.stopImmediatePropagation()
         setOpen(false)
       }
     }
     window.addEventListener('pointerdown', onDown, true)
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
     return () => {
       window.removeEventListener('pointerdown', onDown, true)
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, true)
     }
   }, [open])
 
@@ -135,6 +136,7 @@ export function Scrubber({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
   const trackKey = usePlayer((p) => p.current?.key)
   const controlledBy = useControlledBy()
   const [drag, setDrag] = useState<number | null>(null)
+  useEffect(() => setDrag(null), [trackKey])
   const shown = drag ?? position
   return (
     <div className={s.timeline}>
@@ -154,6 +156,7 @@ export function Scrubber({ size = 'sm' }: { size?: 'sm' | 'md' | 'lg' }) {
             setDrag(null)
             seek(v * duration)
           }}
+          onCancel={() => setDrag(null)}
         />
       </div>
       <span>-{formatTime(Math.max(0, duration - shown))}</span>
@@ -170,7 +173,7 @@ export function MiniPlayer() {
   const volume = usePlayer((p) => p.volume)
   const muted = usePlayer((p) => p.muted)
   const { toggle, next, prev, toggleShuffle, cycleRepeat, setVolume, toggleMute } = usePlayer.getState()
-  const { openNowPlaying, toggleNowPlaying } = useUi()
+  const { openNowPlaying, toggleNowPlaying } = useUi.getState()
   const nowPlayingTab = useUi((u) => (u.nowPlaying ? u.tab : null))
   const remoteName = usePlayer((p) => p.remoteName)
   const togetherRole = useTogether((t) => t.role)

@@ -1,6 +1,6 @@
 import Hls from 'hls.js'
 import { afterEach, expect, test, vi } from 'vitest'
-import { beginWaveform, captureSource, isMp4InitOnly, readWhole } from './waveform'
+import { beginWaveform, captureSource, clearWaveformCapture, getActiveAudioCapture, isMp4InitOnly, readWhole } from './waveform'
 import { useWaveform } from './waveformStore'
 
 const h = vi.hoisted(() => ({ invoke: vi.fn(), blobBytes: new Map<string, ArrayBuffer>() }))
@@ -201,4 +201,107 @@ test('HLS decode recovers via cumulative segments when an isolated middle fragme
     expect(peaks).not.toBeNull()
     expect(peaks![200]).toBeGreaterThan(0.5)
   })
+})
+
+test('HLS fallback decodes only the contiguous 2-segment pair and never collapses a seek gap into early timestamps', async () => {
+  const initSeg = concatBytes(mp4Box('ftyp', 12, 0x01), mp4Box('moov', 24, 0x02))
+  const frag0 = concatBytes(mp4Box('moof', 16, 0x10), mp4Box('mdat', 40, 0x11))
+  const frag24 = concatBytes(mp4Box('moof', 16, 0x20), mp4Box('mdat', 40, 0x21))
+  const frag25 = concatBytes(mp4Box('moof', 16, 0x30), mp4Box('mdat', 40, 0x31))
+  const decodedLengths: number[] = []
+
+  class SeekGapOfflineCtx {
+    decodeAudioData = vi.fn(async (buf: ArrayBuffer) => {
+      const len = buf.byteLength
+      decodedLengths.push(len)
+      // Isolated frag25 fails decodeAudioData; pair [initSeg, frag24, frag25] succeeds.
+      if (len === initSeg.length + frag25.length && new Uint8Array(buf)[initSeg.length + 10] === 0x30) {
+        throw new DOMException('Unable to decode audio data', 'EncodingError')
+      }
+      const isPair = len === initSeg.length + frag24.length + frag25.length
+      return {
+        numberOfChannels: 1,
+        sampleRate: 8000,
+        duration: isPair ? 10 : 5,
+        getChannelData: () => new Float32Array(isPair ? 80000 : 40000).fill(0.5),
+      }
+    })
+  }
+  vi.stubGlobal('OfflineAudioContext', SeekGapOfflineCtx)
+
+  const handlers = new Map<string, ((ev: string, data: unknown) => void)[]>()
+  const stream = {
+    on: vi.fn((ev: string, fn: (ev: string, data: unknown) => void) => {
+      const list = handlers.get(ev) ?? []
+      list.push(fn)
+      handlers.set(ev, list)
+    }),
+  }
+
+  beginWaveform('vk-hls-seek-gap-test', 200)
+  captureSource({ url: 'https://cdn.vk/index.m3u8', hls: stream as unknown as Hls })
+  handlers.get(Hls.Events.FRAG_PARSING_INIT_SEGMENT)?.forEach((fn) =>
+    fn(Hls.Events.FRAG_PARSING_INIT_SEGMENT, { tracks: { audio: { initSegment: initSeg, container: 'audio/mp4' } } }),
+  )
+  // Play 0..5s, then seek to 120s (frag 24 at 120..125s, frag 25 at 125..130s).
+  handlers.get(Hls.Events.BUFFER_APPENDING)?.forEach((fn) =>
+    fn(Hls.Events.BUFFER_APPENDING, { type: 'audio', frag: { cc: 0, sn: 0, start: 0, duration: 5 }, data: frag0 }),
+  )
+  handlers.get(Hls.Events.BUFFER_APPENDING)?.forEach((fn) =>
+    fn(Hls.Events.BUFFER_APPENDING, { type: 'audio', frag: { cc: 0, sn: 24, start: 120, duration: 5 }, data: frag24 }),
+  )
+  handlers.get(Hls.Events.BUFFER_APPENDING)?.forEach((fn) =>
+    fn(Hls.Events.BUFFER_APPENDING, { type: 'audio', frag: { cc: 0, sn: 25, start: 125, duration: 5 }, data: frag25 }),
+  )
+
+  await vi.waitFor(() => {
+    const peaks = useWaveform.getState().peaks
+    expect(peaks).not.toBeNull()
+    // 125s / 200s * 240 bins = bin 150 (must be populated at 120..130s, NOT mapped into 10..15s bin 12!)
+    expect(peaks![150]).toBeGreaterThan(0.5)
+    expect(peaks![15]).toBe(-1)
+  })
+  // Never concatenated all 3 segments [initSeg, frag0, frag24, frag25] across the seek gap.
+  expect(decodedLengths).not.toContain(initSeg.length + frag0.length + frag24.length + frag25.length)
+})
+
+test('falls back to dynamic duration when track metadata duration is 0 and clears active capture on clearWaveformCapture', async () => {
+  const initSeg = concatBytes(mp4Box('ftyp', 12, 0x01), mp4Box('moov', 24, 0x02))
+  const frag0 = concatBytes(mp4Box('moof', 16, 0x03), mp4Box('mdat', 40, 0x04))
+  class SimpleOfflineCtx {
+    decodeAudioData = vi.fn(async () => ({
+      numberOfChannels: 1,
+      sampleRate: 8000,
+      duration: 5,
+      getChannelData: () => new Float32Array(40000).fill(0.5),
+    }))
+  }
+  vi.stubGlobal('OfflineAudioContext', SimpleOfflineCtx)
+
+  const handlers = new Map<string, ((ev: string, data: unknown) => void)[]>()
+  const stream = {
+    on: vi.fn((ev: string, fn: (ev: string, data: unknown) => void) => {
+      const list = handlers.get(ev) ?? []
+      list.push(fn)
+      handlers.set(ev, list)
+    }),
+  }
+
+  beginWaveform('zero-dur-track', 0)
+  captureSource({ url: 'https://cdn.vk/index.m3u8', hls: stream as unknown as Hls, getDuration: () => 20 })
+  handlers.get(Hls.Events.FRAG_PARSING_INIT_SEGMENT)?.forEach((fn) =>
+    fn(Hls.Events.FRAG_PARSING_INIT_SEGMENT, { tracks: { audio: { initSegment: initSeg, container: 'audio/mp4' } } }),
+  )
+  handlers.get(Hls.Events.BUFFER_APPENDING)?.forEach((fn) =>
+    fn(Hls.Events.BUFFER_APPENDING, { type: 'audio', frag: { cc: 0, sn: 0, start: 0, duration: 5 }, data: frag0 }),
+  )
+
+  await vi.waitFor(() => {
+    const peaks = useWaveform.getState().peaks
+    expect(peaks).not.toBeNull()
+    expect(peaks![0]).toBeGreaterThan(0.5)
+  })
+  expect(getActiveAudioCapture('zero-dur-track')).not.toBeNull()
+  clearWaveformCapture()
+  expect(getActiveAudioCapture('zero-dur-track')).toBeNull()
 })

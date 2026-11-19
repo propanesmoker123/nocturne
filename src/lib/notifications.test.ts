@@ -148,4 +148,30 @@ describe('notifications store and feed helpers', () => {
     expect(unreadNotificationCount(nextState.items, nextState.seenIds)).toBe(1)
     expect(h.toastCalls.some((t) => t.text.includes('Ответ от разработчика'))).toBe(true)
   })
+
+  it('orders replies, available updates, and other items with a transitive comparator invariant to input order', () => {
+    const replies = [
+      { id: 'r_old', reportId: 'rep1', reportMessage: 'A', kind: 'bug', message: 'Old reply', createdAt: 1000 },
+      { id: 'r_new', reportId: 'rep2', reportMessage: 'B', kind: 'bug', message: 'New reply', createdAt: 5000 },
+    ]
+    const announcements = [
+      { id: 'a_mid', title: 'News', message: 'Mid', createdAt: 3000 },
+    ]
+    const releases = [
+      { version: '0.3.6', title: '0.3.6', notes: '', publishedAt: new Date(2000).toISOString(), url: '' },
+      { version: '0.3.8', title: '0.3.8', notes: '', publishedAt: new Date(1500).toISOString(), url: '' },
+      { version: '0.3.7', title: '0.3.7', notes: '', publishedAt: new Date(4000).toISOString(), url: '' },
+    ]
+    const update = { phase: 'available', version: '0.3.8', notes: '' }
+
+    const forward = buildFeedItems({ currentVersion: '0.3.7', replies, announcements, releases }, update)
+    const reversed = buildFeedItems(
+      { currentVersion: '0.3.7', replies: [...replies].reverse(), announcements, releases: [...releases].reverse() },
+      update,
+    )
+
+    const expected = ['reply:r_new', 'reply:r_old', 'rel:0.3.8', 'rel:0.3.7', 'ann:a_mid', 'rel:0.3.6']
+    expect(forward.map((i) => i.itemId)).toEqual(expected)
+    expect(reversed.map((i) => i.itemId)).toEqual(expected)
+  })
 })

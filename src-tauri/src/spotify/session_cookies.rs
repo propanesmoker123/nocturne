@@ -46,6 +46,7 @@ pub async fn write(_view: &tauri::Webview, _cookies: Vec<SessionCookie>) -> Resu
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 pub async fn clear(view: &tauri::Webview) {
     use windows::core::Interface;
     use webview2_com::Microsoft::Web::WebView2::Win32::*;

@@ -59,4 +59,27 @@ describe('whisper alignment & line builder', () => {
     expect(lyrics?.lines[0].end).toBe(2200)
     expect(lyrics?.lines[2].begin).toBe(4200)
   })
+
+  test('keeps interpolated unmatched words strictly monotonic when many words fit into a tight gap', () => {
+    const plain = [
+      { text: 'start one two three four five six seven eight end' },
+    ]
+    const asr: WhisperWordChunk[] = [
+      { text: 'start', beginMs: 1000, endMs: 1100 },
+      // Only 80ms gap before "end" for 8 unmatched words -> must never produce begin > end
+      { text: 'end', beginMs: 1180, endMs: 1400 },
+    ]
+
+    const aligned = alignWhisperToLines(plain, asr)
+    const words = aligned[0].words ?? []
+    expect(words).toHaveLength(10)
+    for (let i = 0; i < words.length; i++) {
+      expect(words[i].begin).toBeLessThanOrEqual(words[i].end!)
+      if (i > 0) {
+        expect(words[i].begin).toBeGreaterThanOrEqual(words[i - 1].begin)
+        expect(words[i].begin).toBeGreaterThanOrEqual(words[i - 1].end!)
+      }
+    }
+    expect(words.at(-1)).toEqual({ text: 'end', begin: 1180, end: 1400 })
+  })
 })

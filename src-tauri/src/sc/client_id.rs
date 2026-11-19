@@ -25,23 +25,43 @@ pub fn fallback() -> Ids {
     Ids { client_id: "tHVbSbDP4TaoMbPppngv6Tdry83vNbMQ".to_string(), app_id: "46941".to_string() }
 }
 
+const MAX_SCRIPT_BYTES: usize = 6 * 1024 * 1024;
+const DISCOVER_TIMEOUT: Duration = Duration::from_secs(25);
+
 /// `client_application_id:<digits>,client_id:"<letters and digits>"` in one of the site's scripts.
 pub fn find_ids(js: &str) -> Option<Ids> {
-    const APP: &str = "client_application_id:";
-    const CLIENT: &str = ",client_id:\"";
+    const APP: &str = "client_application_id";
+    const CLIENT: &str = "client_id";
     let mut rest = js;
     while let Some(at) = rest.find(APP) {
-        let after = &rest[at + APP.len()..];
-        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-        let tail = &after[digits.len()..];
-        if !digits.is_empty() && tail.starts_with(CLIENT) {
-            let id_part = &tail[CLIENT.len()..];
-            let id: String = id_part.chars().take_while(char::is_ascii_alphanumeric).collect();
-            if !id.is_empty() && id_part[id.len()..].starts_with('"') {
-                return Some(Ids { client_id: id, app_id: digits });
+        let after_app = &rest[at + APP.len()..].trim_start();
+        let Some(after_colon) = after_app.strip_prefix(':') else {
+            rest = after_app;
+            continue;
+        };
+        let after_colon = after_colon.trim_start();
+        let digits: String = after_colon.chars().take_while(char::is_ascii_digit).collect();
+        let tail = after_colon[digits.len()..].trim_start();
+        if !digits.is_empty() {
+            if let Some(after_comma) = tail.strip_prefix(',') {
+                let after_comma = after_comma.trim_start();
+                if let Some(after_client) = after_comma.strip_prefix(CLIENT) {
+                    let after_client = after_client.trim_start();
+                    if let Some(after_c_colon) = after_client.strip_prefix(':') {
+                        let after_c_colon = after_c_colon.trim_start();
+                        let quote = after_c_colon.chars().next().filter(|c| *c == '"' || *c == '\'');
+                        if let Some(q) = quote {
+                            let id_part = &after_c_colon[q.len_utf8()..];
+                            let id: String = id_part.chars().take_while(char::is_ascii_alphanumeric).collect();
+                            if !id.is_empty() && id_part[id.len()..].starts_with(q) {
+                                return Some(Ids { client_id: id, app_id: digits });
+                            }
+                        }
+                    }
+                }
             }
         }
-        rest = after;
+        rest = after_colon;
     }
     None
 }
@@ -59,32 +79,55 @@ pub fn script_urls(html: &str) -> Vec<String> {
     out
 }
 
+fn sc_asset_url_allowed(u: &url::Url) -> bool {
+    u.scheme() == "https"
+        && u.port().is_none()
+        && u.username().is_empty()
+        && u.password().is_none()
+        && matches!(u.host_str(), Some("soundcloud.com" | "www.soundcloud.com" | "a-v2.sndcdn.com"))
+}
+
 async fn get_text(http: &Http, url: &str) -> Result<String, String> {
-    let resp = http
-        .client
-        .get(url)
-        .header(reqwest::header::USER_AGENT, http.user_agent())
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await
-        .map_err(|e| e.without_url().to_string())?;
+    let ua = http.user_agent();
+    let mut resp = http
+        .send_with_validated_redirects(url, 3, sc_asset_url_allowed, move |client, target| {
+            client
+                .get(target.clone())
+                .header(reqwest::header::USER_AGENT, ua.clone())
+                .timeout(Duration::from_secs(12))
+        })
+        .await?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status().as_u16()));
     }
-    resp.text().await.map_err(|e| e.without_url().to_string())
+    if resp.content_length().is_some_and(|len| len > MAX_SCRIPT_BYTES as u64) {
+        return Err("script too large".to_string());
+    }
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.without_url().to_string())? {
+        if buf.len() + chunk.len() > MAX_SCRIPT_BYTES {
+            return Err("script too large".to_string());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|_| "invalid utf-8".to_string())
 }
 
 /// Reads the pair off soundcloud.com (it sat near the end of the script list in October 2026).
 pub async fn discover(http: &Http) -> Result<Ids, String> {
-    let html = get_text(http, SITE).await?;
-    for url in script_urls(&html).iter().rev() {
-        if let Ok(js) = get_text(http, url).await {
-            if let Some(ids) = find_ids(&js) {
-                return Ok(ids);
+    tokio::time::timeout(DISCOVER_TIMEOUT, async {
+        let html = get_text(http, SITE).await?;
+        for url in script_urls(&html).iter().rev() {
+            if let Ok(js) = get_text(http, url).await {
+                if let Some(ids) = find_ids(&js) {
+                    return Ok(ids);
+                }
             }
         }
-    }
-    Err("client_id not found".to_string())
+        Err("client_id not found".to_string())
+    })
+    .await
+    .map_err(|_| "discover timeout".to_string())?
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
@@ -113,6 +156,8 @@ mod tests {
     fn finds_ids_in_the_sites_script() {
         let js = r#"…,o={},client_application_id:46941,client_id:"AbC123xyz",x=1"#;
         assert_eq!(find_ids(js), Some(Ids { client_id: "AbC123xyz".to_string(), app_id: "46941".to_string() }));
+        let spaced = r#"client_application_id : 99123 , client_id : 'ZxY987abc'"#;
+        assert_eq!(find_ids(spaced), Some(Ids { client_id: "ZxY987abc".to_string(), app_id: "99123".to_string() }));
     }
 
     #[test]

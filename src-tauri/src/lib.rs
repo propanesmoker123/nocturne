@@ -16,7 +16,21 @@ mod spotify;
 mod session;
 mod vk;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::{Emitter, Manager, WindowEvent};
+
+static MAIN_VISIBLE: AtomicBool = AtomicBool::new(true);
+
+fn update_visibility_flag(flag: &AtomicBool, visible: bool) -> bool {
+    flag.swap(visible, Ordering::AcqRel) != visible
+}
+
+pub(crate) fn emit_main_visibility(app: &tauri::AppHandle, visible: bool) {
+    if update_visibility_flag(&MAIN_VISIBLE, visible) {
+        let _ = app.emit_to("main", "window:visibility", visible);
+    }
+}
 
 #[derive(Default)]
 struct FullscreenInner {
@@ -71,13 +85,19 @@ async fn window_fullscreen(app: tauri::AppHandle, fullscreen: Option<bool>) -> R
                     }
 
                     if target {
+                        let prev_was_maximized = g.was_maximized;
+                        let prev_saved_rect = g.saved_normal_rect;
+                        let mut orig_wp: Option<WINDOWPLACEMENT> = None;
                         let is_max = IsZoomed(hwnd) != 0 || w.is_maximized().unwrap_or(false);
                         g.was_maximized = is_max;
                         if is_max {
                             let mut wp: WINDOWPLACEMENT = std::mem::zeroed();
                             wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
                             if GetWindowPlacement(hwnd, &mut wp) != 0 {
-                                g.saved_normal_rect = Some(wp.rcNormalPosition);
+                                orig_wp = Some(wp);
+                                if g.saved_normal_rect.is_none() {
+                                    g.saved_normal_rect = Some(wp.rcNormalPosition);
+                                }
                                 let mut pmi: MONITORINFO = std::mem::zeroed();
                                 pmi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
                                 let pmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
@@ -99,7 +119,17 @@ async fn window_fullscreen(app: tauri::AppHandle, fullscreen: Option<bool>) -> R
                             }
                             let _ = w.unmaximize();
                         }
-                        w.set_fullscreen(true).map_err(|e| e.to_string())?;
+                        if let Err(e) = w.set_fullscreen(true) {
+                            if is_max {
+                                let _ = w.maximize();
+                                if let Some(orig) = orig_wp {
+                                    SetWindowPlacement(hwnd, &orig);
+                                }
+                            }
+                            g.was_maximized = prev_was_maximized;
+                            g.saved_normal_rect = prev_saved_rect;
+                            return Err(e.to_string());
+                        }
                         let m = mi.rcMonitor;
                         SetWindowPos(
                             hwnd,
@@ -125,6 +155,8 @@ async fn window_fullscreen(app: tauri::AppHandle, fullscreen: Option<bool>) -> R
                                     SetWindowPlacement(hwnd, &wp);
                                 }
                             }
+                        } else {
+                            g.saved_normal_rect = None;
                         }
                         g.active = false;
                     }
@@ -167,17 +199,13 @@ use media::media_update;
 /// No SMTC outside Windows; keep the command so the UI can call it everywhere.
 #[cfg(not(windows))]
 #[tauri::command]
-fn media_update() {}
+async fn media_update() {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            tray::show_main(app);
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -240,7 +268,16 @@ pub fn run() {
         ])
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => match window.label() {
-                session::SESSION_LABEL | island::LABEL | quicksearch::LABEL => {
+                session::SESSION_LABEL => {
+                    api.prevent_close();
+                    if let Some(w) = window.app_handle().get_webview_window(session::SESSION_LABEL) {
+                        if w.url().map(|u| u.as_str() != session::IDLE_URL).unwrap_or(true) {
+                            let _ = w.navigate(session::IDLE_URL.parse().expect("idle url"));
+                        }
+                    }
+                    let _ = window.hide();
+                }
+                island::LABEL | quicksearch::LABEL => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -248,7 +285,7 @@ pub fn run() {
                     if tray::close_to_tray() {
                         api.prevent_close();
                         if window.hide().is_ok() {
-                            let _ = window.emit_to("main", "window:visibility", false);
+                            emit_main_visibility(window.app_handle(), false);
                         }
                     } else {
                         spotify::shutdown(window.app_handle());
@@ -260,7 +297,7 @@ pub fn run() {
             WindowEvent::Destroyed if window.label().starts_with(sc::login::LABEL_PREFIX) => sc::login::closed(window.app_handle(), window.label()),
             WindowEvent::Focused(_) | WindowEvent::Resized(_) if window.label() == "main" => {
                 let visible = window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
-                let _ = window.emit_to("main", "window:visibility", visible);
+                emit_main_visibility(window.app_handle(), visible);
             }
             // The quick search panel goes away as soon as the user clicks anywhere else
             WindowEvent::Focused(false) if window.label() == quicksearch::LABEL => {
@@ -270,21 +307,50 @@ pub fn run() {
         })
         .setup(|app| {
             journal::init(app.handle());
-            spotify::cleanup_login_profiles(app.handle());
-            session::create_window(app.handle())?;
-            sc::init(app.handle());
-            island::create_window(app.handle())?;
-            island::start(app.handle());
-            quicksearch::create_window(app.handle())?;
-            tray::create(app.handle())?;
-            #[cfg(windows)]
-            media::init(app.handle());
+            let cleanup_app = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                spotify::cleanup_login_profiles(&cleanup_app);
+            });
             if let Some(w) = app.get_window("main") {
                 w.show()?;
             }
+            session::create_window(app.handle())?;
+            sc::init(app.handle());
+            match island::create_window(app.handle()) {
+                Ok(_) => island::start(app.handle()),
+                Err(e) => journal::write("app", &format!("island window failed: {e}")),
+            }
+            if let Err(e) = quicksearch::create_window(app.handle()) {
+                journal::write("app", &format!("search window failed: {e}"));
+            }
+            if let Err(e) = tray::create(app.handle()) {
+                journal::write("app", &format!("tray icon failed: {e}"));
+            }
+            #[cfg(windows)]
+            media::init(app.handle());
             spotify::prewarm_if_active(app.handle().clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                spotify::shutdown(app);
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visibility_flag_deduplicates_unchanged_events() {
+        let flag = AtomicBool::new(true);
+        assert!(!update_visibility_flag(&flag, true));
+        assert!(update_visibility_flag(&flag, false));
+        assert!(!update_visibility_flag(&flag, false));
+        assert!(update_visibility_flag(&flag, true));
+        assert!(!update_visibility_flag(&flag, true));
+    }
 }

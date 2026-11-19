@@ -14,8 +14,14 @@ import { toast } from './toast'
 
 export const myTracksKey = () => ['tracks', vk.getMeId()] as const
 
+const deletedOwnKeys = new Set<string>()
+export function clearDeletedOwnKeys() {
+  deletedOwnKeys.clear()
+}
+
 export function isInLibrary(t: Track): boolean {
   if (serviceOf(t) === 'sc' || serviceOf(t) === 'spotify') return t.liked
+  if (deletedOwnKeys.has(t.key)) return false
   return t.liked || t.ownerId === vk.getMeId()
 }
 
@@ -44,11 +50,11 @@ async function findLibraryCopy(t: Track): Promise<Track | null> {
   return first.items.find((x) => sameSong(x, t)) ?? null
 }
 
-const scPending = new Set<string>()
+const inFlight = new Set<string>()
 
 async function likeOnSoundCloud(t: Track) {
-  if (scPending.has(t.key)) return
-  scPending.add(t.key)
+  if (inFlight.has(t.key)) return
+  inFlight.add(t.key)
   const account = sc.getScMeId()
   const liked = !t.liked
   const likesKey = scKeys.likes(account)
@@ -86,13 +92,13 @@ async function likeOnSoundCloud(t: Track) {
     if (sc.getScMeId() === account) markLiked(t.key, !liked)
     toast(describeScError(e), 'error')
   } finally {
-    scPending.delete(t.key)
+    inFlight.delete(t.key)
   }
 }
 
 async function likeOnSpotify(t: Track) {
-  if (!t.spotifyId || scPending.has(t.key)) return
-  scPending.add(t.key)
+  if (!t.spotifyId || inFlight.has(t.key)) return
+  inFlight.add(t.key)
   const liked = !t.liked
   markLiked(t.key, liked)
   try {
@@ -104,7 +110,7 @@ async function likeOnSpotify(t: Track) {
     markLiked(t.key, !liked)
     toast(typeof e === 'string' ? e : 'Не удалось обновить лайк в Spotify', 'error')
   } finally {
-    scPending.delete(t.key)
+    inFlight.delete(t.key)
   }
 }
 
@@ -113,9 +119,12 @@ export async function toggleLibrary(t: Track | null | undefined): Promise<void> 
   if (!t) return
   if (serviceOf(t) === 'sc') return likeOnSoundCloud(t)
   if (serviceOf(t) === 'spotify') return likeOnSpotify(t)
+  if (inFlight.has(t.key)) return
+  inFlight.add(t.key)
   try {
     if (!isInLibrary(t)) {
       await vk.addTrack(t)
+      deletedOwnKeys.delete(t.key)
       markLiked(t.key, true)
       toast('Добавлено в Мою музыку', 'added')
       void queryClient.invalidateQueries({ queryKey: myTracksKey() })
@@ -127,6 +136,8 @@ export async function toggleLibrary(t: Track | null | undefined): Promise<void> 
       return
     }
     await vk.deleteTrack(copy)
+    deletedOwnKeys.add(t.key)
+    deletedOwnKeys.add(copy.key)
     markLiked(t.key, false)
     if (copy.key !== t.key) markLiked(copy.key, false)
     toast('Удалено из Моей музыки', 'removed', {
@@ -135,6 +146,8 @@ export async function toggleLibrary(t: Track | null | undefined): Promise<void> 
         void vk
           .restoreTrack(copy)
           .then(() => {
+            deletedOwnKeys.delete(t.key)
+            deletedOwnKeys.delete(copy.key)
             markLiked(t.key, true)
             if (copy.key !== t.key) markLiked(copy.key, true)
             void queryClient.invalidateQueries({ queryKey: myTracksKey() })
@@ -144,5 +157,7 @@ export async function toggleLibrary(t: Track | null | undefined): Promise<void> 
     void queryClient.invalidateQueries({ queryKey: myTracksKey() })
   } catch (e) {
     toast(describeError(e), 'error')
+  } finally {
+    inFlight.delete(t.key)
   }
 }

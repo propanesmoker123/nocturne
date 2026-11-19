@@ -23,6 +23,8 @@ export async function deleteWallpaper(src: string): Promise<void> {
   }
   const i = demoSaved.indexOf(src)
   if (i >= 0) demoSaved.splice(i, 1)
+  demoVideo.delete(src)
+  if (src.startsWith('blob:')) URL.revokeObjectURL(src)
 }
 
 /** Lets the user choose an image or video; Tauri copies it into the app's wallpaper folder. */
@@ -36,16 +38,23 @@ export async function pickWallpaper(): Promise<WallpaperConfig | null> {
   }
   // Browser demo: an object URL that lives until reload.
   return new Promise((resolve) => {
+    let settled = false
+    const done = (value: WallpaperConfig | null) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = WALLPAPER_EXTENSIONS.map((e) => `.${e}`).join(',')
+    input.addEventListener('cancel', () => done(null))
     input.onchange = () => {
       const f = input.files?.[0]
-      if (!f) return resolve(null)
+      if (!f) return done(null)
       const src = URL.createObjectURL(f)
       demoSaved.unshift(src)
       if (VIDEO.test(f.name)) demoVideo.add(src)
-      resolve({ kind: VIDEO.test(f.name) ? 'video' : 'image', src })
+      done({ kind: VIDEO.test(f.name) ? 'video' : 'image', src })
     }
     input.click()
   })

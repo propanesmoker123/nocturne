@@ -68,7 +68,7 @@ fn place_under_cursor(app: &AppHandle, win: &WebviewWindow) {
 #[tauri::command]
 pub fn search_open(app: AppHandle) {
     let Some(win) = app.get_webview_window(LABEL) else { return };
-    if win.is_visible().unwrap_or(false) && win.is_focused().unwrap_or(false) {
+    if win.is_visible().unwrap_or(false) {
         let _ = win.hide();
         return;
     }

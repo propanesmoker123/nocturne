@@ -10,6 +10,7 @@ import { needsFreshUrl, SC_URL_MAX_AGE_MS } from './logic'
 import * as waveform from './waveform'
 
 export const MAX_PRELOAD_BYTES = 24 * 1024 * 1024
+export const MAX_PRELOAD_SEGMENTS = 4
 
 export interface PreloadedSource {
   url: string
@@ -25,7 +26,9 @@ interface ParsedHls {
 }
 
 let generation = 0
+let fetchGeneration = 0
 let activeKey: string | null = null
+let activeService: 'vk' | 'sc' | 'spotify' | null = null
 let cachedBytes = 0
 const bytesCache = new Map<string, ArrayBuffer>()
 const blobBytes = new Map<string, ArrayBuffer>()
@@ -112,7 +115,8 @@ function storeBytes(gen: number, url: string, buf: ArrayBuffer): boolean {
 
 function fetchPreloadBytes(gen: number, url: string): Promise<ArrayBuffer> {
   const existing = bytesCache.get(url)
-  if (existing) return Promise.resolve(existing)
+  if (existing && existing.byteLength > 0) return Promise.resolve(existing)
+  if (existing) bytesCache.delete(url)
   const pending = inflight.get(url)
   if (pending) return pending
   const p = invoke<ArrayBuffer>('proxy_fetch', { url })
@@ -132,24 +136,25 @@ function warmCoverImages(t: Track) {
   for (const src of [t.cover.m, t.cover.l]) if (src) new Image().src = src
 }
 
-async function preloadHlsStream(gen: number, manifestUrl: string, loadVariants = true) {
+async function preloadHlsStream(gen: number, manifestUrl: string, loadVariants = true, fetchGen = fetchGeneration) {
+  if (gen !== generation || fetchGen !== fetchGeneration) return
   const buf = await fetchPreloadBytes(gen, manifestUrl)
-  if (gen !== generation) return
+  if (gen !== generation || fetchGen !== fetchGeneration) return
   const text = new TextDecoder().decode(buf)
   const parsed = parseHlsManifest(text, manifestUrl)
 
   if (loadVariants && parsed.variants.length) {
     for (const subUrl of [parsed.variants[0], ...parsed.media.slice(0, 1)]) {
-      if (gen !== generation || cachedBytes >= MAX_PRELOAD_BYTES) return
-      await preloadHlsStream(gen, subUrl, false)
+      if (gen !== generation || fetchGen !== fetchGeneration || cachedBytes >= MAX_PRELOAD_BYTES) return
+      await preloadHlsStream(gen, subUrl, false, fetchGen)
     }
     return
   }
 
   // hls.js requests the exact slices of shared files while playing this kind of manifest.
   if (/#EXT-X-(?:BYTERANGE:|MAP:[^\r\n]*\bBYTERANGE=)/m.test(text)) return
-  for (const u of [...parsed.initAndKeys, ...parsed.segments]) {
-    if (gen !== generation || cachedBytes >= MAX_PRELOAD_BYTES) return
+  for (const u of [...parsed.initAndKeys, ...parsed.segments.slice(0, MAX_PRELOAD_SEGMENTS)]) {
+    if (gen !== generation || fetchGen !== fetchGeneration || cachedBytes >= MAX_PRELOAD_BYTES) return
     try {
       await fetchPreloadBytes(gen, u)
     } catch {
@@ -170,7 +175,7 @@ async function warmTrackLyrics(gen: number, track: Track): Promise<void> {
   }
 }
 
-async function preloadTrack(gen: number, track: Track) {
+async function preloadTrack(gen: number, track: Track, fetchGen = fetchGeneration) {
   warmCoverImages(track)
   const lyricsTask = warmTrackLyrics(gen, track)
   const svc = serviceOf(track)
@@ -215,10 +220,10 @@ async function preloadTrack(gen: number, track: Track) {
     return
   }
 
-  if (gen !== generation || !streamUrl || !isTauri()) return
+  if (gen !== generation || fetchGen !== fetchGeneration || !streamUrl || !isTauri()) return
   try {
     if (streamUrl.includes('.m3u8')) {
-      await preloadHlsStream(gen, streamUrl)
+      await preloadHlsStream(gen, streamUrl, true, fetchGen)
     } else {
       await fetchPreloadBytes(gen, streamUrl)
     }
@@ -229,19 +234,28 @@ async function preloadTrack(gen: number, track: Track) {
 }
 
 /** Cancels any active preload and frees all cached source/byte buffers. */
-export function clearPreload() {
+export function clearPreload(clearRemoteSpotify = true) {
+  const prevService = activeService
   generation++
+  fetchGeneration++
   activeKey = null
+  activeService = null
   cachedBytes = 0
   bytesCache.clear()
   blobBytes.clear()
   inflight.clear()
   sources.clear()
+  if (clearRemoteSpotify && prevService === 'spotify') {
+    void spotify.clearWarmSpotifyTrack?.()
+  }
 }
 
 /** Drops any preloaded data unless it belongs to `keepKey` (the track about to play). */
 export function clearPreloadExcept(keepKey: string) {
-  if (activeKey === keepKey) return
+  if (activeKey === keepKey) {
+    fetchGeneration++
+    return
+  }
   clearPreload()
 }
 
@@ -252,10 +266,13 @@ export function syncNextPreload(track: Track | null | undefined) {
     return
   }
   if (activeKey === track.key) return
-  clearPreload()
+  const nextService = serviceOf(track)
+  clearPreload(nextService !== 'spotify')
   activeKey = track.key
+  activeService = nextService
   const gen = generation
-  void preloadTrack(gen, track)
+  const fetchGen = fetchGeneration
+  void preloadTrack(gen, track, fetchGen)
 }
 
 /** Pops a preloaded stream URL / SoundCloud source if still fresh; retries never reuse consumed entries. */
@@ -271,17 +288,34 @@ export function takePreloadedSource(track: Track, now = Date.now()): PreloadedSo
   return !needsFreshUrl({ ...track, url: entry.url, urlFetchedAt: entry.fetchedAt }, now) ? entry : null
 }
 
-/** Returns already-cached or currently downloading bytes for `TauriLoader`. */
+/** Returns already-cached or currently downloading bytes for `TauriLoader` (one-shot consumption). */
 export function getPreloadedResource(url: string): ArrayBuffer | Promise<ArrayBuffer> | null {
   const ready = bytesCache.get(url)
-  if (ready) return ready
-  return inflight.get(url) ?? null
+  if (ready !== undefined) {
+    bytesCache.delete(url)
+    cachedBytes = Math.max(0, cachedBytes - ready.byteLength)
+    return ready.byteLength > 0 ? ready : null
+  }
+  const pending = inflight.get(url)
+  if (!pending) return null
+  return pending.then((buf) => {
+    const cached = bytesCache.get(url)
+    if (cached !== undefined) {
+      bytesCache.delete(url)
+      cachedBytes = Math.max(0, cachedBytes - cached.byteLength)
+    }
+    if (buf.byteLength === 0) throw new Error('detached')
+    return buf.slice(0)
+  })
 }
 
 /** Builds a one-shot `blob:` URL only when a direct audio file has finished preloading completely. */
 export function takePreloadedBlobUrl(url: string): string | null {
   const buf = bytesCache.get(url)
-  if (!buf) return null
+  if (!buf || buf.byteLength === 0) {
+    if (buf) bytesCache.delete(url)
+    return null
+  }
   bytesCache.delete(url)
   cachedBytes = Math.max(0, cachedBytes - buf.byteLength)
   let mime = ''
@@ -298,12 +332,17 @@ export function takePreloadedBlobUrl(url: string): string | null {
   return blobUrl
 }
 
-/** Pops raw bytes associated with a `blob:` URL created by `takePreloadedBlobUrl`. */
-export function takePreloadedBlobBytes(url: string): ArrayBuffer | null {
-  const buf = blobBytes.get(url) ?? null
-  if (buf) blobBytes.delete(url)
-  return buf
+/** Pops raw bytes associated with a `blob:` URL created by `takePreloadedBlobUrl`, or preloaded/in-flight bytes for a direct URL. */
+export function takePreloadedBlobBytes(url: string): ArrayBuffer | Promise<ArrayBuffer> | null {
+  const buf = blobBytes.get(url)
+  if (buf !== undefined) {
+    blobBytes.delete(url)
+    return buf.byteLength > 0 ? buf : null
+  }
+  return getPreloadedResource(url)
 }
+
+export const takePreloadedAudioBytes = takePreloadedBlobBytes
 
 export function getPreloadDebugState() {
   return {

@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { memo, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import type { MenuItem } from '../app/menu'
 import { artistRoute, useRouter } from '../app/router'
 import { ServiceLogo } from './ServiceLogo'
@@ -96,7 +96,9 @@ const Row = memo(function Row({ track, index, top, isCurrent, isPlaying, showAlb
       onDrop={
         onDrop
           ? (e) => {
-              const from = Number(e.dataTransfer.getData('text/x-nocturne-row'))
+              const raw = e.dataTransfer.getData('text/x-nocturne-row')
+              if (!raw) return
+              const from = Number(raw)
               if (Number.isInteger(from) && from !== index) onDrop(from, index)
             }
           : undefined
@@ -213,14 +215,24 @@ export function TrackList({ tracks, queueSource, queueMeta, playlist, showAlbum 
       ? { kind: 'list', service: 'spotify', label: playlist.title, contextUri: `spotify:${playlist.type}:${playlist.spotifyId}` }
       : undefined)
   const source = queueSource ?? tracks
-  const onPlay = (index: number) => {
-    const t = tracks[index]
+  const ctxRef = useRef({ tracks, source, resolvedMeta, playlist, menuExtra })
+  ctxRef.current = { tracks, source, resolvedMeta, playlist, menuExtra }
+
+  const onPlay = useCallback((index: number) => {
+    const { tracks: curTracks, source: curSource, resolvedMeta: curMeta } = ctxRef.current
+    const t = curTracks[index]
+    if (!t) return
     // the track that is already on pauses or resumes instead of starting over
     if (t.key === usePlayer.getState().current?.key) return usePlayer.getState().toggle()
-    const at = source === tracks ? index : source.findIndex((x) => x.key === t.key)
-    usePlayer.getState().playList(source, Math.max(0, at), resolvedMeta ? { source: resolvedMeta } : undefined)
-  }
-  const onMenu = (e: MouseEvent, track: Track, index: number) => openTrackMenu(e, track, { list: source, index, playlist, extra: menuExtra?.(track, index) })
+    const at = curSource === curTracks ? index : curSource.findIndex((x) => x.key === t.key)
+    usePlayer.getState().playList(curSource, Math.max(0, at), curMeta ? { source: curMeta } : undefined)
+  }, [])
+
+  const onMenu = useCallback((e: MouseEvent, track: Track, index: number) => {
+    const { tracks: curTracks, source: curSource, playlist: curPlaylist, menuExtra: curMenuExtra } = ctxRef.current
+    const at = curSource === curTracks ? index : curSource.findIndex((x) => x.key === track.key)
+    openTrackMenu(e, track, { list: curSource, index: at >= 0 ? at : index, playlist: curPlaylist, extra: curMenuExtra?.(track, index) })
+  }, [])
   const third = showAlbum || !!note
   const cols = third ? '28px minmax(0, 1.6fr) minmax(0, 1fr) 62px 52px 30px' : '28px minmax(0, 1fr) 62px 52px 30px'
 
@@ -239,14 +251,15 @@ export function TrackList({ tracks, queueSource, queueMeta, playlist, showAlbum 
       <div ref={listRef} className={s.list} role="table" style={{ height: v.getTotalSize() }}>
         {v.getVirtualItems().map((item) => {
           const t = tracks[item.index]
+          const isCurrent = t.key === currentKey
           return (
             <Row
               key={`${t.key}-${item.index}`}
               track={t}
               index={item.index}
               top={item.start - margin}
-              isCurrent={t.key === currentKey}
-              isPlaying={isPlaying}
+              isCurrent={isCurrent}
+              isPlaying={isCurrent && isPlaying}
               showAlbum={showAlbum}
               note={note ? (note.render(t, item.index) ?? null) : undefined}
               markService={markService}

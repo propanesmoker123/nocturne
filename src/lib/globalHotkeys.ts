@@ -13,6 +13,9 @@ export const useHotkeyStatus = create<HotkeyStatus>(() => ({ failed: [] }))
 type Handlers = Record<HotkeyAction, () => void>
 
 let applied = ''
+let started = false
+let draining = false
+let latestReq: { map: HotkeyMap; enabled: boolean; handlers: Handlers } | null = null
 
 async function apply(map: HotkeyMap, enabled: boolean, handlers: Handlers) {
   const key = JSON.stringify([map, enabled])
@@ -38,12 +41,28 @@ async function apply(map: HotkeyMap, enabled: boolean, handlers: Handlers) {
   useHotkeyStatus.setState({ failed })
 }
 
+async function drain() {
+  if (draining) return
+  draining = true
+  try {
+    while (latestReq) {
+      const next = latestReq
+      latestReq = null
+      await apply(next.map, next.enabled, next.handlers).catch(() => {})
+    }
+  } finally {
+    draining = false
+  }
+}
+
 /** Registers the user's global hotkeys and re-registers whenever they change. */
 export function startGlobalHotkeys(handlers: Handlers) {
-  if (!isTauri()) return
+  if (!isTauri() || started) return
+  started = true
   const run = () => {
     const s = useSettings.getState()
-    void apply(s.hotkeys, s.hotkeysEnabled, handlers)
+    latestReq = { map: s.hotkeys, enabled: s.hotkeysEnabled, handlers }
+    void drain()
   }
   run()
   useSettings.subscribe((s, prev) => {

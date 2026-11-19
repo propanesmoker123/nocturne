@@ -66,14 +66,14 @@ export function fitOrder<O extends { tracks: unknown[]; index: number }>(order: 
   return fitted
 }
 
-/** The queue without SoundCloud tracks (they do not travel between devices yet), the current one
- *  kept in place; null when the current track is a SoundCloud one. */
+/** The queue without SoundCloud/Spotify tracks (only VK tracks travel between devices yet), the current one
+ *  kept in place; null when the current track is not a VK track. */
 export function vkOnly(tracks: Track[], index: number): { tracks: Track[]; index: number } | null {
-  if (tracks[index] && serviceOf(tracks[index]) === 'sc') return null
+  if (tracks[index] && serviceOf(tracks[index]) !== 'vk') return null
   const kept: Track[] = []
   let at = 0
   tracks.forEach((t, i) => {
-    if (serviceOf(t) === 'sc') return
+    if (serviceOf(t) !== 'vk') return
     if (i === index) at = kept.length
     kept.push(t)
   })

@@ -1,9 +1,4 @@
 @import '@fontsource-variable/inter/opsz.css';
-@import '@fontsource-variable/onest/wght.css';
-@import '@fontsource-variable/playfair-display/wght.css';
-@import '@fontsource-variable/playfair-display/wght-italic.css';
-@import '@fontsource-variable/unbounded/wght.css';
-@import '@fontsource-variable/jetbrains-mono/wght.css';
 @import './tokens.css';
 
 *,

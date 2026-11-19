@@ -30,7 +30,9 @@ export function useHorizontalScroll(ref: RefObject<HTMLElement | null>): Horizon
     const el = ref.current
     if (!el) return
     const max = Math.max(0, el.scrollWidth - el.clientWidth)
-    setEdges({ start: el.scrollLeft < 4, end: el.scrollLeft >= max - 4 })
+    const start = el.scrollLeft < 4
+    const end = el.scrollLeft >= max - 4
+    setEdges((prev) => (prev.start === start && prev.end === end ? prev : { start, end }))
   }, [ref])
 
   useEffect(() => {

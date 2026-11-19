@@ -15,32 +15,43 @@ pub fn allowed_extension(path: &Path) -> Option<String> {
     ALLOWED.contains(&ext.as_str()).then_some(ext)
 }
 
-fn wallpaper_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("wallpapers");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+fn wallpaper_dir_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("wallpapers"))
 }
 
-#[tauri::command]
-pub async fn import_wallpaper(app: AppHandle, path: String) -> Result<String, String> {
-    let src = PathBuf::from(&path);
-    let ext = allowed_extension(&src).ok_or("Этот формат не подходит для обоев")?;
-    let meta = std::fs::metadata(&src).map_err(|e| format!("Файл недоступен: {e}"))?;
+fn import_wallpaper_sync(src: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let ext = allowed_extension(src).ok_or("Этот формат не подходит для обоев")?;
+    let meta = std::fs::metadata(src).map_err(|e| format!("Файл недоступен: {e}"))?;
     if !meta.is_file() {
         return Err("Это не файл".into());
     }
     if meta.len() > MAX_BYTES {
         return Err("Файл больше 2 ГБ".into());
     }
-    let dir = wallpaper_dir(&app)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let dest = dir.join(format!("wallpaper-{stamp}.{ext}"));
-    let src2 = src.clone();
-    let dest2 = dest.clone();
-    tauri::async_runtime::spawn_blocking(move || std::fs::copy(&src2, &dest2))
+    let uid = uuid::Uuid::new_v4().simple().to_string();
+    let short_uid = &uid[..8];
+    let tmp = dir.join(format!("{uid}.tmp"));
+    let dest = dir.join(format!("wallpaper-{stamp}-{short_uid}.{ext}"));
+    if let Err(e) = std::fs::copy(src, &tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Не удалось скопировать: {e}"));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Не удалось скопировать: {e}"));
+    }
+    Ok(dest)
+}
+
+#[tauri::command]
+pub async fn import_wallpaper(app: AppHandle, path: String) -> Result<String, String> {
+    let src = PathBuf::from(&path);
+    let dir = wallpaper_dir_path(&app)?;
+    let dest = tauri::async_runtime::spawn_blocking(move || import_wallpaper_sync(&src, &dir))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("Не удалось скопировать: {e}"))?;
+        .map_err(|e| e.to_string())??;
     Ok(dest.to_string_lossy().into_owned())
 }
 
@@ -51,30 +62,56 @@ pub fn is_imported(path: &Path, dir: &Path) -> bool {
         && allowed_extension(path).is_some()
 }
 
+fn delete_wallpaper_sync(path: &Path, dir: &Path) -> Result<(), String> {
+    let file_name = path.file_name().and_then(|n| n.to_str()).ok_or("Это не сохранённые обои")?;
+    if !file_name.starts_with("wallpaper-") || allowed_extension(path).is_none() {
+        return Err("Это не сохранённые обои".into());
+    }
+    let Some(parent) = path.parent() else {
+        return Err("Это не сохранённые обои".into());
+    };
+    let canon_dir = std::fs::canonicalize(dir).map_err(|_| "Это не сохранённые обои".to_string())?;
+    let canon_parent = std::fs::canonicalize(parent).map_err(|_| "Это не сохранённые обои".to_string())?;
+    if canon_parent != canon_dir {
+        return Err("Это не сохранённые обои".into());
+    }
+    let target = canon_dir.join(file_name);
+    let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("Не удалось удалить: {e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err("Это не сохранённые обои".into());
+    }
+    std::fs::remove_file(&target).map_err(|e| format!("Не удалось удалить: {e}"))
+}
+
 /// Imported wallpapers, newest first.
 #[tauri::command]
-pub fn list_wallpapers(app: AppHandle) -> Result<Vec<String>, String> {
-    let dir = wallpaper_dir(&app)?;
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .map_err(|e| e.to_string())?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| is_imported(p, &dir))
-        .collect();
-    files.sort();
-    files.reverse();
-    Ok(files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+pub async fn list_wallpapers(app: AppHandle) -> Result<Vec<String>, String> {
+    let dir = wallpaper_dir_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.path())
+            .filter(|p| is_imported(p, &dir))
+            .collect();
+        files.sort();
+        files.reverse();
+        Ok(files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Deletes one imported wallpaper; anything outside the wallpaper folder is refused.
 #[tauri::command]
-pub fn delete_wallpaper(app: AppHandle, path: String) -> Result<(), String> {
-    let dir = wallpaper_dir(&app)?;
+pub async fn delete_wallpaper(app: AppHandle, path: String) -> Result<(), String> {
+    let dir = wallpaper_dir_path(&app)?;
     let p = PathBuf::from(&path);
-    if !is_imported(&p, &dir) {
-        return Err("Это не сохранённые обои".into());
-    }
-    std::fs::remove_file(&p).map_err(|e| format!("Не удалось удалить: {e}"))
+    tauri::async_runtime::spawn_blocking(move || delete_wallpaper_sync(&p, &dir))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -91,6 +128,7 @@ mod tests {
     fn only_imported_files_in_the_folder_count() {
         let dir = Path::new("C:/data/wallpapers");
         assert!(is_imported(Path::new("C:/data/wallpapers/wallpaper-1700.mp4"), dir));
+        assert!(is_imported(Path::new("C:/data/wallpapers/wallpaper-1700-a1b2c3d4.mp4"), dir));
         assert!(!is_imported(Path::new("C:/data/wallpapers/sub/wallpaper-1.mp4"), dir));
         assert!(!is_imported(Path::new("C:/data/wallpapers/../settings.json"), dir));
         assert!(!is_imported(Path::new("C:/data/wallpapers/other.png"), dir));
@@ -103,5 +141,45 @@ mod tests {
         assert_eq!(allowed_extension(Path::new("evil.exe")), None);
         assert_eq!(allowed_extension(Path::new("noext")), None);
         assert_eq!(allowed_extension(Path::new("song.mp3")), None);
+    }
+
+    #[test]
+    fn import_generates_unique_names_and_delete_canonicalizes_slashes_and_rejects_outside() {
+        let root = std::env::temp_dir().join(format!("nocturne-wp-{}", uuid::Uuid::new_v4().simple()));
+        let dir = root.join("wallpapers");
+        let src = root.join("src.png");
+        let outside = root.join("wallpaper-999.png");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&src, b"png-bytes").unwrap();
+        std::fs::write(&outside, b"keep-me").unwrap();
+
+        let p1 = import_wallpaper_sync(&src, &dir).unwrap();
+        let p2 = import_wallpaper_sync(&src, &dir).unwrap();
+        assert_ne!(p1, p2, "rapid imports must not collide");
+        assert!(is_imported(&p1, &dir));
+        assert!(is_imported(&p2, &dir));
+        // No leftover .tmp files.
+        let tmps: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("tmp"))
+            .collect();
+        assert!(tmps.is_empty());
+
+        // Forward-slash variant of Windows path must still delete successfully.
+        let forward_slash = PathBuf::from(p1.to_string_lossy().replace('\\', "/"));
+        delete_wallpaper_sync(&forward_slash, &dir).unwrap();
+        assert!(!p1.exists());
+
+        // File outside wallpapers dir must be rejected even with matching name.
+        assert!(delete_wallpaper_sync(&outside, &dir).is_err());
+        assert!(outside.exists());
+
+        // Directory masquerading as a wallpaper must be rejected.
+        let fake_dir = dir.join("wallpaper-dir.png");
+        std::fs::create_dir(&fake_dir).unwrap();
+        assert!(delete_wallpaper_sync(&fake_dir, &dir).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

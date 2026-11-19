@@ -18,7 +18,7 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useChrome } from '../app/chrome'
 import { showMenu } from '../app/menu'
 import { useRouter } from '../app/router'
@@ -40,6 +40,7 @@ import { IconMore, IconPlay } from '../components/Icons'
 import { PageHeader } from '../components/PageHeader'
 import { TrackList } from '../components/TrackList'
 import { filterTracks, formatLongDuration, formatPlaysShort, pluralRu } from '../lib/format'
+import { useDebounced } from '../lib/hooks'
 import p from '../pages/pages.module.css'
 import { usePlayer } from '../player/store'
 import type { Playlist, Track } from '../vk/models'
@@ -164,8 +165,11 @@ function SpSpotlightCard({ item }: { item: SpotifySpotlightItem }) {
                   e.stopPropagation()
                   if (busy) return
                   setBusy(true)
-                  await playPlaylist(pl)
-                  setBusy(false)
+                  try {
+                    await playPlaylist(pl)
+                  } finally {
+                    setBusy(false)
+                  }
                 }}
               >
                 {busy ? <Spinner size={15} /> : <IconPlay size={16} />}
@@ -463,8 +467,11 @@ function SpotifyBrowseBody() {
   )
 }
 
+const MAX_LIKES_AUTO_PAGES = 10
+
 function SpotifyLikesBody() {
   const [filter, setFilter] = useState('')
+  const debouncedFilter = useDebounced(filter.trim(), 220)
   const q = useInfiniteQuery({
     queryKey: spKeys.likes(),
     queryFn: ({ pageParam = 0 }) => spotify.getLikes(pageParam, 50),
@@ -472,12 +479,13 @@ function SpotifyLikesBody() {
     getNextPageParam: (last) => last.nextOffset,
   })
 
-  const { hasNextPage, isFetchingNextPage, fetchNextPage } = q
+  const { hasNextPage, isFetchingNextPage, isError, isFetchNextPageError, fetchNextPage } = q
+  const pagesLoaded = q.data?.pages.length ?? 0
   useEffect(() => {
-    if (filter.trim() && hasNextPage && !isFetchingNextPage) {
+    if (debouncedFilter && hasNextPage && !isFetchingNextPage && !isError && !isFetchNextPageError && pagesLoaded < MAX_LIKES_AUTO_PAGES) {
       void fetchNextPage()
     }
-  }, [filter, hasNextPage, isFetchingNextPage, fetchNextPage])
+  }, [debouncedFilter, hasNextPage, isFetchingNextPage, isError, isFetchNextPageError, pagesLoaded, fetchNextPage])
 
   const allTracks = useMemo(() => {
     const seen = new Set<string>()
@@ -713,7 +721,7 @@ export function SpotifyPage() {
   )
 }
 
-export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle }: { id: string; kind?: 'playlist' | 'album'; title?: string }) {
+function SpotifyPlaylistPageBody({ id, kind = 'playlist', title: initialTitle }: { id: string; kind?: 'playlist' | 'album'; title?: string }) {
   const qc = useQueryClient()
   const setTitle = useChrome((c) => c.setTitle)
   const q = useQuery({
@@ -737,8 +745,18 @@ export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle
   })
 
   const [loadingMore, setLoadingMore] = useState(false)
+  const [rawOffset, setRawOffset] = useState<number | null>(null)
+  const [exhausted, setExhausted] = useState(false)
   const [savingLibrary, setSavingLibrary] = useState(false)
   const [radioBusy, setRadioBusy] = useState(false)
+  const activeKeyRef = useRef(`${kind}:${id}`)
+  activeKeyRef.current = `${kind}:${id}`
+
+  useEffect(() => {
+    setLoadingMore(false)
+    setRawOffset(null)
+    setExhausted(false)
+  }, [id, kind])
 
   const pl: Playlist | undefined = q.data?.playlist
   const tracks = useMemo(() => q.data?.tracks ?? [], [q.data?.tracks])
@@ -797,10 +815,20 @@ export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle
   }
 
   const loadMoreTracks = async () => {
-    if (loadingMore) return
+    if (loadingMore || exhausted) return
+    const targetKey = `${kind}:${id}`
+    const offset = rawOffset ?? tracks.length
+    const cover = pl?.cover ? { s: pl.cover, m: pl.cover, l: pl.cover } : undefined
+    const album: Track['album'] = kind === 'album' && pl ? { id: pl.id, ownerId: 0, title: pl.title, spotifyId: id } : undefined
     setLoadingMore(true)
     try {
-      const page = await spotify.getPlaylistTracksPage(id, kind, tracks.length, 100)
+      const page = await spotify.getPlaylistTracksPage(id, kind, offset, 100, { cover, album })
+      if (activeKeyRef.current !== targetKey) return
+      const nextOffset = offset + page.rawCount
+      setRawOffset(nextOffset)
+      if (page.rawCount === 0 || (page.total > 0 && nextOffset >= page.total)) {
+        setExhausted(true)
+      }
       if (page.tracks.length) {
         qc.setQueryData<{ playlist: Playlist; tracks: Track[] }>(spKeys.playlist(id, kind), (old) => {
           if (!old) return old
@@ -810,9 +838,9 @@ export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle
         })
       }
     } catch (e) {
-      toast(spotifyError(e), 'error')
+      if (activeKeyRef.current === targetKey) toast(spotifyError(e), 'error')
     } finally {
-      setLoadingMore(false)
+      if (activeKeyRef.current === targetKey) setLoadingMore(false)
     }
   }
 
@@ -848,7 +876,7 @@ export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle
     : undefined
 
   return (
-    <SpGate>
+    <>
       {q.isError && <SpotifyErrorView title="Плейлист недоступен" error={q.error} onRetry={() => void q.refetch()} />}
 
       {!q.isError && (
@@ -917,7 +945,7 @@ export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle
           )}
           {tracks.length > 0 && <TrackList tracks={tracks} playlist={pl} queueMeta={{ kind: 'list', service: 'spotify', label: pl?.title, contextUri: `spotify:${kind}:${id}` }} menuExtra={menuExtra} />}
 
-          {!q.isLoading && totalCount > tracks.length && (
+          {!q.isLoading && !exhausted && totalCount > tracks.length && (
             <div className={sp.moreRow}>
               <Button variant="gray" disabled={loadingMore} onClick={() => void loadMoreTracks()}>
                 {loadingMore ? <Spinner size={15} /> : <Plus size={15} />} Загрузить ещё треки ({tracks.length} / {totalCount})
@@ -926,11 +954,19 @@ export function SpotifyPlaylistPage({ id, kind = 'playlist', title: initialTitle
           )}
         </>
       )}
+    </>
+  )
+}
+
+export function SpotifyPlaylistPage(props: { id: string; kind?: 'playlist' | 'album'; title?: string }) {
+  return (
+    <SpGate>
+      <SpotifyPlaylistPageBody {...props} />
     </SpGate>
   )
 }
 
-export function SpotifyArtistPage({ id, title: initialTitle }: { id: string; title?: string }) {
+function SpotifyArtistPageBody({ id, title: initialTitle }: { id: string; title?: string }) {
   const qc = useQueryClient()
   const setTitle = useChrome((c) => c.setTitle)
   const q = useQuery({ queryKey: spKeys.artist(id), queryFn: () => spotify.getArtist(id) })
@@ -995,7 +1031,7 @@ export function SpotifyArtistPage({ id, title: initialTitle }: { id: string; tit
   }
 
   return (
-    <SpGate>
+    <>
       {q.isError && <SpotifyErrorView title="Профиль исполнителя не загрузился" error={q.error} onRetry={() => void q.refetch()} />}
 
       {!q.isError && (
@@ -1027,8 +1063,10 @@ export function SpotifyArtistPage({ id, title: initialTitle }: { id: string; tit
                         label: 'Скопировать ссылку',
                         icon: <Copy size={15} />,
                         onSelect: () => {
-                          void navigator.clipboard.writeText(`https://open.spotify.com/artist/${id}`)
-                          toast('Ссылка скопирована', 'info')
+                          void navigator.clipboard
+                            .writeText(`https://open.spotify.com/artist/${id}`)
+                            .then(() => toast('Ссылка скопирована', 'info'))
+                            .catch(() => toast('Не удалось скопировать ссылку', 'error'))
                         },
                       },
                     ])
@@ -1093,6 +1131,14 @@ export function SpotifyArtistPage({ id, title: initialTitle }: { id: string; tit
           )}
         </>
       )}
+    </>
+  )
+}
+
+export function SpotifyArtistPage(props: { id: string; title?: string }) {
+  return (
+    <SpGate>
+      <SpotifyArtistPageBody {...props} />
     </SpGate>
   )
 }
@@ -1236,21 +1282,23 @@ function SpotifyCategoryView({ title, uri = '' }: { title: string; uri?: string 
   )
 }
 
-export function SpotifySearchPage({ q: query, uri }: { q: string; uri?: string }) {
+function SpotifySearchPageBody({ q: query, uri }: { q: string; uri?: string }) {
   const trimmed = query.trim()
   const isGenre = /^genre:/i.test(trimmed)
   const genreTitle = isGenre ? trimmed.replace(/^genre:/i, '').trim() : ''
+  const debounced = useDebounced(trimmed, 300)
+  const searchTerm = isGenre ? '' : debounced
 
   const q = useQuery({
-    queryKey: spKeys.search(trimmed),
-    queryFn: () => spotify.search(trimmed),
-    enabled: trimmed.length > 0 && !isGenre,
+    queryKey: spKeys.search(searchTerm),
+    queryFn: () => spotify.search(searchTerm),
+    enabled: searchTerm.length > 1 && !isGenre,
   })
   const ownLikesQ = useQuery({
     queryKey: ['sp-search-likes'],
     queryFn: () => spotify.getLikes(0, 100),
     staleTime: 60_000,
-    enabled: trimmed.length >= 2 && !isGenre,
+    enabled: searchTerm.length >= 2 && !isGenre,
   })
   const browseQ = useQuery({
     queryKey: spKeys.browse(),
@@ -1261,20 +1309,16 @@ export function SpotifySearchPage({ q: query, uri }: { q: string; uri?: string }
   const res = q.data
   const browseItems = browseQ.data ?? []
   const ownMatches = useMemo(() => {
-    if (!trimmed || trimmed.length < 2) return []
-    return filterTracks(ownLikesQ.data?.items ?? [], trimmed).slice(0, 8)
-  }, [ownLikesQ.data?.items, trimmed])
+    if (!searchTerm || searchTerm.length < 2) return []
+    return filterTracks(ownLikesQ.data?.items ?? [], searchTerm).slice(0, 8)
+  }, [ownLikesQ.data?.items, searchTerm])
 
   if (isGenre && genreTitle) {
-    return (
-      <SpGate>
-        <SpotifyCategoryView title={genreTitle} uri={uri} />
-      </SpGate>
-    )
+    return <SpotifyCategoryView title={genreTitle} uri={uri} />
   }
 
   return (
-    <SpGate>
+    <>
       <PageHeader
         title={trimmed ? `Поиск: ${trimmed}` : 'Поиск в Spotify'}
         subtitle={trimmed ? 'Медиатека, исполнители, альбомы, плейлисты и треки' : 'Введите запрос или выберите жанр ниже'}
@@ -1295,21 +1339,21 @@ export function SpotifySearchPage({ q: query, uri }: { q: string; uri?: string }
         </>
       )}
 
-      {trimmed && q.isLoading && (
+      {searchTerm.length > 1 && q.isLoading && (
         <>
           <CardsSkeleton />
           <TrackListSkeleton rows={8} />
         </>
       )}
 
-      {trimmed && q.isError && <SpotifyErrorView title="Поиск не сработал" error={q.error} onRetry={() => void q.refetch()} />}
+      {searchTerm.length > 1 && q.isError && <SpotifyErrorView title="Поиск не сработал" error={q.error} onRetry={() => void q.refetch()} />}
 
-      {trimmed && !q.isLoading && !q.isError && res && (
+      {searchTerm.length > 1 && !q.isLoading && !q.isError && res && (
         <>
           {ownMatches.length > 0 && (
             <Section
               title="В моей медиатеке"
-              action={{ label: 'Слушать', onClick: () => playSpotifyTracks(ownMatches, 0, false, trimmed) }}
+              action={{ label: 'Слушать', onClick: () => playSpotifyTracks(ownMatches, 0, false, searchTerm) }}
             >
               <TrackList tracks={ownMatches} />
             </Section>
@@ -1344,16 +1388,24 @@ export function SpotifySearchPage({ q: query, uri }: { q: string; uri?: string }
           {res.tracks.length > 0 && (
             <Section
               title="Треки"
-              action={{ label: 'Слушать', onClick: () => playSpotifyTracks(res.tracks, 0, false, trimmed) }}
+              action={{ label: 'Слушать', onClick: () => playSpotifyTracks(res.tracks, 0, false, searchTerm) }}
             >
               <TrackList tracks={res.tracks} />
             </Section>
           )}
           {!ownMatches.length && !res.tracks.length && !res.artists.length && !res.playlists.length && !(res.albums?.length ?? 0) && (
-            <EmptyState icon={<Search size={26} />} title="Ничего не найдено" text={`По запросу «${trimmed}» в Spotify совпадений нет.`} />
+            <EmptyState icon={<Search size={26} />} title="Ничего не найдено" text={`По запросу «${searchTerm}» в Spotify совпадений нет.`} />
           )}
         </>
       )}
+    </>
+  )
+}
+
+export function SpotifySearchPage(props: { q: string; uri?: string }) {
+  return (
+    <SpGate>
+      <SpotifySearchPageBody {...props} />
     </SpGate>
   )
 }

@@ -4,6 +4,7 @@ import { invoke, isTauri } from '../lib/tauri'
 import { volumeToGain } from './logic'
 import { takePreloadedBlobUrl } from './preload'
 import { TauriLoader } from './tauriLoader'
+import { clearWaveformCapture } from './waveform'
 import { drmConfig, type ScPlaybackSource } from '../sc/playback'
 
 export interface StreamOptions extends Pick<ScPlaybackSource, 'drm' | 'waveformUrl'> {
@@ -13,12 +14,17 @@ export interface StreamOptions extends Pick<ScPlaybackSource, 'drm' | 'waveformU
   spotifyTitle?: string
   spotifyDuration?: number
 }
-export interface EngineSource extends Pick<ScPlaybackSource, 'drm' | 'waveformUrl'> { url: string; rawUrl?: string; hls: Hls | null }
+export interface EngineSource extends Pick<ScPlaybackSource, 'drm' | 'waveformUrl'> {
+  url: string
+  rawUrl?: string
+  hls: Hls | null
+  getDuration?: () => number
+}
 
 export type EngineEvent = 'time' | 'state' | 'ended' | 'error' | 'loading' | 'buffered'
 
 type Listener = () => void
-type AudioLoad = { autoplay: boolean; ready: boolean }
+type AudioLoad = { autoplay: boolean; ready: boolean; pendingSeek?: number | null }
 const SPOTIFY_START_TIMEOUT_MS = 25_000
 
 /** Owns the single <audio> element and the hls.js instance for the current stream. */
@@ -48,6 +54,15 @@ class Engine {
   private spotifyUid: string | undefined = undefined
   private spotifyExpectedTitle = ''
   private spotifyExpectedDuration = 0
+  private spotifyStartAt = 0
+  private spotifySwitchFromId: string | null = null
+  private spotifySwitchFromPos = 0
+  private spotifySawAd = false
+  private spotifyAdStartedAt = 0
+  private spotifyAdRetriedAt = 0
+  private spotifyPostAdGraceAt = 0
+  private spotifyAdRestarts = 0
+  private spotifyMediaErrRecovered = false
   private spotifyRetriedWithContext = false
   private spotifyMismatchLogged = false
   private spotifyLastLoggedErr = ''
@@ -193,6 +208,7 @@ class Engine {
 
   setPreFade(factor: number) {
     const clamped = Math.min(1, Math.max(0.15, Number.isFinite(factor) ? factor : 1))
+    if (Math.abs(clamped - this.preFadeFactor) < 1e-4) return
     this.preFadeFactor = clamped
     if (!this.fadeTimer && !this.fadingOut && !this.spotifyTrackId) {
       this.audio.volume = volumeToGain(this.baseVolume) * this.preFadeFactor
@@ -249,7 +265,7 @@ class Engine {
     }
     const startMs = Date.now()
     const totalMs = Math.max(200, fadeSec * 1000)
-    const startOutVol = Math.max(0.05, fading.startVolume)
+    const startOutVol = Math.max(0, fading.startVolume)
     const tick = () => {
       if (!this.fadingOut || this.fadingOut !== fading) {
         if (this.fadeTimer) {
@@ -360,6 +376,15 @@ class Engine {
     this.spotifyUid = undefined
     this.spotifyExpectedTitle = ''
     this.spotifyExpectedDuration = 0
+    this.spotifyStartAt = 0
+    this.spotifySwitchFromId = null
+    this.spotifySwitchFromPos = 0
+    this.spotifySawAd = false
+    this.spotifyAdStartedAt = 0
+    this.spotifyAdRetriedAt = 0
+    this.spotifyPostAdGraceAt = 0
+    this.spotifyAdRestarts = 0
+    this.spotifyMediaErrRecovered = false
     this.spotifyRetriedWithContext = false
     this.spotifyMismatchLogged = false
     this.spotifyLastLoggedErr = ''
@@ -410,9 +435,12 @@ class Engine {
     this.spotifyLastTickAt = Date.now()
     this.spotifyEndStallAt = 0
     this.spotifyEndStallPos = -1
-    this.spotifySeekTarget = startAt > 0 ? startAt : null
-    this.spotifySeekBackward = false
-    this.spotifySeekAt = startAt > 0 ? Date.now() : 0
+    const restartingFromLater = startAt === 0 && this.spotifyPos > 1.5
+    if (restartingFromLater) this.spotifyPos = 0
+    const hasSeekTarget = startAt > 0 || restartingFromLater
+    this.spotifySeekTarget = hasSeekTarget ? startAt : null
+    this.spotifySeekBackward = restartingFromLater || startAt < this.spotifyPos - 0.5
+    this.spotifySeekAt = hasSeekTarget ? Date.now() : 0
     this.emit('loading')
     try {
       const res = await invoke<{ ok?: boolean }>('spotify_status', {
@@ -428,7 +456,12 @@ class Engine {
           ...(preferContext ? { preferContext: true } : {}),
         },
       })
-      if (this.spotifyTrackId !== id || this.spotifyPlayGen !== gen) return
+      if (this.spotifyTrackId !== id || this.spotifyPlayGen !== gen) {
+        if (!this.spotifyTrackId || this.spotifyUserPaused) {
+          void invoke('spotify_control', { action: 'pause', value: null }).catch(() => {})
+        }
+        return
+      }
       if (res?.ok !== true) {
         this.failSpotify('Spotify не принял команду воспроизведения')
         return
@@ -469,17 +502,33 @@ class Engine {
   }
 
   private tickSpotify() {
+    const adTimedOut = this.spotifyTrackId && !this.spotifyUserPaused && this.spotifySawAd &&
+      this.spotifyAdStartedAt > 0 && Date.now() - this.spotifyAdStartedAt >= 45_000
+    if (adTimedOut) {
+      this.failSpotify('Рекламный блок Spotify завис — нажмите «Воспроизвести», чтобы повторить')
+      return
+    }
     const startTimedOut = this.spotifyTrackId && !this.spotifyUserPaused && this.spotifyWaiting &&
       !this.spotifyConfirmedPlaying && Date.now() - this.spotifyPlayStartedAt >= SPOTIFY_START_TIMEOUT_MS
     if (startTimedOut) {
       this.failSpotify('Spotify не начал воспроизведение за отведённое время')
       return
     }
+    const now = Date.now()
+    if (
+      this.spotifyTrackId &&
+      this.spotifyStarted &&
+      !this.spotifyConfirmedPlaying &&
+      !this.spotifyUserPaused &&
+      now - this.spotifyPlayStartedAt >= 190 &&
+      now - this.spotifyLastPollAt >= 190
+    ) {
+      void this.pollSpotify()
+    }
     if (!this.spotifyTrackId || !this.spotifyPlaying || this.spotifyWaiting) {
-      this.spotifyLastTickAt = Date.now()
+      this.spotifyLastTickAt = now
       return
     }
-    const now = Date.now()
     if (this.spotifySeekTarget !== null && now - this.spotifySeekAt < 280) {
       this.spotifyLastTickAt = now
       return
@@ -496,7 +545,7 @@ class Engine {
       this.spotifyConfirmedPlaying &&
       pollDur > 5 &&
       pollDur - this.spotifyPos <= 3.0 &&
-      now - this.spotifyLastPollAt >= 300
+      now - this.spotifyLastPollAt >= 200
     ) {
       void this.pollSpotify()
     }
@@ -552,9 +601,55 @@ class Engine {
       const isAd = np?.isAd === true
       const prevPlaying = this.spotifyPlaying
       const prevWaiting = this.spotifyWaiting
+      const rawEnded = np?.trackEnded === true || raw?.trackEnded === true
+      const endedTrackId =
+        typeof np?.endedTrackId === 'string' && np.endedTrackId
+          ? np.endedTrackId
+          : typeof raw?.endedTrackId === 'string' && raw.endedTrackId
+            ? raw.endedTrackId
+            : null
+      const prevPos = this.spotifyPos
+      const npDurationEarly = Number(np?.duration) || 0
+      const knownDur = this.spotifyDur > 0 ? this.spotifyDur : npDurationEarly > 0 ? npDurationEarly : this.spotifyExpectedDuration
+      const npPosEarly = np && Number.isFinite(Number(np.position)) ? Number(np.position) : prevPos
+      const unattributedNearEnd =
+        knownDur <= 15 ||
+        prevPos >= knownDur - Math.min(12, knownDur * 0.25) ||
+        npPosEarly >= knownDur - 2
+      const tooEarlyForStartEnd =
+        this.spotifyStartAt === 0 && knownDur > 20 && prevPos < 3 && startAge < 4000
+      const endedMatchesCurrent =
+        rawEnded &&
+        !tooEarlyForStartEnd &&
+        (endedTrackId
+          ? endedTrackId === id || endedTrackId === this.spotifyActualId
+          : unattributedNearEnd)
 
       if (isAd) {
-        this.spotifyPlayStartedAt = Date.now()
+        // Post-roll ad right after our track finished: advance Nocturne's queue immediately instead of stalling on the ad.
+        if (this.spotifyConfirmedPlaying && this.spotifyStarted && !startPending && endedMatchesCurrent) {
+          this.finishSpotifyPlayback()
+          this.emit('ended')
+          return
+        }
+        const now = Date.now()
+        this.spotifyPostAdGraceAt = 0
+        if (!this.spotifySawAd) {
+          this.spotifySawAd = true
+          this.spotifyAdStartedAt = now
+        }
+        if (now - this.spotifyAdStartedAt < 45_000) {
+          this.spotifyPlayStartedAt = now
+        }
+        const adErr = typeof raw?.lastPlaybackError === 'string' && raw.lastPlaybackError ? raw.lastPlaybackError : ''
+        const adPaused = np?.paused === true || raw?.playing === false
+        const stalledAd = (Boolean(adErr) && now - this.spotifyAdStartedAt >= 4000) || (adPaused && now - this.spotifyAdStartedAt >= 10_000)
+        if (stalledAd && now - this.spotifyAdRetriedAt >= 6000 && this.spotifyAdRestarts < 2) {
+          this.spotifyAdRetriedAt = now
+          this.spotifyAdRestarts += 1
+          journal('spotify', 'retrying requested track after stalled ad break')
+          void this.startSpotifyTrack(id, this.spotifyPos)
+        }
         this.spotifyWaiting = true
         this.spotifyPlaying = false
         if (prevPlaying !== this.spotifyPlaying) this.emit('state')
@@ -583,15 +678,57 @@ class Engine {
         Math.abs(npDuration - this.spotifyExpectedDuration) <= 6
       const matchesRequested = npTrackId === id || npLinkedFromId === id || relinkedTitleMatch
       const rawPlaying = np ? np.paused === false : raw?.playing === true
-      const rawEnded = np?.trackEnded === true || raw?.trackEnded === true
-      const endedTrackId =
-        typeof np?.endedTrackId === 'string' && np.endedTrackId
-          ? np.endedTrackId
-          : typeof raw?.endedTrackId === 'string' && raw.endedTrackId
-            ? raw.endedTrackId
-            : null
-      const endedMatchesCurrent = rawEnded && (!endedTrackId || endedTrackId === id || endedTrackId === this.spotifyActualId)
-      const prevPos = this.spotifyPos
+
+      if (this.spotifySawAd) {
+        const now = Date.now()
+        if (!startPending && rawPlaying && matchesRequested) {
+          // Spotify cleanly resumed our exact requested track after the ad break.
+          this.spotifySawAd = false
+          this.spotifyAdStartedAt = 0
+          this.spotifyAdRetriedAt = 0
+          this.spotifyPostAdGraceAt = 0
+          this.spotifyAdRestarts = 0
+        } else if (!startPending) {
+          if (!this.spotifyPostAdGraceAt) {
+            this.spotifyPostAdGraceAt = now
+          }
+          const graceElapsed = now - this.spotifyPostAdGraceAt
+          if (matchesRequested) {
+            // Give Spotify's post-ad transition 1.8s to unpause/buffer our track before gently resuming (never restarting from 0:00 prematurely!).
+            if (graceElapsed >= 1800) {
+              this.spotifySawAd = false
+              this.spotifyAdStartedAt = 0
+              this.spotifyPostAdGraceAt = 0
+              if (this.spotifyAdRestarts < 2) {
+                this.spotifyAdRestarts += 1
+                journal('spotify', 'resuming requested track after ad break ended')
+                void invoke<boolean>('spotify_control', { action: 'play', value: null })
+                  .then((ok) => {
+                    if (!ok && this.spotifyPlayGen === gen) {
+                      void this.startSpotifyTrack(id, this.spotifyPos)
+                    }
+                  })
+                  .catch(() => {})
+              }
+            }
+          } else if (graceElapsed >= 1200) {
+            // Wait past any brief inter-ad gap (Ad #1 -> Ad #2) before restarting if Spotify landed on a wrong track.
+            this.spotifySawAd = false
+            this.spotifyAdStartedAt = 0
+            this.spotifyPostAdGraceAt = 0
+            if (this.spotifyAdRestarts < 2) {
+              this.spotifyAdRestarts += 1
+              journal('spotify', 'restarting requested track after ad break ended')
+              void this.startSpotifyTrack(id, this.spotifyPos)
+            }
+          }
+          this.spotifyWaiting = true
+          this.spotifyPlaying = false
+          if (prevPlaying !== this.spotifyPlaying) this.emit('state')
+          if (prevWaiting !== this.spotifyWaiting) this.emit('loading')
+          return
+        }
+      }
 
       const playErr = typeof raw?.lastPlayError === 'string' && raw.lastPlayError ? raw.lastPlayError : ''
       if (!startPending && playErr && playErr !== this.spotifyLastLoggedErr) {
@@ -604,6 +741,18 @@ class Engine {
         journal('spotify', `web player playback error: ${playbackErr}`)
       } else if (!playbackErr && rawPlaying) {
         this.spotifyLastPlaybackErr = ''
+      }
+      if (!startPending && playbackErr && /MEDIA_NOT_SUPPORTED|MEDIA_ELEMENT_ERROR|DECODE|FORMAT|NO_LICENSE/i.test(playbackErr)) {
+        if (raw?.drm === false) {
+          this.failSpotify('Widevine DRM недоступен в WebView2 — воспроизведение Spotify невозможно')
+          return
+        }
+        if (!rawPlaying && !this.spotifyMediaErrRecovered) {
+          this.spotifyMediaErrRecovered = true
+          journal('spotify', 'recovering from web player media error')
+          void this.startSpotifyTrack(id, this.spotifyPos, Boolean(this.spotifyContextUri || this.spotifyAlbumId))
+          return
+        }
       }
 
       // The status can still describe the outgoing track while the web player connects.
@@ -632,17 +781,35 @@ class Engine {
         }
         return
       }
-      if (matchesRequested && rawPlaying) this.spotifyActualId = npTrackId ?? id
+      if (!startPending && matchesRequested && rawPlaying) this.spotifyActualId = npTrackId ?? id
 
       if (np) {
         const pos = Number(np.position)
         const dur = Number(np.duration)
+        // Guard against a single Harmony transition frame carrying the outgoing track's middle position onto the new 0s track.
+        if (
+          !startPending &&
+          !this.spotifyConfirmedPlaying &&
+          this.spotifyStartAt === 0 &&
+          this.spotifySwitchFromId &&
+          this.spotifySwitchFromId !== id &&
+          startAge < 2500 &&
+          Number.isFinite(pos) &&
+          pos > 5 &&
+          this.spotifySwitchFromPos > 5 &&
+          Math.abs(pos - this.spotifySwitchFromPos) <= 6
+        ) {
+          this.spotifyPos = 0
+          this.spotifyWaiting = true
+          if (prevWaiting !== this.spotifyWaiting) this.emit('loading')
+          return
+        }
         if (Number.isFinite(dur) && dur > 0) this.spotifyDur = dur
         const buf = Number(np.buffered)
         if (Number.isFinite(buf) && buf >= 0) {
           this.spotifyBuffered = this.spotifyDur > 0 ? Math.min(this.spotifyDur, buf) : buf
         }
-        if (Number.isFinite(pos) && pos >= 0) {
+        if (!startPending && Number.isFinite(pos) && pos >= 0) {
           const now = Date.now()
           const seekTarget = this.spotifySeekTarget
           const seekAge = now - this.spotifySeekAt
@@ -670,7 +837,7 @@ class Engine {
                   : 0
               const expected = this.spotifyPos + dt
               const diff = pos - expected
-              if (this.spotifyLastTickAt === 0 || diff > 1.2 || diff < -1.8) {
+              if (!this.spotifyConfirmedPlaying || this.spotifyLastTickAt === 0 || diff > 1.2 || diff < -1.8) {
                 this.spotifyPos = pos
                 this.spotifyLastTickAt = now
               } else if (diff > 0.55) {
@@ -726,11 +893,13 @@ class Engine {
         return
       }
 
-      if (rawPlaying) {
+      if (rawPlaying && !startPending) {
         this.spotifyConfirmedPlaying = true
         this.spotifyStarted = true
         this.spotifyWaiting = false
         this.spotifyPlaying = true
+        this.spotifySwitchFromId = null
+        this.spotifySwitchFromPos = 0
         this.spotifyUnexpectedPauseCount = 0
         this.spotifyAutoResumeTried = false
       } else if (!this.spotifyConfirmedPlaying) {
@@ -771,6 +940,8 @@ class Engine {
   /** Loads a stream URL (HLS through the Rust proxy, Spotify via hidden webview, anything else directly). */
   load(url: string, startAt = 0, autoplay = true, options?: StreamOptions) {
     const isSpotify = url.startsWith('spotify:track:')
+    const prevSpotifyId = isSpotify ? this.spotifyTrackId : null
+    const prevSpotifyPos = isSpotify ? this.spotifyPos : 0
     const fadeSec = !isSpotify && autoplay ? this.pendingCrossfadeSec : 0
     this.pendingCrossfadeSec = 0
     this.teardown(isSpotify, fadeSec)
@@ -780,6 +951,9 @@ class Engine {
     if (isSpotify) {
       const id = url.slice('spotify:track:'.length).trim()
       this.spotifyTrackId = id
+      this.spotifyStartAt = startAt
+      this.spotifySwitchFromId = prevSpotifyId && prevSpotifyId !== id && startAt === 0 ? prevSpotifyId : null
+      this.spotifySwitchFromPos = this.spotifySwitchFromId ? prevSpotifyPos : 0
       this.spotifyContextUri = options?.spotifyContextUri
       this.spotifyAlbumId = options?.spotifyAlbumId
       this.spotifyUid = options?.spotifyUid
@@ -799,7 +973,7 @@ class Engine {
       return
     }
     const a = this.audio
-    const load = { autoplay, ready: true }
+    const load: AudioLoad = { autoplay, ready: true, pendingSeek: null }
     this.audioLoad = load
     if (url.includes('.m3u8') && Hls.isSupported()) {
       load.ready = false
@@ -816,10 +990,18 @@ class Engine {
         maxBufferHole: 0.25,
       })
       this.hls = hls
-      this.onSource?.({ url, hls, ...options })
+      this.onSource?.({ url, hls, getDuration: () => this.duration, ...options })
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         if (this.hls !== hls || this.audioLoad !== load) return
         load.ready = true
+        if (load.pendingSeek !== undefined && load.pendingSeek !== null) {
+          const seekTo = load.pendingSeek
+          load.pendingSeek = null
+          this.audioSeekAt = Date.now()
+          this.audioSeekTarget = seekTo
+          this.audioSeekSrc = a.src
+          a.currentTime = seekTo
+        }
         this.playAudio(load)
       })
       hls.on(Hls.Events.BUFFER_EOS, () => {
@@ -856,6 +1038,7 @@ class Engine {
 
   stop() {
     this.teardown()
+    clearWaveformCapture()
     this.emit('state')
   }
 
@@ -956,6 +1139,12 @@ class Engine {
     this.audioSeekAt = Date.now()
     this.audioSeekTarget = target
     this.audioSeekSrc = this.audio.src
+    if (this.hls && this.audioLoad && !this.audioLoad.ready) {
+      this.audioLoad.pendingSeek = target
+      this.audioSeekingPending = false
+      this.emit('time')
+      return
+    }
     this.audioSeekingPending = true
     if (this.audioSeekTimer) clearTimeout(this.audioSeekTimer)
     this.audioSeekTimer = setTimeout(() => {
@@ -982,7 +1171,7 @@ class Engine {
         this.spotifyVolumeTimer = null
         this.spotifyLastVolumeSentAt = Date.now()
         void invoke('spotify_status', {
-          request: { kind: 'volume', volume: gain, muted: this.audio.muted },
+          request: { kind: 'volume', volume: volumeToGain(this.baseVolume), muted: this.isMuted },
         }).catch(() => {})
       }
       const elapsed = Date.now() - this.spotifyLastVolumeSentAt
@@ -999,6 +1188,9 @@ class Engine {
   }
 
   private effectiveAudioPosition(): number {
+    if (this.hls && this.audioLoad && !this.audioLoad.ready && this.audioLoad.pendingSeek !== undefined && this.audioLoad.pendingSeek !== null) {
+      return this.audioLoad.pendingSeek
+    }
     const raw = this.audio.currentTime || 0
     const target = this.audioSeekTarget
     if (target === null) return raw

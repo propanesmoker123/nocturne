@@ -30,6 +30,8 @@ interface Options {
 }
 
 let store: RelayStore | null = null
+let starting: Promise<void> | null = null
+let syncGen = 0
 let opts: Options = {}
 let routes = new Map<string, Route>()
 let version = 0
@@ -94,8 +96,8 @@ async function publishAlbum(id: string) {
       journal('albums', 'record too big')
       continue
     }
-    published.set(tag, text)
     await s.publish(tag, sealed)
+    if (store === s) published.set(tag, text)
     sent++
   }
   if (sent) journal('albums', `published ${sent}`)
@@ -111,8 +113,8 @@ async function publishList() {
   if (published.get(tag) === text) return
   const sealed = await sealRecord(await listKey(group), record)
   if (sealed.length > MAX_RECORD) return journal('albums', 'record too big')
-  published.set(tag, text)
   await s.publish(tag, sealed)
+  if (store === s) published.set(tag, text)
 }
 
 function schedule(ids: string[]) {
@@ -135,29 +137,42 @@ async function publishAll() {
 /** Starts the albums' sync (once): reads every copy, publishes this device's own. */
 export async function startAlbumSync(o: Options = {}): Promise<void> {
   if (store) return
+  if (starting) return starting
+  const myGen = ++syncGen
   opts = o
-  // normally loaded at start already (main.tsx), so nothing made meanwhile is lost
-  if (!useAlbums.getState().ready) await loadAlbums()
-  const keys = await loadDeviceKeys()
-  store = openRelayStore({ relays: ALBUM_RELAYS, WebSocketImpl: o.WebSocketImpl, keys, onRecord: (r) => void onRecord(r) })
-  await rebuild()
-  void publishAll()
-  republish = setInterval(() => void publishAll(), REPUBLISH_MS)
-  offs = [
-    onAlbumsChanged((ids) => {
-      schedule(ids)
-      void rebuild()
-    }),
-    useDevices.subscribe((s, prev) => {
-      if (s.code === prev.code) return
-      void rebuild()
-      clearTimeout(listTimer)
-      listTimer = setTimeout(() => void publishList(), opts.publishDelay ?? PUBLISH_DELAY_MS)
-    }),
-  ]
+  const run = (async () => {
+    // normally loaded at start already (main.tsx), so nothing made meanwhile is lost
+    if (!useAlbums.getState().ready) await loadAlbums()
+    if (myGen !== syncGen) return
+    const keys = await loadDeviceKeys()
+    if (myGen !== syncGen) return
+    store = openRelayStore({ relays: ALBUM_RELAYS, WebSocketImpl: o.WebSocketImpl, keys, onRecord: (r) => void onRecord(r) })
+    await rebuild()
+    if (myGen !== syncGen) return
+    void publishAll()
+    republish = setInterval(() => void publishAll(), REPUBLISH_MS)
+    offs = [
+      onAlbumsChanged((ids) => {
+        schedule(ids)
+        void rebuild()
+      }),
+      useDevices.subscribe((s, prev) => {
+        if (s.code === prev.code) return
+        void rebuild()
+        clearTimeout(listTimer)
+        listTimer = setTimeout(() => void publishList(), opts.publishDelay ?? PUBLISH_DELAY_MS)
+      }),
+    ]
+  })().finally(() => {
+    if (starting === run) starting = null
+  })
+  starting = run
+  return run
 }
 
 export function stopAlbumSync() {
+  syncGen++
+  starting = null
   for (const off of offs) off()
   offs = []
   for (const t of timers.values()) clearTimeout(t)
@@ -179,23 +194,32 @@ export async function readAlbum(code: string, ms = 10_000): Promise<AlbumDoc | n
   const tags = albumTags(await albumBase(code))
   let doc: AlbumDoc | null = null
   let last = Date.now()
+  const pending = new Set<Promise<void>>()
   const reader = openRelayStore({
     relays: ALBUM_RELAYS,
     WebSocketImpl: opts.WebSocketImpl,
     keys: schnorr.keygen(),
-    onRecord: (r) =>
-      void openRecord(key, r.content).then((data) => {
-        const rec = data === null ? null : parseRecord(data, serverNow())
-        if (!rec || (doc && rec.id !== doc.id)) return
-        doc = applyRecord(doc, rec)
-        last = Date.now()
-      }),
+    onRecord: (r) => {
+      const task = openRecord(key, r.content)
+        .then((data) => {
+          const rec = data === null ? null : parseRecord(data, serverNow())
+          if (!rec || (doc && rec.id !== doc.id)) return
+          doc = applyRecord(doc, rec)
+          last = Date.now()
+        })
+        .catch(() => {})
+        .finally(() => pending.delete(task))
+      pending.add(task)
+    },
   })
   reader.watch(tags)
   const end = Date.now() + ms
   // done once the name came and nothing new has come for a moment
-  while (Date.now() < end && !(doc && (doc as AlbumDoc).meta.updatedAt > 0 && Date.now() - last > 400)) await new Promise((r) => setTimeout(r, 50))
+  while (Date.now() < end && !(doc && (doc as AlbumDoc).meta.updatedAt > 0 && pending.size === 0 && Date.now() - last > 400)) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
   reader.close()
+  if (pending.size > 0) await Promise.allSettled([...pending])
   const found = doc as AlbumDoc | null
   return found && found.meta.updatedAt > 0 ? found : null
 }

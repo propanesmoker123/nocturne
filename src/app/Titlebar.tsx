@@ -19,12 +19,25 @@ export function WindowControls() {
 
   useEffect(() => {
     if (!isTauri()) return
+    let disposed = false
     let un: (() => void) | undefined
-    void win().then(async (w) => {
-      setMaximized(await w.isMaximized())
-      un = await w.onResized(async () => setMaximized(await w.isMaximized()))
-    })
-    return () => un?.()
+    void win()
+      .then(async (w) => {
+        const isMax = await w.isMaximized()
+        if (disposed) return
+        setMaximized(isMax)
+        const off = await w.onResized(async () => {
+          if (disposed) return
+          setMaximized(await w.isMaximized())
+        })
+        if (disposed) off()
+        else un = off
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      un?.()
+    }
   }, [])
   if (!isTauri()) return <div />
   return (
@@ -74,7 +87,9 @@ export function WindowControls() {
 }
 
 export function Titlebar() {
-  const { canBack, canForward, back, forward } = useRouter()
+  const canBack = useRouter((r) => r.canBack)
+  const canForward = useRouter((r) => r.canForward)
+  const { back, forward } = useRouter.getState()
   const title = useChrome((c) => c.title)
   const scrolled = useChrome((c) => c.scrolled)
   const overlay = useUi((u) => u.nowPlaying)

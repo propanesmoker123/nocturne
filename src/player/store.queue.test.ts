@@ -21,6 +21,7 @@ const h = vi.hoisted(() => {
     seeking: undefined as number | undefined,
     position: 0,
     playing: false,
+    getPlaybackPositionMs() { return this.position * 1000 },
   }
   return {
     engine, fire, loads, starts,
@@ -40,7 +41,7 @@ vi.mock('../lib/persist', () => ({ debouncedSaver: () => ({ save() {}, flush() {
 vi.mock('../vk/api', () => ({ getByIds: h.getByIds, getStreamMix: h.getStreamMix }))
 vi.mock('../spotify/api', () => ({ getSpotifyMix: h.getSpotifyMix, getTrackRadio: h.getTrackRadio }))
 
-const { usePlayer } = await import('./store')
+const { usePlayer, isEngineAttachedTo, livePlaybackPositionMs } = await import('./store')
 const player = usePlayer.getState
 const track = (id: number, patch: Partial<Track> = {}): Track => ({
   id, ownerId: 1, key: `1_${id}`, title: `Track ${id}`, artist: 'Artist', artists: [{ name: 'Artist' }],
@@ -62,6 +63,7 @@ beforeEach(() => {
   h.loads.length = 0
   h.starts.length = 0
   h.engine.seeking = undefined
+  h.engine.position = 0
   h.engine.playing = false
   h.engine.seek.mockClear()
   h.toast.mockClear()
@@ -248,5 +250,95 @@ describe('player queue changes', () => {
 
     expect(queueKeys()).toEqual(['1_2'])
     expect(h.loads).toEqual([['https://cdn/2', true]])
+  })
+
+  test('removing the last track from the queue sets queue to null and subsequent addToQueue starts playback', async () => {
+    player().playList([track(1)], 0)
+    await flush()
+    player().removeFromQueue(0)
+    await flush()
+    expect(player().queue).toBeNull()
+    expect(player().current).toBeNull()
+
+    player().addToQueue([track(2)])
+    await flush()
+    expect(player().current?.key).toBe('1_2')
+    expect(h.loads.at(-1)).toEqual(['https://cdn/2', true])
+  })
+
+  test('a retry where vk.getByIds rejects advances to the next track instead of reloading the expired url', async () => {
+    player().playList([track(1), track(2)], 0)
+    await flush()
+    expect(h.loads).toEqual([['https://cdn/1', true]])
+
+    h.getByIds.mockRejectedValueOnce(new Error('network'))
+    h.fire('error')
+    await flush()
+
+    expect(player().current?.key).toBe('1_2')
+    expect(h.loads).toEqual([['https://cdn/1', true], ['https://cdn/2', true]])
+  })
+
+  test('resets retried flag after stable playback (>2s) so a later expired-link error can retry again', async () => {
+    player().playList([track(1), track(2)], 0)
+    await flush()
+
+    // First error triggers retry #1
+    h.fire('error')
+    await flush()
+    expect(player().current?.key).toBe('1_1')
+    expect(h.getByIds).toHaveBeenCalledTimes(1)
+
+    // Track plays stably past 2s
+    h.engine.playing = true
+    h.engine.position = 5
+    h.fire('time')
+
+    // Later error (e.g. after long pause) retries again instead of skipping immediately
+    h.fire('error')
+    await flush()
+    expect(player().current?.key).toBe('1_1')
+    expect(h.getByIds).toHaveBeenCalledTimes(2)
+  })
+
+  test('seekBy advances position even when duration is 0', async () => {
+    player().playList([track(1, { duration: 0 })], 0)
+    await flush()
+    h.engine.position = 5
+    player().seekBy(10)
+    expect(player().position).toBe(15)
+  })
+
+  test('playList wraps around to earlier playable tracks when clicked trailing track is unplayable under repeat off', async () => {
+    player().playList([track(1), track(2, { playable: false })], 1)
+    await flush()
+    expect(player().current?.key).toBe('1_1')
+    expect(player().repeat).toBe('off')
+    expect(h.loads).toEqual([['https://cdn/1', true]])
+  })
+
+  test('livePlaybackPositionMs returns 0 for a newly selected track until engine attaches, never leaking previous track position', async () => {
+    const staleTrack2 = track(2, { url: '', urlFetchedAt: 0 })
+    const pending = pendingTracks()
+    h.getByIds.mockReturnValueOnce(pending.promise)
+
+    player().playList([track(1), staleTrack2], 0)
+    await flush()
+    h.engine.position = 92
+    expect(isEngineAttachedTo('1_1')).toBe(true)
+    expect(livePlaybackPositionMs('1_1')).toBe(92_000)
+
+    // Switch to Track 2 while its fresh URL lookup is still pending (engine still holds Track 1 at 92s)
+    player().next(true)
+    expect(player().current?.key).toBe('1_2')
+    expect(isEngineAttachedTo('1_2')).toBe(false)
+    expect(livePlaybackPositionMs('1_2')).toBe(0)
+
+    // Once URL resolves and engine attaches to Track 2, livePlaybackPositionMs follows engine cleanly
+    h.engine.position = 0.4
+    pending.resolve([track(2)])
+    await flush()
+    expect(isEngineAttachedTo('1_2')).toBe(true)
+    expect(livePlaybackPositionMs('1_2')).toBe(400)
   })
 })

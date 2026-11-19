@@ -44,6 +44,7 @@ export function openRelayStore(o: { relays: string[]; WebSocketImpl?: typeof Web
   const WebSocketImpl = o.WebSocketImpl ?? globalThis.WebSocket
   const prefix = `s${randomHex(4)}`
   const sockets = new Set<WebSocket>()
+  const timers = new Set<ReturnType<typeof setTimeout>>()
   const seen = new Set<string>()
   const pending = new Map<string, string>()
   let tags: string[] = []
@@ -55,8 +56,25 @@ export function openRelayStore(o: { relays: string[]; WebSocketImpl?: typeof Web
     if (seen.size > SEEN_LIMIT) seen.delete(seen.values().next().value!)
   }
 
+  const schedule = (fn: () => void, ms: number) => {
+    if (closed) return
+    const id = setTimeout(() => {
+      timers.delete(id)
+      if (!closed) fn()
+    }, ms)
+    timers.add(id)
+  }
+
+  const safeSend = (ws: WebSocket, frame: string) => {
+    try {
+      if (ws.readyState === OPEN) ws.send(frame)
+    } catch {
+      /* ignore broken socket */
+    }
+  }
+
   const subscribe = (ws: WebSocket) => {
-    for (let i = 0; i < tags.length; i += CHUNK) ws.send(JSON.stringify(['REQ', `${prefix}-${i / CHUNK}`, { kinds: [STORED_KIND], '#d': tags.slice(i, i + CHUNK) }]))
+    for (let i = 0; i < tags.length; i += CHUNK) safeSend(ws, JSON.stringify(['REQ', `${prefix}-${i / CHUNK}`, { kinds: [STORED_KIND], '#d': tags.slice(i, i + CHUNK) }]))
   }
 
   const connect = (url: string, attempt = 0) => {
@@ -65,23 +83,29 @@ export function openRelayStore(o: { relays: string[]; WebSocketImpl?: typeof Web
     try {
       ws = new WebSocketImpl(url)
     } catch {
-      return void setTimeout(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
+      return void schedule(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
     }
+    sockets.add(ws)
     ws.addEventListener('open', () => {
+      if (closed) {
+        try { ws.close() } catch {}
+        sockets.delete(ws)
+        return
+      }
       attempt = 0
-      sockets.add(ws)
       subscribe(ws)
-      for (const frame of pending.values()) ws.send(frame)
+      for (const frame of pending.values()) safeSend(ws, frame)
     })
     ws.addEventListener('message', (e) => onFrame(String((e as MessageEvent).data)))
     ws.addEventListener('close', () => {
       sockets.delete(ws)
-      if (!closed) setTimeout(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
+      if (!closed) schedule(() => connect(url, attempt + 1), Math.min(30_000, 2000 * 2 ** attempt))
     })
     ws.addEventListener('error', () => {})
   }
 
   const onFrame = (raw: string) => {
+    if (closed) return
     let frame: unknown
     try {
       frame = JSON.parse(raw)
@@ -105,6 +129,7 @@ export function openRelayStore(o: { relays: string[]; WebSocketImpl?: typeof Web
 
   return {
     watch(next) {
+      if (closed) return
       const want = [...new Set(next)]
       // the same tags again (an edit that changed no album's code): the relays are not asked again
       const have = new Set(tags)
@@ -114,21 +139,27 @@ export function openRelayStore(o: { relays: string[]; WebSocketImpl?: typeof Web
       chunks = Math.ceil(tags.length / CHUNK)
       for (const ws of sockets) {
         if (ws.readyState !== OPEN) continue
-        for (let i = 0; i < before; i++) ws.send(JSON.stringify(['CLOSE', `${prefix}-${i}`]))
+        for (let i = 0; i < before; i++) safeSend(ws, JSON.stringify(['CLOSE', `${prefix}-${i}`]))
         subscribe(ws)
       }
     },
     publish: async (d, content) => {
+      if (closed) return
       const event = await signedEvent(o.keys, STORED_KIND, '', content, Math.floor(serverNow() / 1000), [['d', d]])
+      if (closed) return
       const frame = JSON.stringify(['EVENT', event])
       pending.set(event.id, frame)
       if (pending.size > MAX_PENDING) pending.delete(pending.keys().next().value!)
-      for (const ws of sockets) if (ws.readyState === OPEN) ws.send(frame)
+      for (const ws of sockets) safeSend(ws, frame)
     },
     up: () => [...sockets].some((ws) => ws.readyState === OPEN),
     close: () => {
       closed = true
-      for (const ws of sockets) ws.close()
+      for (const t of timers) clearTimeout(t)
+      timers.clear()
+      for (const ws of sockets) {
+        try { ws.close() } catch {}
+      }
       sockets.clear()
     },
   }

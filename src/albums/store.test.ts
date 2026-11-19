@@ -217,4 +217,26 @@ describe('albums kept safe', () => {
     expect(entry(id).code).toBe('ZZZZ-ZZZZ-ZZZZ-ZZZZ')
     expect(liveEntries(s().docs[id]).map((e) => e.track!.title).sort()).toEqual(['T1', 'T2'])
   })
+
+  test('ignores malformed persisted entries and docs without crashing loadAlbums', async () => {
+    const valid = newAlbum('Валидный', 10, 'bbbbbbbbbbbbbbbb')
+    h.loaded = {
+      docs: {
+        [valid.id]: valid,
+        broken_null: null,
+        broken_shape: { id: 'broken_shape', meta: null, entries: 'nope' },
+      },
+      list: [
+        { id: valid.id, code: 'AAAA-BBBB-CCCC-DDDD', codeAt: 10, name: 'Валидный', shared: false, updatedAt: 10, by: 'bbbbbbbbbbbbbbbb' },
+        null,
+        { id: 123, code: null },
+        { id: 'missing_updatedAt', code: 'EEEE-FFFF-GGGG-HHHH', name: 'Bad', shared: false, by: 'a' },
+      ],
+    }
+    useAlbums.setState({ ready: false, docs: {}, list: [] })
+    await loadAlbums()
+    expect(s().ready).toBe(true)
+    expect(s().list.map((e) => e.id)).toEqual([valid.id])
+    expect(Object.keys(s().docs)).toEqual([valid.id])
+  })
 })

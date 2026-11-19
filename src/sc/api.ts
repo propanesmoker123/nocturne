@@ -93,11 +93,13 @@ export async function getSelections(): Promise<ScSelection[]> {
 
 /** Full tracks for these ids, 50 per request, in the order asked; unknown ones are left out. */
 export async function getTracks(ids: number[]): Promise<Track[]> {
+  const uniqueIds = [...new Set(ids.filter((id) => Number.isSafeInteger(id) && id > 0))]
+  if (!uniqueIds.length) return []
   const byId = new Map<number, Track>()
-  for (let i = 0; i < ids.length; i += 50) {
-    const chunk = ids.slice(i, i + 50)
+  for (let i = 0; i < uniqueIds.length; i += 50) {
+    const chunk = uniqueIds.slice(i, i + 50)
     const raw = await get<RawScTrack[]>(`/tracks?ids=${chunk.join(',')}`)
-    for (const r of fullOnes(raw ?? [])) byId.set(r.id, track(r))
+    for (const r of fullOnes(Array.isArray(raw) ? raw : [])) byId.set(r.id, track(r))
   }
   return ids.map((id) => byId.get(id)).filter((t): t is Track => !!t)
 }
@@ -122,8 +124,14 @@ export async function getStream(cursor?: string): Promise<{ tracks: Track[]; pla
 export async function getLikes(userId: number, cursor?: string): Promise<ScPage<Track>> {
   const version = likesVersion
   const raw = await get<RawScCollection<RawScLike>>(cursor ?? `/users/${userId}/track_likes?limit=200`)
-  const items = fullOnes((raw.collection ?? []).map((l) => l.track)).map((r) => normalizeScTrack(r, true))
-  if (userId === meId && version === likesVersion) for (const t of items) likedIds.add(t.id)
+  const isMe = meId !== 0 && userId === meId
+  const items = fullOnes((raw.collection ?? []).map((l) => l.track)).map((r) =>
+    normalizeScTrack(r, isMe ? true : likedIds.has(r.id)),
+  )
+  if (isMe && version === likesVersion) {
+    if (cursor === undefined) likedIds.clear()
+    for (const t of items) likedIds.add(t.id)
+  }
   return { items, next: nextPath(raw.next_href) }
 }
 
@@ -150,12 +158,15 @@ export async function getPlaylistLikes(): Promise<ScPlaylistLikes> {
   const account = meId
   const version = accountVersion
   if (!account) return { ids: [], urns: [] }
+  const maxPages = 25
   const all = async <T>(path: string): Promise<T[]> => {
     const out = new Set<T>()
     const seen = new Set<string>()
     let next: string | undefined = path
-    while (next && !seen.has(next)) {
+    let pages = 0
+    while (next && !seen.has(next) && pages < maxPages) {
       seen.add(next)
+      pages++
       const page: RawScCollection<T> = await get(next)
       if (meId !== account || version !== accountVersion) throw new ScApiError('signedOut', '')
       for (const value of page.collection ?? []) out.add(value)
@@ -189,12 +200,13 @@ const playlistKey = (p: Playlist) => `${p.id}_${p.urn ?? ''}`
 
 /** The person's own playlists and albums, then the ones they liked, each once. */
 export async function getMyPlaylists(): Promise<Playlist[]> {
+  if (!meId) return []
   const [own, albums, library] = await Promise.allSettled([
     get<RawScCollection<RawScPlaylist>>(`/users/${meId}/playlists_without_albums?limit=200`),
     get<RawScCollection<RawScPlaylist>>(`/users/${meId}/albums?limit=200`),
     get<RawScCollection<RawScLibraryItem>>('/me/library/all?limit=200'),
   ])
-  if (own.status === 'rejected' && library.status === 'rejected') throw own.reason
+  if (own.status === 'rejected' && albums.status === 'rejected' && library.status === 'rejected') throw own.reason
   const out: Playlist[] = []
   const seen = new Set<string>()
   const add = (p: Playlist) => {
@@ -317,6 +329,8 @@ export async function follow(u: Pick<ScUser, 'id' | 'permalink'>): Promise<void>
 
 /** Stops following someone (the site's session, like a like). */
 export async function unfollow(id: number): Promise<void> {
+  if (!meId) throw new ScApiError('signedOut', '')
+  if (!Number.isSafeInteger(id) || id <= 0 || id === meId) throw new ScApiError('invalid', 'bad unfollow target')
   await call('DELETE', `/me/followings/${id}`)
 }
 
@@ -328,15 +342,18 @@ export async function getComments(trackId: number): Promise<{ trackId: number; c
 
 export async function search(q: string): Promise<{ tracks: Track[]; users: ScUser[]; playlists: Playlist[] }> {
   const term = encodeURIComponent(q)
-  const [tracks, users, playlists] = await Promise.all([
+  const [tracks, users, playlists] = await Promise.allSettled([
     get<RawScCollection<RawScTrack>>(`/search/tracks?q=${term}&limit=50`),
     get<RawScCollection<RawScUser>>(`/search/users?q=${term}&limit=12`),
     get<RawScCollection<RawScPlaylist>>(`/search/playlists?q=${term}&limit=12`),
   ])
+  if (tracks.status === 'rejected' && users.status === 'rejected' && playlists.status === 'rejected') {
+    throw tracks.reason
+  }
   return {
-    tracks: fullOnes(tracks.collection ?? []).map(track),
-    users: (users.collection ?? []).map(normalizeScUser),
-    playlists: (playlists.collection ?? []).map(normalizeScPlaylist),
+    tracks: tracks.status === 'fulfilled' ? fullOnes(tracks.value?.collection ?? []).map(track) : [],
+    users: users.status === 'fulfilled' ? (users.value?.collection ?? []).map(normalizeScUser) : [],
+    playlists: playlists.status === 'fulfilled' ? (playlists.value?.collection ?? []).map(normalizeScPlaylist) : [],
   }
 }
 

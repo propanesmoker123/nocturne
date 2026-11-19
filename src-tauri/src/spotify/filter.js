@@ -25,14 +25,82 @@
     disallowNext: false,
     trackEnded: false,
     endedTrackId: '',
+    preloaded: 0,
+    preloadHits: 0,
   };
   let lastHarmonyTrackUri = '';
   let lastHarmonyPosMs = 0;
   let lastHarmonyDurMs = 0;
   let lastHarmonyWasPlaying = false;
   let bleedTrackId = '';
+  let bleedPauseSent = false;
+  let seamlessAdoptedTrackId = '';
   let unwantedBleedMuted = false;
   let unwantedBleedTimer = 0;
+  let switchMuteUntilTarget = false;
+  let switchMuteTimer = 0;
+  let startAutoResumeUsed = false;
+  let sawDesiredActive = false;
+  let desiredActivePosMs = 0;
+  let desiredActiveDurMs = 0;
+  let desiredActivePlayingSince = 0;
+  const ignoredEndedMedia = typeof WeakSet === 'function' ? new WeakSet() : null;
+  let hardPaused = false;
+  let lastHardPauseEnforceAt = 0;
+  let lastTrackStartAt = 0;
+  let lastTrackStartSec = 0;
+  let switchFromTrackId = '';
+  let switchFromPosSec = 0;
+  let lastAdSeekTrackUri = '';
+  let wasHarmonyAd = false;
+  let adMutedActive = false;
+  const PRELOAD_AUDIO_RANGE_END = 512 * 1024 - 1;
+  const PRELOAD_MAX_BYTES = 576 * 1024;
+  const PRELOAD_TTL_MS = 90_000;
+  const B62_CHARS = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let preloadedNextTrackId = '';
+  let preloadGen = 0;
+  let preloadState = null;
+  let observedSpclientOrigin = 'https://spclient.wg.spotify.com';
+  let observedResolveTemplate = '';
+  let observedAudioFormat = '';
+  const observedFileFormats = new Map();
+  function ad(value) {
+    return typeof value === 'string' && (value.startsWith('spotify:ad:') || value.includes(':ad:'));
+  }
+  function song(value) {
+    return typeof value === 'string' && /^spotify:(?:track|episode):/.test(value);
+  }
+  function isAdTrack(track) {
+    if (!track || typeof track !== 'object') return false;
+    const u = track.uri || track.metadata?.uri || '';
+    if (ad(u)) return true;
+    return track.type === 'ad' || track.content_type === 'AD' || track.metadata?.is_advertisement === true;
+  }
+  function callHarmonyPause() {
+    try {
+      const target = typeof spotifyPlayerApi?.pause === 'function' ? spotifyPlayerApi : (harmonyPlayer || harmonyController);
+      if (typeof target?.pause === 'function') void Promise.resolve(target.pause()).catch(() => {});
+    } catch {}
+  }
+  function callHarmonyResume() {
+    try {
+      const target = typeof spotifyPlayerApi?.resume === 'function' ? spotifyPlayerApi : (harmonyPlayer || harmonyController);
+      if (typeof target?.resume === 'function') void Promise.resolve(target.resume()).catch(() => {});
+    } catch {}
+  }
+  function enforceHardPause(includeApi = true) {
+    for (const el of elements()) {
+      if (!getNativeMuted(el)) setNativeMuted(el, true);
+      if (getNativeVol(el) !== 0) setNativeVol(el, 0);
+      try { if (!el.paused && typeof el.pause === 'function') el.pause(); } catch {}
+    }
+    if (!includeApi) return;
+    const now = Date.now();
+    if (now - lastHardPauseEnforceAt < 450) return;
+    lastHardPauseEnforceAt = now;
+    callHarmonyPause();
+  }
   const diagnostics = [];
   let lastDiag = '';
   function pushDiag(msg) {
@@ -85,9 +153,31 @@
     similarAlbumsBasedOnThisTrack: '1d1f93a737498adca2c892c73af87fc0b052afe4e1a33c989540c32413dfae17',
   };
   const pfCache = Object.create(null);
+  const pfCacheOrder = [];
   const pfTtl = new Map();
   const pfInFlight = new Map();
+  const MAX_PF_CACHE = 192;
   const CACHEABLE_PF = new Set(['profileAttributes', 'libraryV3', 'home', 'fetchLibraryTracks', 'browseAll', 'browsePage', 'browseSection', 'recents', 'editablePlaylists', 'getTrack']);
+  function setPfTtl(k, entry) {
+    if (!k) return;
+    if (pfTtl.has(k)) pfTtl.delete(k);
+    else if (pfTtl.size >= MAX_PF_CACHE) {
+      const oldest = pfTtl.keys().next().value;
+      if (oldest !== undefined) pfTtl.delete(oldest);
+    }
+    pfTtl.set(k, entry);
+  }
+  function setPfCache(k, val) {
+    if (!k) return;
+    if (!(k in pfCache)) {
+      pfCacheOrder.push(k);
+      while (pfCacheOrder.length > MAX_PF_CACHE) {
+        const oldKey = pfCacheOrder.shift();
+        if (oldKey) delete pfCache[oldKey];
+      }
+    }
+    pfCache[k] = val;
+  }
   let rateLimitedUntil = 0;
   let lastAdSkipAt = 0;
   let pfActiveCount = 0;
@@ -110,16 +200,20 @@
   function pfCacheKey(op, vars) {
     if (op === 'libraryV3') {
       const f = Array.isArray(vars?.filters) && vars.filters.length ? vars.filters.join(',') : 'all';
-      return `libraryV3:${f}`;
+      const off = Number(vars?.offset) || 0;
+      const lim = Number(vars?.limit) || 50;
+      return `libraryV3:${f}:${off}:${lim}`;
     }
     if (op === 'fetchLibraryTracks') {
-      return `fetchLibraryTracks:${Number(vars?.offset) || 0}`;
+      const off = Number(vars?.offset) || 0;
+      const lim = Number(vars?.limit) || 50;
+      return `fetchLibraryTracks:${off}:${lim}`;
     }
     if (op === 'browsePage') {
-      return `browsePage:${vars?.uri || ''}:${Number(vars?.pagePagination?.offset) || 0}`;
+      return `browsePage:${vars?.uri || ''}:${Number(vars?.pagePagination?.offset) || 0}:${Number(vars?.pagePagination?.limit) || 0}`;
     }
     if (op === 'browseSection') {
-      return `browseSection:${vars?.uri || ''}:${Number(vars?.pagination?.offset) || 0}`;
+      return `browseSection:${vars?.uri || ''}:${Number(vars?.pagination?.offset) || 0}:${Number(vars?.pagination?.limit) || 0}`;
     }
     if (op === 'getTrack') {
       return `getTrack:${vars?.uri || ''}`;
@@ -178,20 +272,82 @@
         const sameTrack = !curUri || !lastHarmonyTrackUri || curUri === lastHarmonyTrackUri;
         const advancing = !isPaused && !st.loading;
         const matchesDesired = Boolean(desiredTrackId && (curId === desiredTrackId || linkedId === desiredTrackId));
+        const now = Date.now();
+        if (desiredActivePlayingSince > 0) {
+          const elapsed = Math.max(0, now - desiredActivePlayingSince);
+          desiredActivePosMs = desiredActiveDurMs > 0
+            ? Math.min(desiredActiveDurMs, desiredActivePosMs + elapsed)
+            : desiredActivePosMs + elapsed;
+        }
+        const priorDesiredPosMs = desiredActivePosMs;
+        if (matchesDesired) {
+          sawDesiredActive = true;
+          if (Number.isFinite(curDurMs) && curDurMs > 0) desiredActiveDurMs = curDurMs;
+          if (Number.isFinite(curPosMs) && curPosMs >= 0) desiredActivePosMs = curPosMs;
+          desiredActivePlayingSince = advancing ? now : 0;
+        } else {
+          desiredActivePlayingSince = 0;
+        }
         const lastId = extractTrackId(lastHarmonyTrackUri);
+        const prevList = Array.isArray(st.track_window?.previous_tracks) ? st.track_window.previous_tracks : [];
+        const lastPrev = prevList.length ? prevList[prevList.length - 1] : null;
         const prevMatched = Boolean(
+          sawDesiredActive &&
           desiredTrackId &&
-          Array.isArray(st.track_window?.previous_tracks) &&
-          st.track_window.previous_tracks.some(t => extractTrackId(t?.uri) === desiredTrackId || extractTrackId(t?.linked_from?.uri) === desiredTrackId)
+          lastPrev &&
+          (extractTrackId(lastPrev?.uri) === desiredTrackId || extractTrackId(lastPrev?.linked_from?.uri) === desiredTrackId)
         );
-        if (lastSeekTargetSec !== null && Date.now() - lastSeekAt >= 2000) {
+        if (lastSeekTargetSec !== null && now - lastSeekAt >= 2000) {
           lastSeekTargetSec = null;
           lastSeekFromSec = null;
         }
+        const desiredNearEnd =
+          sawDesiredActive &&
+          (desiredActiveDurMs <= 15000 ||
+            priorDesiredPosMs >= desiredActiveDurMs - Math.min(20000, desiredActiveDurMs * 0.5));
         const nearPriorEnd =
+          sawDesiredActive &&
           lastId === desiredTrackId &&
-          lastHarmonyDurMs > 0 &&
-          lastHarmonyPosMs >= lastHarmonyDurMs - Math.min(10000, lastHarmonyDurMs / 2);
+          desiredActiveDurMs > 0 &&
+          priorDesiredPosMs >= desiredActiveDurMs - Math.min(10000, desiredActiveDurMs / 2);
+        const curIsAd = isAdTrack(curTrack) || ad(curUri);
+        if (hardPaused) {
+          wasHarmonyAd = curIsAd;
+          enforceHardPause(advancing);
+          if (curUri) lastHarmonyTrackUri = curUri;
+          if (Number.isFinite(curDurMs) && curDurMs > 0) lastHarmonyDurMs = curDurMs;
+          if (Number.isFinite(curPosMs) && curPosMs >= 0) lastHarmonyPosMs = curPosMs;
+          lastHarmonyWasPlaying = false;
+          lastHarmonyClock = null;
+          return;
+        }
+        if (
+          curIsAd &&
+          !counters.startPending &&
+          desiredTrackId &&
+          ((prevMatched && desiredNearEnd) || nearPriorEnd)
+        ) {
+          // Track finished and Spotify Free entered a post-roll ad break: signal ended immediately so Nocturne advances cleanly.
+          wasHarmonyAd = true;
+          bleedTrackId = desiredTrackId;
+          counters.trackEnded = true;
+          counters.endedTrackId = desiredTrackId;
+          desiredTrackId = '';
+          setUnwantedBleedMute(true);
+          if (curUri) lastHarmonyTrackUri = curUri;
+          if (Number.isFinite(curDurMs) && curDurMs > 0) lastHarmonyDurMs = curDurMs;
+          if (Number.isFinite(curPosMs) && curPosMs >= 0) lastHarmonyPosMs = curPosMs;
+          lastHarmonyWasPlaying = false;
+          lastHarmonyClock = null;
+          return;
+        }
+        if (curIsAd || wasHarmonyAd || adMutedActive) {
+          wasHarmonyAd = curIsAd;
+          for (const el of elements()) applyMediaSettings(el);
+        }
+        if (switchMuteUntilTarget && matchesDesired) {
+          setSwitchMute(false);
+        }
         if (
           !isAdPlaying() &&
           !counters.startPending &&
@@ -201,8 +357,12 @@
           counters.trackEnded = true;
           counters.endedTrackId = bleedTrackId;
           setUnwantedBleedMute(true);
-          if (advancing) {
-            try { void (spotifyPlayerApi?.pause?.() ?? (harmonyPlayer || harmonyController)?.pause?.()); } catch {}
+          for (const el of elements()) {
+            try { if (!el.paused && typeof el.pause === 'function') el.pause(); } catch {}
+          }
+          if (advancing && !bleedPauseSent) {
+            bleedPauseSent = true;
+            callHarmonyPause();
           }
           if (curUri) lastHarmonyTrackUri = curUri;
           if (Number.isFinite(curDurMs) && curDurMs > 0) lastHarmonyDurMs = curDurMs;
@@ -217,20 +377,60 @@
           desiredTrackId &&
           curId &&
           !matchesDesired &&
-          (prevMatched || nearPriorEnd)
+          ((prevMatched && desiredNearEnd) || nearPriorEnd)
         ) {
+          if (preloadedNextTrackId && (curId === preloadedNextTrackId || linkedId === preloadedNextTrackId)) {
+            // Harmony already advanced gaplessly into Nocturne's exact next track: keep it playing without muting or pausing!
+            seamlessAdoptedTrackId = curId;
+            counters.trackEnded = true;
+            counters.endedTrackId = desiredTrackId;
+            desiredTrackId = '';
+            if (curUri) lastHarmonyTrackUri = curUri;
+            if (Number.isFinite(curDurMs) && curDurMs > 0) lastHarmonyDurMs = curDurMs;
+            if (Number.isFinite(curPosMs) && curPosMs >= 0) lastHarmonyPosMs = curPosMs;
+            lastHarmonyWasPlaying = advancing;
+            lastHarmonyClock = !isPaused && !st.loading && Number(st.timestamp) > 0 ? { ts: Number(st.timestamp), localAt: Date.now() } : null;
+            return;
+          }
           bleedTrackId = desiredTrackId;
           counters.trackEnded = true;
           counters.endedTrackId = desiredTrackId;
           desiredTrackId = '';
           setUnwantedBleedMute(true);
-          try { void (spotifyPlayerApi?.pause?.() ?? (harmonyPlayer || harmonyController)?.pause?.()); } catch {}
+          for (const el of elements()) {
+            try { if (!el.paused && typeof el.pause === 'function') el.pause(); } catch {}
+          }
+          if (!bleedPauseSent) {
+            bleedPauseSent = true;
+            callHarmonyPause();
+          }
           if (curUri) lastHarmonyTrackUri = curUri;
           if (Number.isFinite(curDurMs) && curDurMs > 0) lastHarmonyDurMs = curDurMs;
           if (Number.isFinite(curPosMs) && curPosMs >= 0) lastHarmonyPosMs = curPosMs;
           lastHarmonyWasPlaying = false;
           lastHarmonyClock = null;
           return;
+        }
+        if (
+          !isAdPlaying() &&
+          !counters.startPending &&
+          !bleedTrackId &&
+          sawDesiredActive &&
+          lastHarmonyWasPlaying &&
+          matchesDesired &&
+          isPaused &&
+          !st.loading &&
+          !startAutoResumeUsed &&
+          lastTrackStartAt > 0 &&
+          Date.now() - lastTrackStartAt < 2500 &&
+          Number.isFinite(curPosMs) &&
+          curPosMs > 50 &&
+          curPosMs < 3500
+        ) {
+          // Recover in 0ms if an earlier track-end pause RPC raced into a freshly playing track.
+          startAutoResumeUsed = true;
+          pushDiag('auto-resumed start micro-pause');
+          callHarmonyResume();
         }
         if (advancing) {
           if (!bleedTrackId && !unwantedBleedMuted) {
@@ -246,7 +446,7 @@
           curDurMs > 0 &&
           Number.isFinite(curPosMs) &&
           (curPosMs >= curDurMs || (lastHarmonyWasPlaying && lastSeekTargetSec === null &&
-            lastHarmonyPosMs >= curDurMs - Math.min(3000, curDurMs / 2) && curPosMs <= 1500))
+            Math.max(lastHarmonyPosMs, priorDesiredPosMs) >= curDurMs - Math.min(3000, curDurMs / 2) && curPosMs <= 1500))
         ) {
           counters.trackEnded = true;
           counters.endedTrackId = curId || linkedId || desiredTrackId || '';
@@ -268,35 +468,46 @@
       configurable: true,
       get() { return undefined; },
       set(val) {
-        Object.defineProperty(this, '_harmony', { value: val, writable: true, enumerable: true, configurable: true });
-        if (val && typeof val.playTracks === 'function') {
-          harmonyPlayer = val;
-          hookHarmony(val);
-          if (val._controller && !harmonyController) harmonyController = val._controller;
-          if (val._controller && typeof val._controller.addListener === 'function') hookHarmony(val._controller);
-        }
-        if (val && typeof this.play === 'function' && typeof this.skipToNext === 'function') spotifyPlayerApi = this;
+        try {
+          Object.defineProperty(this, '_harmony', { value: val, writable: true, enumerable: true, configurable: true });
+          if (val && typeof val.playTracks === 'function') {
+            harmonyPlayer = val;
+            hookHarmony(val);
+            if (val._controller && !val._controller._hidden && !val._controller._disableProgress && !val._controller._observerMode) {
+              harmonyController = val._controller;
+            }
+            if (val._controller && typeof val._controller.addListener === 'function') hookHarmony(val._controller);
+          }
+          if (val && typeof this.play === 'function' && typeof this.skipToNext === 'function') spotifyPlayerApi = this;
+        } catch {}
       },
     });
     Object.defineProperty(Object.prototype, '_playerClient', {
       configurable: true,
       get() { return undefined; },
       set(val) {
-        Object.defineProperty(this, '_playerClient', { value: val, writable: true, enumerable: true, configurable: true });
-        if (val && typeof this.playTracks === 'function' && !this._hidden && !this._disableProgress && !this._observerMode) harmonyController = this;
+        try {
+          Object.defineProperty(this, '_playerClient', { value: val, writable: true, enumerable: true, configurable: true });
+          if (val && typeof this.playTracks === 'function' && !this._hidden && !this._disableProgress && !this._observerMode) harmonyController = this;
+        } catch {}
       },
     });
     Object.defineProperty(Object.prototype, '_controller', {
       configurable: true,
       get() { return undefined; },
       set(val) {
-        Object.defineProperty(this, '_controller', { value: val, writable: true, enumerable: true, configurable: true });
-        if (val && typeof val.playURI === 'function' && !harmonyController) harmonyController = val;
-        if (val && typeof val.addListener === 'function' && typeof this.playTracks === 'function' && !this._hidden && !this._disableProgress && !this._observerMode) hookHarmony(val);
-        if (val && typeof this.playTracks === 'function' && !this._hidden && !this._disableProgress && !this._observerMode && !harmonyPlayer) {
-          harmonyPlayer = this;
-          hookHarmony(this);
-        }
+        try {
+          Object.defineProperty(this, '_controller', { value: val, writable: true, enumerable: true, configurable: true });
+          const activeHost = !this._hidden && !this._disableProgress && !this._observerMode;
+          if (val && typeof val.playURI === 'function' && activeHost && !val._hidden && !val._disableProgress && !val._observerMode) {
+            harmonyController = val;
+          }
+          if (val && typeof val.addListener === 'function' && typeof this.playTracks === 'function' && activeHost) hookHarmony(val);
+          if (val && typeof this.playTracks === 'function' && activeHost) {
+            harmonyPlayer = this;
+            hookHarmony(this);
+          }
+        } catch {}
       },
     });
   } catch {}
@@ -311,14 +522,24 @@
   let lastSeekFromSec = null;
   let lastSeekAt = 0;
 
-  if (typeof document !== 'undefined' && document.head) {
+  let styleInjected = false;
+  function injectPerfStyle() {
+    if (styleInjected || typeof document === 'undefined') return false;
+    const target = document.head || document.documentElement;
+    if (!target || typeof target.appendChild !== 'function') return false;
     try {
       const style = document.createElement?.('style');
       if (style) {
         style.textContent = '*,*::before,*::after{animation:none!important;transition:none!important}@media (max-width:80px){body>*{content-visibility:hidden!important;contain:strict!important}}';
-        document.head.appendChild?.(style);
+        target.appendChild(style);
+        styleInjected = true;
+        return true;
       }
     } catch {}
+    return false;
+  }
+  if (!injectPerfStyle() && typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('DOMContentLoaded', () => { injectPerfStyle(); }, { once: true });
   }
 
   const media = [];
@@ -355,6 +576,7 @@
     if (!el || el.tagName !== 'VIDEO') return false;
     if (el.mediaKeys) return false;
     if (el.loop === true) return true;
+    if (hardPaused || isAdPlaying()) return false;
     return Boolean(el.isConnected && Number.isFinite(el.duration) && el.duration > 0 && el.duration <= 12 && !el.webkitAudioDecodedByteCount);
   }
   function setUnwantedBleedMute(on) {
@@ -366,6 +588,20 @@
         unwantedBleedTimer = 0;
         if (!unwantedBleedMuted) return;
         unwantedBleedMuted = false;
+        for (const el of elements()) applyMediaSettings(el);
+      }, 1500);
+    }
+    for (const el of elements()) applyMediaSettings(el);
+  }
+  function setSwitchMute(on) {
+    clearTimeout(switchMuteTimer);
+    switchMuteTimer = 0;
+    switchMuteUntilTarget = Boolean(on);
+    if (switchMuteUntilTarget) {
+      switchMuteTimer = setTimeout(() => {
+        switchMuteTimer = 0;
+        if (!switchMuteUntilTarget) return;
+        switchMuteUntilTarget = false;
         for (const el of elements()) applyMediaSettings(el);
       }, 1500);
     }
@@ -407,8 +643,8 @@
               setNativeVol(this, v);
               return;
             }
-            const ad = counters.enabled && isAdPlaying();
-            const target = ad || unwantedBleedMuted || desiredMuted ? 0 : Math.min(1, Math.max(0, desiredVolume));
+            const adNow = counters.enabled && isAdPlaying();
+            const target = hardPaused || adNow || unwantedBleedMuted || switchMuteUntilTarget || desiredMuted ? 0 : Math.min(1, Math.max(0, desiredVolume));
             setNativeVol(this, target);
           },
         });
@@ -425,8 +661,8 @@
               setNativeMuted(this, Boolean(m));
               return;
             }
-            const ad = counters.enabled && isAdPlaying();
-            setNativeMuted(this, ad || unwantedBleedMuted ? true : Boolean(desiredMuted));
+            const adNow = counters.enabled && isAdPlaying();
+            setNativeMuted(this, hardPaused || adNow || unwantedBleedMuted || switchMuteUntilTarget ? true : Boolean(desiredMuted));
           },
         });
       } catch {}
@@ -435,6 +671,12 @@
     if (typeof play === 'function') {
       mediaPrototype.play = function(...args) {
         trackMediaElement(this);
+        if (hardPaused && !isCanvasVideo(this)) {
+          setNativeMuted(this, true);
+          setNativeVol(this, 0);
+          enforceHardPause(true);
+          return Promise.resolve();
+        }
         return play.apply(this, args);
       };
     }
@@ -469,6 +711,11 @@
       ?? null;
   }
   function isAdPlaying() {
+    const hTrack = harmonyState()?.track_window?.current_track;
+    const hUri = hTrack?.uri;
+    if (isAdTrack(hTrack)) return true;
+    // Harmony _state is authoritative: once it reports a real song, lagging DOM "Реклама" labels must never mute or skip it.
+    if (typeof hUri === 'string' && song(hUri)) return false;
     if (typeof document === 'undefined' || !document.querySelector) return false;
     const adSlot = document.querySelector('[data-testid="now-playing-widget"] [data-testid="context-item-info-ad-subtitle"], [data-testid="ad-slot-container"]');
     if (adSlot) {
@@ -485,7 +732,7 @@
     return false;
   }
   function skipActiveAd() {
-    if (counters.startPending) return;
+    if (hardPaused || counters.startPending) return;
     const now = Date.now();
     if (now - lastAdSkipAt < 1500) return;
     lastAdSkipAt = now;
@@ -506,23 +753,54 @@
   }
   function applyMediaSettings(el) {
     if (!el || isCanvasVideo(el)) return;
-    if (unwantedBleedMuted) {
+    if (hardPaused) {
+      if (!getNativeMuted(el)) setNativeMuted(el, true);
+      if (getNativeVol(el) !== 0) setNativeVol(el, 0);
+      try { if (!el.paused && typeof el.pause === 'function') el.pause(); } catch {}
+      return;
+    }
+    if (unwantedBleedMuted || switchMuteUntilTarget) {
       if (!getNativeMuted(el)) setNativeMuted(el, true);
       if (getNativeVol(el) !== 0) setNativeVol(el, 0);
       return;
     }
     if (counters.enabled && isAdPlaying()) {
+      adMutedActive = true;
+      // Mark ad audio elements so when a 30s ad finishes with ended=true it can NEVER false-end real tracks.
+      ignoredEndedMedia?.add(el);
       if (!getNativeMuted(el)) setNativeMuted(el, true);
       if (getNativeVol(el) !== 0) setNativeVol(el, 0);
-      if (Number.isFinite(el.duration) && el.duration > 0.5 && el.currentTime < el.duration - 0.1) {
-        try { el.currentTime = Math.max(0, el.duration - 0.05); counters.removed++; } catch {}
-      } else if (el.playbackRate !== 16) {
-        try { el.playbackRate = 16; } catch {}
+      const ready = typeof el.readyState === 'number' ? el.readyState >= 2 : true;
+      const dur = el.duration;
+      if (ready && Number.isFinite(dur) && dur > 0.5 && dur < 180) {
+        const bufEnd = bufferedEndSec(el, el.currentTime);
+        const target =
+          bufEnd >= dur - 0.25
+            ? Math.max(0, dur - 0.1)
+            : bufEnd > (el.currentTime || 0) + 1.0
+              ? Math.min(dur - 0.1, bufEnd - 0.15)
+              : -1;
+        if (target > (el.currentTime || 0) + 0.15) {
+          try {
+            el.currentTime = target;
+            const adUri = harmonyState()?.track_window?.current_track?.uri || `dom:${Math.round(dur)}`;
+            if (adUri !== lastAdSeekTrackUri) {
+              lastAdSeekTrackUri = adUri;
+              counters.removed++;
+            }
+          } catch {}
+        }
+        if (el.playbackRate !== 4) {
+          try { el.playbackRate = 4; } catch {}
+        }
       }
-      skipActiveAd();
+      if (!desiredTrackId && !counters.expectedTrackId) skipActiveAd();
       return;
     }
-    try { if (el.playbackRate > 2) el.playbackRate = 1; } catch {}
+    adMutedActive = false;
+    lastAdSeekTrackUri = '';
+    if (!el.paused && !el.ended) ignoredEndedMedia?.delete(el);
+    try { if (el.playbackRate > 1.01) el.playbackRate = 1; } catch {}
     const targetVol = desiredMuted ? 0 : Math.min(1, Math.max(0, desiredVolume));
     const targetMuted = Boolean(desiredMuted);
     if (Math.abs(getNativeVol(el) - targetVol) > 0.002) setNativeVol(el, targetVol);
@@ -533,12 +811,13 @@
   }
 
   function playing() {
+    if (hardPaused) return false;
     if (counters.trackEnded && !counters.startPending) return false;
     const list = elements();
     if (list.some(element => !element.paused && !element.ended)) return true;
     const hs = harmonyState();
     if (hs && (hs.paused !== undefined || hs.isPaused !== undefined)) {
-      if (list.some(element => element.ended && Number.isFinite(element.duration) && element.duration > 15)) {
+      if (list.some(element => element.ended && !ignoredEndedMedia?.has(element) && Number.isFinite(element.duration) && element.duration > 15)) {
         return false;
       }
       return !hs.paused && !hs.isPaused && !hs.loading;
@@ -551,37 +830,48 @@
 
   const seen = new Set();
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const uri = (machine, state) => Number.isInteger(state?.track) ? machine.tracks[state.track]?.metadata?.uri : null;
-  const ad = value => typeof value === 'string' && (value.startsWith('spotify:ad:') || value.includes(':ad:'));
-  const song = value => typeof value === 'string' && /^spotify:(?:track|episode):/.test(value);
+  const trackObj = (machine, state) => Number.isInteger(state?.track) ? machine.tracks[state.track] : null;
+  const uri = (machine, state) => trackObj(machine, state)?.metadata?.uri ?? null;
+  const stateIsAd = (machine, state) => {
+    const t = trackObj(machine, state);
+    return ad(t?.metadata?.uri) || isAdTrack(t);
+  };
   function cleanRestrictions(target) {
-    if (!object(target)) return;
+    if (!object(target)) return false;
+    let changed = false;
     for (const key of ['disallow_seeking', 'disallow_skipping_next', 'disallow_skipping_prev', 'disallow_pausing', 'disallow_resuming']) {
-      if (key in target) delete target[key];
+      if (key in target) { delete target[key]; changed = true; }
     }
+    return changed;
   }
   function patch(machine) {
     if (!object(machine) || !Array.isArray(machine.states) || !Array.isArray(machine.tracks) || machine.states.length > 2000 || machine.tracks.length > 5000) return false;
-    cleanRestrictions(machine.restrictions);
-    cleanRestrictions(machine.disallows);
+    let cleaned = false;
+    if (cleanRestrictions(machine.restrictions)) cleaned = true;
+    if (cleanRestrictions(machine.disallows)) cleaned = true;
     const states = machine.states, replacements = new Map();
+    const nextStateIndex = st => {
+      const adv = st?.transitions?.advance?.state_index;
+      if (adv !== undefined && adv !== null) return adv;
+      return st?.transitions?.skip_next?.state_index;
+    };
     for (let i = 0; i < states.length; i++) {
       const state = states[i];
-      cleanRestrictions(state?.restrictions);
-      cleanRestrictions(state?.disallows);
-      if (!ad(uri(machine, state))) continue;
+      if (cleanRestrictions(state?.restrictions)) cleaned = true;
+      if (cleanRestrictions(state?.disallows)) cleaned = true;
+      if (!stateIsAd(machine, state)) continue;
       const visited = new Set([i]);
-      let next = state?.transitions?.advance?.state_index;
+      let next = nextStateIndex(state);
       while (Number.isInteger(next) && next >= 0 && next < states.length && !visited.has(next)) {
         visited.add(next);
-        if (song(uri(machine, states[next])) && typeof states[next]?.state_id === 'string') { replacements.set(i, next); break; }
-        if (!ad(uri(machine, states[next]))) break;
-        next = states[next]?.transitions?.advance?.state_index;
+        if (song(uri(machine, states[next])) && !stateIsAd(machine, states[next]) && typeof states[next]?.state_id === 'string') { replacements.set(i, next); break; }
+        if (!stateIsAd(machine, states[next])) break;
+        next = nextStateIndex(states[next]);
       }
-      // When Spotify omits transitions.advance on an ad break, only replace if the next song state is explicitly linked.
+      // When Spotify omits transitions.advance/skip_next on an ad break, only replace if the next song state is explicitly linked.
       if (!replacements.has(i)) counters.unsupported++;
     }
-    if (!replacements.size) return false;
+    if (!replacements.size) return cleaned;
     machine.states = states.map((state, index) => replacements.has(index) ? structuredClone(states[replacements.get(index)]) : state);
     for (const index of replacements.keys()) {
       const key = String(machine.state_machine_id) + ':' + String(states[index]?.state_id) + ':' + uri(machine, states[index]);
@@ -624,11 +914,15 @@
     if (typeof name !== 'string' || typeof value !== 'string') return;
     const lower = name.toLowerCase();
     if (lower === 'authorization' && value.startsWith('Bearer ') && value.length > 30) {
+      if (auth.token !== value || !auth.tokenExpiresAt) {
+        auth.tokenExpiresAt = Date.now() + 30 * 60_000;
+      }
       auth.token = value;
-      if (!auth.tokenExpiresAt) auth.tokenExpiresAt = Date.now() + 30 * 60_000;
     } else if (lower === 'client-token' && value.length > 20) {
+      if (auth.clientToken !== value || !auth.clientTokenExpiresAt) {
+        auth.clientTokenExpiresAt = Date.now() + 6 * 3600_000;
+      }
       auth.clientToken = value;
-      if (!auth.clientTokenExpiresAt) auth.clientTokenExpiresAt = Date.now() + 6 * 3600_000;
     } else if (lower === 'spotify-app-version' && value) auth.appVersion = value;
     else if (lower === 'app-platform' && value) auth.appPlatform = value;
     else if (lower === 'accept-language' && value) auth.acceptLanguage = value;
@@ -636,11 +930,15 @@
   function noteTokenPayload(url, txt) {
     if (typeof txt !== 'string' || !txt) return;
     try {
-      const m = txt.match(/"accessToken"\s*:\s*"([A-Za-z0-9_-]{30,})"/);
+      const isAnon = /"isAnonymous"\s*:\s*true\b/i.test(txt);
+      const m = !isAnon ? txt.match(/"accessToken"\s*:\s*"([A-Za-z0-9_-]{30,})"/) : null;
       if (m) {
         auth.token = 'Bearer ' + m[1];
         const expMatch = txt.match(/"accessTokenExpirationTimestampMs"\s*:\s*(\d{10,15})/);
         if (expMatch) auth.tokenExpiresAt = Number(expMatch[1]);
+        const cidMatch = txt.match(/"clientId"\s*:\s*"([A-Za-z0-9]{20,64})"/);
+        if (cidMatch) auth.clientId = cidMatch[1];
+      } else if (!isAnon) {
         const cidMatch = txt.match(/"clientId"\s*:\s*"([A-Za-z0-9]{20,64})"/);
         if (cidMatch) auth.clientId = cidMatch[1];
       }
@@ -704,20 +1002,299 @@
     return '';
   }
 
+  function spotifyIdToGidHex(id) {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9]{22}$/.test(id)) return '';
+    try {
+      let n = 0n;
+      for (let i = 0; i < id.length; i++) {
+        const idx = B62_CHARS.indexOf(id[i]);
+        if (idx < 0) return '';
+        n = n * 62n + BigInt(idx);
+      }
+      const hex = n.toString(16);
+      return hex.length <= 32 ? hex.padStart(32, '0') : '';
+    } catch {
+      return '';
+    }
+  }
+  function isAudioCdnUrl(url) {
+    return Boolean(
+      url &&
+      url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      !url.port &&
+      /(?:^|\.)(?:scdn\.co|spotifycdn\.com|akamaized\.net|cloudfront\.net|fastly\.net|gcdn\.co|spotify\.com)$/i.test(url.hostname)
+    );
+  }
+  function matchMetadataTrackUrl(url) {
+    if (!isSpclient(url)) return '';
+    const m = url.pathname.match(/^\/metadata\/4\/track\/([a-f0-9]{32})$/i);
+    return m ? m[1].toLowerCase() : '';
+  }
+  function matchStorageResolveUrl(url) {
+    if (!isSpclient(url)) return null;
+    const m = url.pathname.match(/^\/storage-resolve\/v2\/files\/audio\/interactive\/([^/]+)\/([a-f0-9]{40})$/i);
+    return m ? { profile: m[1], fileId: m[2].toLowerCase() } : null;
+  }
+  function observeMetadataPayload(url, txt) {
+    if (!url || typeof txt !== 'string' || !txt || txt.length > 512 * 1024) return;
+    try {
+      observedSpclientOrigin = url.origin;
+      const meta = JSON.parse(txt);
+      const files = [
+        ...(Array.isArray(meta?.file) ? meta.file : []),
+        ...(Array.isArray(meta?.alternative) ? meta.alternative.flatMap(a => (Array.isArray(a?.file) ? a.file : [])) : []),
+      ];
+      for (const f of files) {
+        const fid = typeof f?.file_id === 'string' ? f.file_id.toLowerCase() : '';
+        const fmt = typeof f?.format === 'string' ? f.format : '';
+        if (/^[a-f0-9]{40}$/.test(fid) && fmt) {
+          if (observedFileFormats.size >= 64) {
+            const oldest = observedFileFormats.keys().next().value;
+            if (oldest !== undefined) observedFileFormats.delete(oldest);
+          }
+          observedFileFormats.set(fid, fmt);
+        }
+      }
+    } catch {}
+  }
+  function observeStorageResolveRequest(url) {
+    const hit = matchStorageResolveUrl(url);
+    if (!hit) return;
+    observedSpclientOrigin = url.origin;
+    observedResolveTemplate = `/storage-resolve/v2/files/audio/interactive/${hit.profile}/{FILE_ID}${url.search || ''}`;
+    const fmt = observedFileFormats.get(hit.fileId);
+    if (fmt) observedAudioFormat = fmt;
+  }
+  function pickPreferredAudioFile(meta) {
+    const files = [
+      ...(Array.isArray(meta?.file) ? meta.file : []),
+      ...(Array.isArray(meta?.alternative) ? meta.alternative.flatMap(a => (Array.isArray(a?.file) ? a.file : [])) : []),
+    ].filter(f => typeof f?.file_id === 'string' && /^[a-f0-9]{40}$/i.test(f.file_id));
+    if (!files.length) return null;
+    const pref = [
+      observedAudioFormat,
+      'MP4_256',
+      'MP4_256_DUAL',
+      'MP4_128',
+      'MP4_128_DUAL',
+      'MP4_128_CBCS',
+      'MP4_256_CBCS',
+    ].filter(Boolean);
+    for (const fmt of pref) {
+      const hit = files.find(f => f.format === fmt);
+      if (hit) return { fileId: hit.file_id.toLowerCase(), format: hit.format || fmt };
+    }
+    const anyMp4 = files.find(f => typeof f.format === 'string' && f.format.startsWith('MP4_'));
+    if (anyMp4) return { fileId: anyMp4.file_id.toLowerCase(), format: anyMp4.format };
+    return { fileId: files[0].file_id.toLowerCase(), format: files[0].format || '' };
+  }
+  function parseContentRangeTotal(header, fallbackLen) {
+    if (typeof header === 'string') {
+      const m = header.match(/bytes\s+\d+-\d+\/(\d+)/i);
+      if (m) {
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+    }
+    return fallbackLen;
+  }
+  function clearPreloadCache() {
+    preloadGen++;
+    preloadedNextTrackId = '';
+    preloadState = null;
+  }
+  function matchPreloadResponse(url, method, rangeHeader, acceptHeader) {
+    if (!url || !preloadState) return null;
+    if (String(method || 'GET').toUpperCase() !== 'GET') return null;
+    if (Date.now() - preloadState.at > PRELOAD_TTL_MS) {
+      preloadState = null;
+      return null;
+    }
+    const wantsJson = typeof acceptHeader === 'string' && /application\/json|\bjson\b/i.test(acceptHeader);
+    const gid = matchMetadataTrackUrl(url);
+    // Only serve cached JSON metadata if caller explicitly accepts JSON (never feed JSON into Harmony's protobuf decoder!).
+    if (gid && gid === preloadState.gidHex && preloadState.metaText && wantsJson) {
+      return {
+        status: 200,
+        statusText: 'OK',
+        body: preloadState.metaText,
+        contentType: preloadState.metaType || 'application/json',
+        kind: 'meta',
+      };
+    }
+    const resHit = matchStorageResolveUrl(url);
+    const wantsResolveJson = wantsJson || url.searchParams.get('alt') === 'json';
+    if (resHit && resHit.fileId === preloadState.fileId && preloadState.resolveText && wantsResolveJson) {
+      return {
+        status: 200,
+        statusText: 'OK',
+        body: preloadState.resolveText,
+        contentType: preloadState.resolveType || 'application/json',
+        kind: 'resolve',
+      };
+    }
+    if (
+      preloadState.audioBytes &&
+      url.protocol === 'https:' &&
+      (url.href === preloadState.cdnUrl || (isAudioCdnUrl(url) && preloadState.cdnPathKey && url.pathname === preloadState.cdnPathKey))
+    ) {
+      const buf = preloadState.audioBytes;
+      const total = preloadState.audioTotal || buf.byteLength;
+      if (typeof rangeHeader === 'string' && rangeHeader.trim()) {
+        const m = rangeHeader.trim().match(/^bytes=(\d+)-(\d*)$/i);
+        if (!m) return null;
+        const start = Number(m[1]);
+        const end = m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || end >= buf.byteLength) return null;
+        const slice = buf.slice(start, end + 1);
+        return {
+          status: 206,
+          statusText: 'Partial Content',
+          bytes: slice,
+          contentRange: `bytes ${start}-${end}/${total}`,
+          contentType: preloadState.audioType || 'audio/mp4',
+          kind: 'audio',
+        };
+      }
+      if (buf.byteLength === total) {
+        return {
+          status: 200,
+          statusText: 'OK',
+          bytes: buf.slice(0),
+          contentType: preloadState.audioType || 'audio/mp4',
+          kind: 'audio',
+        };
+      }
+    }
+    return null;
+  }
+  function warmNextTrack(trackId) {
+    if (typeof trackId !== 'string' || !/^[A-Za-z0-9]{22}$/.test(trackId)) {
+      clearPreloadCache();
+      return false;
+    }
+    if (
+      preloadedNextTrackId === trackId &&
+      preloadState &&
+      preloadState.trackId === trackId &&
+      Date.now() - preloadState.at < PRELOAD_TTL_MS &&
+      preloadState.stage === 'audio'
+    ) {
+      return true;
+    }
+    preloadedNextTrackId = trackId;
+    const gen = ++preloadGen;
+    const gidHex = spotifyIdToGidHex(trackId);
+    if (!gidHex) return false;
+    void (async () => {
+      try {
+        await ensureToken(2000);
+        await ensureClientToken(false);
+        if (gen !== preloadGen || !auth.token) return;
+        const metaRes = await fetch.call(window, `${observedSpclientOrigin}/metadata/4/track/${gidHex}?market=from_token`, {
+          headers: apiHeaders(),
+        });
+        if (gen !== preloadGen || !metaRes.ok) return;
+        const metaText = await metaRes.text();
+        if (gen !== preloadGen || !metaText || metaText.length > 512 * 1024) return;
+        const metaType = metaRes.headers.get('content-type') || 'application/json';
+        const meta = JSON.parse(metaText);
+        const state = {
+          trackId,
+          gidHex,
+          metaText,
+          metaType,
+          fileId: '',
+          resolveText: '',
+          resolveType: '',
+          cdnUrl: '',
+          cdnPathKey: '',
+          audioBytes: null,
+          audioTotal: 0,
+          audioType: '',
+          at: Date.now(),
+          stage: 'meta',
+        };
+        preloadState = state;
+        const chosen = pickPreferredAudioFile(meta);
+        if (!chosen) return;
+        let resolvePath = observedResolveTemplate
+          ? observedResolveTemplate.replace('{FILE_ID}', chosen.fileId)
+          : `/storage-resolve/v2/files/audio/interactive/11/${chosen.fileId}?version=10000000&product=9&platform=39&alt=json`;
+        if (!/(?:^|[?&])alt=json(?:&|$)/i.test(resolvePath)) {
+          resolvePath += (resolvePath.includes('?') ? '&' : '?') + 'alt=json';
+        }
+        const resolveRes = await fetch.call(window, `${observedSpclientOrigin}${resolvePath}`, {
+          headers: apiHeaders(),
+        });
+        if (gen !== preloadGen || !resolveRes.ok) return;
+        const resolveText = await resolveRes.text();
+        if (gen !== preloadGen || !resolveText || resolveText.length > 128 * 1024) return;
+        const resolveType = resolveRes.headers.get('content-type') || 'application/json';
+        const resolved = JSON.parse(resolveText);
+        const cdnList = Array.isArray(resolved?.cdnurl) ? resolved.cdnurl : [];
+        const cdnUrl = cdnList.find(u => isAudioCdnUrl(parseUrl(u))) || '';
+        const parsedCdn = cdnUrl ? parseUrl(cdnUrl) : null;
+        state.fileId = chosen.fileId;
+        state.resolveText = resolveText;
+        state.resolveType = resolveType;
+        state.cdnUrl = cdnUrl;
+        state.cdnPathKey = parsedCdn ? parsedCdn.pathname : '';
+        state.at = Date.now();
+        state.stage = 'resolved';
+        if (!cdnUrl) return;
+        const audioRes = await fetch.call(window, cdnUrl, {
+          headers: { Range: `bytes=0-${PRELOAD_AUDIO_RANGE_END}` },
+        });
+        if (gen !== preloadGen || (audioRes.status !== 206 && audioRes.status !== 200)) return;
+        const buf = await audioRes.arrayBuffer();
+        if (gen !== preloadGen || !buf || buf.byteLength === 0 || buf.byteLength > PRELOAD_MAX_BYTES) return;
+        state.audioBytes = new Uint8Array(buf);
+        state.audioTotal = parseContentRangeTotal(audioRes.headers.get('content-range'), buf.byteLength);
+        state.audioType = audioRes.headers.get('content-type') || 'audio/mp4';
+        state.at = Date.now();
+        state.stage = 'audio';
+        counters.preloaded++;
+      } catch {}
+    })();
+    return true;
+  }
+
   const xhrProto = window.XMLHttpRequest?.prototype;
   if (xhrProto) {
     const origOpen = xhrProto.open;
     const origSend = xhrProto.send;
+    const origAbort = xhrProto.abort;
     const setHeader = xhrProto.setRequestHeader;
     if (origOpen) {
       xhrProto.open = function(method, url) {
+        this._nocturneMethod = typeof method === 'string' ? method.toUpperCase() : 'GET';
         this._nocturneUrl = typeof url === 'string' ? url : '';
+        this._nocturneRange = '';
+        this._nocturneAccept = '';
+        this._nocturneAborted = false;
         return origOpen.apply(this, arguments);
+      };
+    }
+    if (origAbort) {
+      xhrProto.abort = function() {
+        this._nocturneAborted = true;
+        return origAbort.apply(this, arguments);
       };
     }
     if (setHeader) {
       xhrProto.setRequestHeader = function(name, value) {
-        noteHeader(name, value);
+        if (typeof name === 'string' && typeof value === 'string') {
+          const lower = name.toLowerCase();
+          if (lower === 'range') this._nocturneRange = value;
+          else if (lower === 'accept') this._nocturneAccept = value;
+        }
+        const u = parseUrl(this._nocturneUrl);
+        if (!u || /(?:^|\.)spotify\.com$/i.test(u.hostname)) {
+          noteHeader(name, value);
+        }
         return setHeader.apply(this, arguments);
       };
     }
@@ -726,18 +1303,74 @@
         const rawUrl = this._nocturneUrl;
         const pfOp = captureHeaders(rawUrl, typeof body === 'string' ? { body } : undefined);
         const rUrl = parseUrl(rawUrl);
+        if (rUrl) observeStorageResolveRequest(rUrl);
+        const preloadHit = matchPreloadResponse(rUrl, this._nocturneMethod, this._nocturneRange, this._nocturneAccept);
+        const rt = this.responseType || '';
+        const canServeXhr = preloadHit && (
+          preloadHit.bytes
+            ? rt === 'arraybuffer'
+            : (rt === '' || rt === 'text' || rt === 'json')
+        );
+        if (canServeXhr) {
+          counters.preloadHits++;
+          const defer = typeof queueMicrotask === 'function' ? queueMicrotask : fn => Promise.resolve().then(fn);
+          const hdrs = { 'content-type': preloadHit.contentType };
+          if (preloadHit.bytes) {
+            hdrs['content-length'] = String(preloadHit.bytes.byteLength);
+            hdrs['accept-ranges'] = 'bytes';
+            if (preloadHit.contentRange) hdrs['content-range'] = preloadHit.contentRange;
+          }
+          defer(() => {
+            if (this._nocturneAborted) return;
+            try {
+              const respVal = preloadHit.bytes
+                ? preloadHit.bytes.buffer.slice(preloadHit.bytes.byteOffset, preloadHit.bytes.byteOffset + preloadHit.bytes.byteLength)
+                : rt === 'json'
+                  ? JSON.parse(preloadHit.body)
+                  : preloadHit.body;
+              Object.defineProperty(this, 'readyState', { configurable: true, value: 4 });
+              Object.defineProperty(this, 'status', { configurable: true, value: preloadHit.status });
+              Object.defineProperty(this, 'statusText', { configurable: true, value: preloadHit.statusText });
+              Object.defineProperty(this, 'responseURL', { configurable: true, value: rUrl.href });
+              Object.defineProperty(this, 'response', { configurable: true, value: respVal });
+              if (!preloadHit.bytes && (rt === '' || rt === 'text')) {
+                Object.defineProperty(this, 'responseText', { configurable: true, value: preloadHit.body });
+              }
+              this.getResponseHeader = name => hdrs[String(name || '').toLowerCase()] ?? null;
+              this.getAllResponseHeaders = () => Object.entries(hdrs).map(([k, v]) => `${k}: ${v}`).join('\r\n');
+              const fire = type => {
+                const ev = typeof Event === 'function' ? new Event(type) : { type, target: this, currentTarget: this };
+                try { this['on' + type]?.call(this, ev); } catch {}
+                try { this.dispatchEvent?.(ev); } catch {}
+              };
+              fire('readystatechange');
+              fire('progress');
+              fire('load');
+              fire('loadend');
+            } catch {}
+          });
+          return;
+        }
         if (rUrl && /(?:^|\.)spotify\.com$/i.test(rUrl.hostname) && typeof this.addEventListener === 'function') {
           this.addEventListener('load', () => {
             try {
+              if (this.responseType !== '' && this.responseType !== 'text') return;
               if (this.status >= 200 && this.status < 300 && typeof this.responseText === 'string' && this.responseText.length < 2 * 1024 * 1024) {
                 noteTokenPayload(rUrl, this.responseText);
+                if (matchMetadataTrackUrl(rUrl)) observeMetadataPayload(rUrl, this.responseText);
                 if (pfOp) {
                   const json = JSON.parse(this.responseText);
                   if (json?.data) {
-                    pfCache[pfOp] = json.data;
-                    pfTtl.set(pfOp, { data: json.data, at: Date.now() });
-                    if (pfOp === 'libraryV3:all' || pfOp === 'libraryV3:Playlists') pfCache.libraryV3 = json.data;
-                    if (pfOp === 'fetchLibraryTracks:0') pfCache.fetchLibraryTracks = json.data;
+                    setPfCache(pfOp, json.data);
+                    setPfTtl(pfOp, { data: json.data, at: Date.now() });
+                    if (pfOp.startsWith('libraryV3:all:0:') || pfOp.startsWith('libraryV3:Playlists:0:')) {
+                      setPfCache('libraryV3', json.data);
+                      setPfCache('libraryV3:Playlists', json.data);
+                    }
+                    if (pfOp.startsWith('fetchLibraryTracks:0:')) {
+                      setPfCache('fetchLibraryTracks', json.data);
+                      setPfCache('fetchLibraryTracks:0', json.data);
+                    }
                   }
                 }
               }
@@ -748,17 +1381,6 @@
       };
     }
   }
-  if (window.Headers?.prototype) {
-    for (const method of ['set', 'append']) {
-      const orig = window.Headers.prototype[method];
-      if (typeof orig === 'function') {
-        window.Headers.prototype[method] = function(name, value) {
-          noteHeader(name, value);
-          return orig.apply(this, arguments);
-        };
-      }
-    }
-  }
 
   const fetch = window.fetch;
   window.fetch = async function(input, init) {
@@ -767,21 +1389,61 @@
       counters.removed++;
       return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
+    const rUrl = parseUrl(input);
+    const reqMethod = (init?.method || (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
+    let reqRange = '';
+    let reqAccept = '';
+    try {
+      for (const source of [init?.headers, typeof Request !== 'undefined' && input instanceof Request ? input.headers : null]) {
+        if (!source) continue;
+        const h = new Headers(source);
+        if (!reqRange) { const r = h.get('range'); if (r) reqRange = r; }
+        if (!reqAccept) { const a = h.get('accept'); if (a) reqAccept = a; }
+      }
+    } catch {}
+    if (rUrl) observeStorageResolveRequest(rUrl);
+    const preloadHit = matchPreloadResponse(rUrl, reqMethod, reqRange, reqAccept);
+    if (preloadHit) {
+      counters.preloadHits++;
+      const headers = new Headers({ 'Content-Type': preloadHit.contentType });
+      if (preloadHit.bytes) {
+        headers.set('Content-Length', String(preloadHit.bytes.byteLength));
+        headers.set('Accept-Ranges', 'bytes');
+        headers.set('Access-Control-Allow-Origin', '*');
+        if (preloadHit.contentRange) headers.set('Content-Range', preloadHit.contentRange);
+      }
+      const cachedResp = new Response(preloadHit.bytes ?? preloadHit.body, {
+        status: preloadHit.status,
+        statusText: preloadHit.statusText,
+        headers,
+      });
+      try { Object.defineProperty(cachedResp, 'url', { value: rUrl.href }); } catch {}
+      return cachedResp;
+    }
     const response = await fetch.call(this, input, init);
     if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
       try {
-        const rUrl = parseUrl(input);
         const tokenLike = rUrl && (rUrl.hostname === 'clienttoken.spotify.com' || rUrl.pathname.endsWith('/api/token') || rUrl.pathname.endsWith('/get_access_token'));
-        if (rUrl && /(?:^|\.)spotify\.com$/i.test(rUrl.hostname) && (tokenLike || !auth.token || pfOp)) {
+        const metaTrack = Boolean(rUrl && matchMetadataTrackUrl(rUrl));
+        const cLen = Number(response.headers.get('content-length')) || 0;
+        if (rUrl && /(?:^|\.)spotify\.com$/i.test(rUrl.hostname) && cLen <= 2 * 1024 * 1024 && (tokenLike || pfOp || metaTrack)) {
           response.clone().text().then(txt => {
+            if (txt.length > 2 * 1024 * 1024) return;
             noteTokenPayload(rUrl, txt);
+            if (metaTrack) observeMetadataPayload(rUrl, txt);
             if (pfOp) {
               const json = JSON.parse(txt);
               if (json?.data) {
-                pfCache[pfOp] = json.data;
-                pfTtl.set(pfOp, { data: json.data, at: Date.now() });
-                if (pfOp === 'libraryV3:all' || pfOp === 'libraryV3:Playlists') pfCache.libraryV3 = json.data;
-                if (pfOp === 'fetchLibraryTracks:0') pfCache.fetchLibraryTracks = json.data;
+                setPfCache(pfOp, json.data);
+                setPfTtl(pfOp, { data: json.data, at: Date.now() });
+                if (pfOp.startsWith('libraryV3:all:0:') || pfOp.startsWith('libraryV3:Playlists:0:')) {
+                  setPfCache('libraryV3', json.data);
+                  setPfCache('libraryV3:Playlists', json.data);
+                }
+                if (pfOp.startsWith('fetchLibraryTracks:0:')) {
+                  setPfCache('fetchLibraryTracks', json.data);
+                  setPfCache('fetchLibraryTracks:0', json.data);
+                }
               }
             }
           }).catch(() => {});
@@ -858,15 +1520,21 @@
   const checked = id => { const value = testid(id)?.getAttribute?.('aria-checked'); return value === 'true' ? true : value === 'mixed' ? 'mixed' : value === 'false' ? false : null; };
   function harmonyState() {
     try {
-      const candidates = [
+      for (const c of [
         harmonyPlayer?._state,
         harmonyController?._state,
         harmonyPlayer?._controller?._state,
-        harmonyPlayer?.getState?.(),
-      ];
-      for (const c of candidates) {
+      ]) {
         if (c && typeof c === 'object' && typeof c.then !== 'function' && (c.duration !== undefined || c.position !== undefined || c.track_window !== undefined)) {
           return c;
+        }
+      }
+      if (typeof harmonyPlayer?.getState === 'function') {
+        const maybe = harmonyPlayer.getState();
+        if (maybe && typeof maybe.then === 'function') {
+          maybe.catch?.(() => {});
+        } else if (maybe && typeof maybe === 'object' && (maybe.duration !== undefined || maybe.position !== undefined || maybe.track_window !== undefined)) {
+          return maybe;
         }
       }
     } catch {}
@@ -964,17 +1632,34 @@
       lastSeekTargetSec = null;
       lastSeekFromSec = null;
       const st = adNow ? null : harmonyState();
-      const harmonyLaggingPaused = Boolean(st && (st.paused || st.isPaused) && !st.loading && el && !el.paused && !el.ended);
+      const inStartWindow = lastTrackStartAt > 0 && Date.now() - lastTrackStartAt < 4000;
+      const harmonyLaggingPaused = Boolean(!inStartWindow && st && (st.paused || st.isPaused) && !st.loading && el && !el.paused && !el.ended);
       const alignedElPos =
         elPos !== null && !el.paused && (barPos === null || Math.abs(elPos - barPos) <= 2.5)
           ? elPos
           : null;
+      // Never let a stale DOM playback-progressbar from the outgoing track override Harmony's fresh 0s start position!
       const stateStuckBehind =
+        !inStartWindow &&
         statePos !== null &&
-        ((statePos < 0.5 && barPos !== null && barPos > 2) ||
+        ((statePos < 0.5 && el && !el.paused && alignedElPos !== null && alignedElPos > 2 && barPos !== null && barPos > 2) ||
           (harmonyLaggingPaused && ((barPos !== null && barPos > statePos + 1) || (alignedElPos !== null && alignedElPos > statePos + 1))));
       const reliableStatePos = statePos !== null && !stateStuckBehind ? statePos : null;
-      position = reliableStatePos ?? alignedElPos ?? barPos ?? clockPos ?? elPos ?? 0;
+      let candidate = reliableStatePos ?? alignedElPos ?? barPos ?? clockPos ?? elPos ?? 0;
+      // During a 0s switch from another track, suppress any single transition frame carrying the outgoing track's position.
+      if (
+        inStartWindow &&
+        Date.now() - lastTrackStartAt < 2500 &&
+        lastTrackStartSec === 0 &&
+        switchFromTrackId &&
+        switchFromTrackId !== desiredTrackId &&
+        switchFromPosSec > 5 &&
+        candidate > 5 &&
+        Math.abs(candidate - switchFromPosSec) <= 6
+      ) {
+        candidate = 0;
+      }
+      position = candidate;
     }
     return { position, duration };
   }
@@ -1021,12 +1706,20 @@
     return 0;
   }
   function isTrackEndedNow(el) {
-    if (isAdPlaying()) return false;
+    if (counters.trackEnded && counters.endedTrackId) return true;
+    if (counters.startPending || isAdPlaying()) return false;
     if (counters.trackEnded) return true;
     const list = elements();
+    const isFreshSongEnd = m =>
+      Boolean(
+        m?.ended &&
+        !ignoredEndedMedia?.has(m) &&
+        Number.isFinite(m.duration) &&
+        m.duration > 15
+      );
     const node = el === undefined ? activeElement() : el;
-    if (node?.ended && Number.isFinite(node.duration) && node.duration > 15) return true;
-    return list.some(m => m?.ended && Number.isFinite(m.duration) && m.duration > 15 && !list.some(other => other !== m && !other.paused && !other.ended));
+    if (isFreshSongEnd(node)) return true;
+    return list.some(m => isFreshSongEnd(m) && !list.some(other => other !== m && !other.paused && !other.ended));
   }
   function nowPlaying() {
     const adNow = isAdPlaying();
@@ -1034,25 +1727,29 @@
     const meta = window.navigator?.mediaSession?.metadata;
     const hTrack = adNow ? null : harmonyState()?.track_window?.current_track;
     const title =
+      clip(hTrack?.name) ||
       clip(meta?.title) ||
-      clip(widget?.querySelector?.('[data-testid="context-item-info-title"]')?.textContent) ||
-      clip(hTrack?.name);
+      clip(widget?.querySelector?.('[data-testid="context-item-info-title"]')?.textContent);
     if (!title && !adNow) return null;
     const hArtists = Array.isArray(hTrack?.artists) ? hTrack.artists.map(a => clip(a?.name)).filter(Boolean).join(', ') : '';
     const artist =
+      hArtists ||
       clip(meta?.artist) ||
-      clip(widget?.querySelector?.('[data-testid="context-item-info-subtitles"]')?.textContent) ||
-      hArtists;
+      clip(widget?.querySelector?.('[data-testid="context-item-info-subtitles"]')?.textContent);
     const artwork = [...(meta?.artwork ?? [])].map(item => ({ src: cdn(item?.src), size: parseInt(item?.sizes, 10) || 0 })).filter(item => item.src).sort((a, b) => a.size - b.size);
     const hImages = [...(hTrack?.album?.images ?? [])].map(item => ({ src: cdn(item?.url), size: Number(item?.width) || 300 })).filter(item => item.src).sort((a, b) => a.size - b.size);
     const fallback = cdn(widget?.querySelector?.('img')?.src);
-    const small = artwork.find(item => item.size >= 64)?.src ?? artwork[0]?.src ?? fallback ?? hImages[0]?.src ?? null;
-    const large = artwork[artwork.length - 1]?.src ?? fallback ?? hImages[hImages.length - 1]?.src ?? small;
+    const small = hImages[0]?.src ?? artwork.find(item => item.size >= 64)?.src ?? artwork[0]?.src ?? fallback ?? null;
+    const large = hImages[hImages.length - 1]?.src ?? artwork[artwork.length - 1]?.src ?? fallback ?? small;
     const like = widget?.querySelector?.('[data-testid="add-button"][aria-checked]');
     const volume = range('volume-bar');
     const level = volume ? Number(volume.value) / (Number(volume.max) || 1) : null;
     const el = activeElement();
     const elVol = el ? getNativeVol(el) : null;
+    const reportedVol =
+      adNow || unwantedBleedMuted || switchMuteUntilTarget || hardPaused
+        ? (desiredMuted ? 0 : Math.min(1, Math.max(0, desiredVolume)))
+        : (Number.isFinite(elVol) ? Math.min(1, Math.max(0, elVol)) : (Number.isFinite(level) ? Math.min(1, Math.max(0, level)) : null));
     const repeat = checked('control-button-repeat');
     const playback = playing();
     const prog = progress();
@@ -1063,17 +1760,17 @@
       paused: playback !== true,
       title: adNow ? 'Реклама' : title,
       artist,
-      album: clip(meta?.album) || clip(hTrack?.album?.name),
+      album: clip(hTrack?.album?.name) || clip(meta?.album),
       cover: small,
       coverLarge: large,
       ...prog,
       buffered: adNow ? null : bufferedEndSec(el, prog.position),
       trackEnded: isTrackEndedNow(el),
       endedTrackId: counters.endedTrackId || null,
-      liked: like ? like.getAttribute('aria-checked') === 'true' : null,
+      liked: like ? like.getAttribute?.('aria-checked') === 'true' : null,
       shuffle: checked('control-button-shuffle') === true,
       repeat: repeat === 'mixed' ? 'one' : repeat === true ? 'all' : 'off',
-      volume: Number.isFinite(elVol) ? Math.min(1, Math.max(0, elVol)) : (Number.isFinite(level) ? Math.min(1, Math.max(0, level)) : null),
+      volume: reportedVol,
     };
   }
   function setRange(input, value) {
@@ -1311,36 +2008,44 @@
     }
     if (pfInFlight.has(key)) return pfInFlight.get(key);
     const fallbackCached = () => {
+      if (opts.fresh) return null;
       const stale = pfTtl.get(key)?.data || (cKey ? pfCache[cKey] : null);
       if (stale) return stale;
-      if (operationName === 'libraryV3' && pfCache['libraryV3:all']) return pfCache['libraryV3:all'];
+      if (operationName === 'libraryV3' && (Number(variables?.offset) || 0) === 0 && pfCache['libraryV3:all']) return pfCache['libraryV3:all'];
       if (operationName === 'fetchLibraryTracks' && (Number(variables?.offset) || 0) === 0 && pfCache.fetchLibraryTracks) return pfCache.fetchLibraryTracks;
       return null;
     };
-    if (Date.now() < rateLimitedUntil) {
-      const fb = fallbackCached();
-      if (fb) return fb;
-      const waitMs = rateLimitedUntil - Date.now();
-      if (waitMs > 3500) throw new Error('HTTP_429');
-      await new Promise(resolve => setTimeout(resolve, waitMs));
-    }
-    await ensureToken(4500);
-    await ensureClientToken(false);
-    const sha256Hash = hashes[operationName];
-    if (!sha256Hash || !auth.token) throw new Error('SIGNED_OUT');
 
     const storeResult = data => {
       if (cKey) {
-        pfCache[cKey] = data;
-        if (cKey === 'libraryV3:all' || cKey === 'libraryV3:Playlists') pfCache.libraryV3 = data;
-        else if (cKey === 'fetchLibraryTracks:0') pfCache.fetchLibraryTracks = data;
-        else if (!cKey.includes(':')) pfCache[operationName] = data;
-        if (ttlMs > 0) pfTtl.set(cKey, { data, at: Date.now() });
+        setPfCache(cKey, data);
+        if (cKey.startsWith('libraryV3:all:0:') || cKey.startsWith('libraryV3:Playlists:0:')) {
+          setPfCache('libraryV3', data);
+          setPfCache('libraryV3:Playlists', data);
+        } else if (cKey.startsWith('fetchLibraryTracks:0:')) {
+          setPfCache('fetchLibraryTracks', data);
+          setPfCache('fetchLibraryTracks:0', data);
+        } else if (!cKey.includes(':')) {
+          setPfCache(operationName, data);
+        }
+        if (ttlMs > 0) setPfTtl(cKey, { data, at: Date.now() });
       }
-      if (ttlMs > 0) pfTtl.set(key, { data, at: Date.now() });
+      if (ttlMs > 0) setPfTtl(key, { data, at: Date.now() });
     };
 
     const reqPromise = (async () => {
+      if (Date.now() < rateLimitedUntil) {
+        const fb = fallbackCached();
+        if (fb) return fb;
+        const waitMs = rateLimitedUntil - Date.now();
+        if (waitMs > 3500) throw new Error('HTTP_429');
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+      }
+      await ensureToken(4500);
+      await ensureClientToken(false);
+      const sha256Hash = hashes[operationName];
+      if (!sha256Hash || !auth.token) throw new Error('SIGNED_OUT');
+
       await acquirePfSlot();
       try {
         const body = JSON.stringify({
@@ -1378,6 +2083,11 @@
             }
             if ((res.status === 401 || res.status === 403) && !retriedAuth) {
               retriedAuth = true;
+              if (res.status === 401) {
+                auth.token = '';
+                auth.tokenExpiresAt = 0;
+                await ensureToken(4500);
+              }
               await ensureClientToken(true);
               const retryHeaders = { ...apiHeaders(), 'Content-Type': 'application/json;charset=UTF-8' };
               const retryRes = await fetch.call(window, endpoint, { method: 'POST', headers: retryHeaders, body });
@@ -1410,8 +2120,10 @@
             lastErr = 'NETWORK_ERROR';
           }
         }
-        const fb = fallbackCached();
-        if (fb) return fb;
+        if (lastErr !== 'HTTP_401') {
+          const fb = fallbackCached();
+          if (fb) return fb;
+        }
         throw new Error(lastErr);
       } finally {
         releasePfSlot();
@@ -1422,7 +2134,8 @@
     return reqPromise;
   }
   async function getHomeData(fresh = false) {
-    if (!fresh && pfCache.home?.home) return pfCache.home.home;
+    const cachedHome = !fresh ? pfTtl.get('home') : null;
+    if (cachedHome && Date.now() - cachedHome.at < 45_000 && cachedHome.data?.home) return cachedHome.data.home;
     const spTCookie = (typeof document !== 'undefined' && document.cookie || '').match(/(?:^|;\s*)sp_t=([^;]+)/)?.[1] || '';
     const tz = (typeof Intl !== 'undefined' && Intl.DateTimeFormat?.().resolvedOptions?.().timeZone) || 'Europe/Moscow';
     const vars = auth.homeVars || {
@@ -1452,14 +2165,21 @@
   }
   async function getArtistOverview(id) {
     const cacheKey = 'artist_' + id;
-    if (pfCache[cacheKey]) return pfCache[cacheKey];
+    const cached = pfTtl.get(cacheKey);
+    if (cached && Date.now() - cached.at < 60_000) return cached.data;
     const data = await queryPathfinder('queryArtistOverview', {
       uri: `spotify:artist:${id}`,
       locale: '',
       preReleaseV2: false,
       includeMusicVideoPreviews: false,
+    }).catch(err => {
+      if (pfCache[cacheKey]) return { artistUnion: pfCache[cacheKey] };
+      throw err;
     });
-    if (data?.artistUnion) pfCache[cacheKey] = data.artistUnion;
+    if (data?.artistUnion) {
+      setPfCache(cacheKey, data.artistUnion);
+      setPfTtl(cacheKey, { data: data.artistUnion, at: Date.now() });
+    }
     return data?.artistUnion;
   }
   async function embedEntity(kind, id) {
@@ -2385,6 +3105,11 @@
             body,
           });
           if (res.status === 401 || res.status === 403) {
+            if (res.status === 401) {
+              auth.token = '';
+              auth.tokenExpiresAt = 0;
+              await ensureToken(4500);
+            }
             await ensureClientToken(true);
             res = await fetch.call(window, rootUrl, {
               method: 'POST',
@@ -2408,18 +3133,30 @@
         if (!ids.length) throw new Error('MISSING_TRACK_IDS');
         const uris = ids.map(id => `spotify:track:${id}`);
         const plUri = `spotify:playlist:${pid}`;
-        try {
-          await queryPathfinder('addToPlaylist', {
-            playlistUri: plUri,
-            playlistItemUris: uris,
-            newPosition: { moveType: 'BottomOfPlaylist', fromUid: null },
-          }, { fresh: true, ttlMs: 0 });
-        } catch {
-          await queryPathfinder('addToPlaylist', {
-            playlistUri: plUri,
-            playlistItemUris: uris,
-            newPosition: { moveType: 'BOTTOM_OF_PLAYLIST', fromUid: null },
-          }, { fresh: true, ttlMs: 0 });
+        let added = false;
+        for (const moveType of ['BottomOfPlaylist', 'BOTTOM_OF_PLAYLIST']) {
+          try {
+            await queryPathfinder('addToPlaylist', {
+              playlistUri: plUri,
+              playlistItemUris: uris,
+              newPosition: { moveType, fromUid: null },
+            }, { fresh: true, ttlMs: 0 });
+            added = true;
+            break;
+          } catch (err) {
+            const msg = String(err?.message || '');
+            if (msg === 'SIGNED_OUT' || msg === 'HTTP_429') throw err;
+          }
+        }
+        if (!added) {
+          if (!await ensureToken(2500)) throw new Error('SIGNED_OUT');
+          await ensureClientToken(false);
+          const res = await fetch.call(window, `https://api.spotify.com/v1/playlists/${pid}/tracks`, {
+            method: 'POST',
+            headers: { ...apiHeaders(), 'Content-Type': 'application/json;charset=UTF-8' },
+            body: JSON.stringify({ uris }),
+          });
+          if (!res.ok) throw new Error(`HTTP_${res.status}`);
         }
         invalidatePfCache('fetchPlaylist:');
         invalidatePfCache('editablePlaylists');
@@ -2429,10 +3166,31 @@
       if (sub === 'tracks' && method === 'DELETE') {
         const uids = (params.get('uids') || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 100);
         if (!uids.length) throw new Error('MISSING_TRACK_UIDS');
-        await queryPathfinder('removeFromPlaylist', {
-          playlistUri: `spotify:playlist:${pid}`,
-          uids,
-        }, { fresh: true, ttlMs: 0 });
+        try {
+          await queryPathfinder('removeFromPlaylist', {
+            playlistUri: `spotify:playlist:${pid}`,
+            uids,
+          }, { fresh: true, ttlMs: 0 });
+        } catch (err) {
+          const msg = String(err?.message || '');
+          if (msg === 'SIGNED_OUT' || msg === 'HTTP_429') throw err;
+          if (!await ensureToken(2500)) throw new Error('SIGNED_OUT');
+          await ensureClientToken(false);
+          const res = await fetch.call(window, `https://spclient.wg.spotify.com/playlist/v2/playlist/${pid}/changes`, {
+            method: 'POST',
+            headers: { ...apiHeaders(), 'Content-Type': 'application/json;charset=UTF-8' },
+            body: JSON.stringify({
+              deltas: [{
+                ops: [{ kind: 'REM', rem: { itemsAsKey: false, items: uids.map(uid => ({ attributes: { itemId: uid } })) } }],
+                info: { source: { client: 'WEBPLAYER' } },
+              }],
+              wantResultingRevisions: false,
+              wantSyncResult: false,
+              nonces: [],
+            }),
+          });
+          if (!res.ok) throw err;
+        }
         invalidatePfCache('fetchPlaylist:');
         invalidatePfCache('editablePlaylists');
         invalidatePfCache('libraryV3');
@@ -2710,6 +3468,9 @@
     const playSingle = async () => {
       if (spotifyPlayerApi && typeof spotifyPlayerApi.play === 'function') {
         try {
+          const targetVol = desiredMuted ? 0 : Math.min(1, Math.max(0, desiredVolume));
+          try { (harmonyPlayer || harmonyController)?.setVolume?.(targetVol); } catch {}
+          try { (harmonyPlayer || harmonyController)?.setMuted?.(Boolean(desiredMuted)); } catch {}
           const ctx = { uri };
           const origin = { featureIdentifier: 'track' };
           const opts = { ...(ms > 0 ? { seekTo: ms } : {}), shuffle: false };
@@ -2793,10 +3554,73 @@
   }
 
   async function startTrackPlayback(trackId, startAt, context) {
+    // Fast path: Harmony already transitioned gaplessly into Nocturne's preloaded next track — adopt it with 0ms interruption!
+    if (startAt === 0 && seamlessAdoptedTrackId && seamlessAdoptedTrackId === trackId) {
+      const hs = harmonyState();
+      const curTrack = hs?.track_window?.current_track;
+      const curId = extractTrackId(curTrack?.uri || curTrack?.id);
+      const linkedId = extractTrackId(curTrack?.linked_from?.uri || curTrack?.linked_from?.id);
+      const curPos = harmonyPositionSec() ?? 0;
+      if ((curId === trackId || linkedId === trackId) && !hs?.paused && !hs?.isPaused && curPos < 5) {
+        hardPaused = false;
+        bleedTrackId = '';
+        bleedPauseSent = false;
+        seamlessAdoptedTrackId = '';
+        startAutoResumeUsed = false;
+        sawDesiredActive = true;
+        desiredActivePosMs = Math.max(0, Math.round(curPos * 1000));
+        desiredActiveDurMs = Number(hs?.duration) > 0 ? Number(hs.duration) : 0;
+        desiredActivePlayingSince = Date.now();
+        desiredTrackId = trackId;
+        counters.expectedTrackId = trackId;
+        counters.actualTrackId = curId || trackId;
+        counters.startPending = false;
+        counters.trackEnded = false;
+        counters.endedTrackId = '';
+        counters.lastPlayMethod = 'harmony.seamless';
+        counters.lastPlayError = '';
+        counters.lastPlaybackError = '';
+        setSwitchMute(false);
+        setUnwantedBleedMute(false);
+        lastTrackStartAt = Date.now();
+        lastTrackStartSec = 0;
+        switchFromTrackId = '';
+        switchFromPosSec = 0;
+        lastSeekTargetSec = null;
+        lastSeekFromSec = null;
+        lastSeekAt = 0;
+        clearTimeout(playTimer);
+        clearTimeout(seekTimer);
+        playSeq++;
+        for (const el of elements()) applyMediaSettings(el);
+        return true;
+      }
+    }
+    const prevId = desiredTrackId || nowPlayingTrackId(testid('now-playing-widget')) || '';
+    const prevPos = prevId && prevId !== trackId ? (harmonyPositionSec() ?? (lastHarmonyPosMs > 0 ? lastHarmonyPosMs / 1000 : 0)) : 0;
+    hardPaused = false;
     bleedTrackId = '';
-    setUnwantedBleedMute(false);
+    bleedPauseSent = false;
+    seamlessAdoptedTrackId = '';
+    startAutoResumeUsed = false;
+    sawDesiredActive = false;
+    desiredActivePosMs = 0;
+    desiredActiveDurMs = 0;
+    desiredActivePlayingSince = 0;
+    for (const m of elements()) {
+      if (m?.ended) ignoredEndedMedia?.add(m);
+    }
     desiredTrackId = trackId;
     counters.expectedTrackId = trackId;
+    counters.startPending = true;
+    setSwitchMute(false);
+    setUnwantedBleedMute(false);
+    lastTrackStartAt = Date.now();
+    lastTrackStartSec = startAt;
+    switchFromTrackId = prevId !== trackId ? prevId : '';
+    switchFromPosSec = prevPos;
+    lastAdSeekTrackUri = '';
+    wasHarmonyAd = false;
     counters.actualTrackId = '';
     counters.lastPlayError = '';
     counters.lastPlaybackError = '';
@@ -2806,10 +3630,15 @@
     lastHarmonyPosMs = 0;
     lastHarmonyDurMs = 0;
     lastHarmonyWasPlaying = false;
+    lastHarmonyClock = null;
     const runId = ++playSeq;
-    counters.startPending = true;
     const isCurrent = () => playSeq === runId && desiredTrackId === trackId;
-    const clearPending = () => { if (playSeq === runId) counters.startPending = false; };
+    const clearPending = () => {
+      if (playSeq === runId) {
+        counters.startPending = false;
+        setSwitchMute(false);
+      }
+    };
     const settleSeek = () => {
       if (startAt > 0.5) {
         const ms = Math.round(startAt * 1000);
@@ -2834,7 +3663,13 @@
     clearTimeout(playTimer);
     clearTimeout(seekTimer);
     const started = await tryHarmonyPlay(trackId, startAt, context);
-    if (!isCurrent()) return false;
+    if (!isCurrent()) {
+      if (started && !desiredTrackId) {
+        if (hardPaused) enforceHardPause(true);
+        else callHarmonyPause();
+      }
+      return false;
+    }
     if (started) {
       clearPending();
       settleSeek();
@@ -2912,16 +3747,23 @@
 
   Object.defineProperty(window, '__nocturneSpotifyLab', { value: Object.freeze({
     configure: enabled => { counters.enabled = enabled === true; },
-    stats: () => ({ ...counters, trackEnded: isTrackEndedNow(), hasApi: Boolean(spotifyPlayerApi), hasHarmony: Boolean(harmonyPlayer || harmonyController) }),
+    stats: () => ({
+      ...counters,
+      trackEnded: isTrackEndedNow(),
+      hasApi: Boolean(spotifyPlayerApi),
+      hasHarmony: Boolean(harmonyPlayer || harmonyController),
+      preloadedTrackId: preloadedNextTrackId,
+      preloadStage: preloadState?.stage || '',
+    }),
     takeDiagnostics: () => diagnostics.splice(0, diagnostics.length),
     playing,
     nowPlaying: () => { try { return nowPlaying(); } catch { return null; } },
     account: () => testid('login-button') || testid('signup-button') ? 'out' : testid('user-widget-link') || auth.token ? 'in' : null,
+    warmNextTrack: trackId => warmNextTrack(trackId),
     playTrack: (trackId, startAt, vol, muted, context) => {
       if (typeof trackId !== 'string' || !/^[A-Za-z0-9]{22}$/.test(trackId)) return false;
       if (typeof vol === 'number' && Number.isFinite(vol)) desiredVolume = Math.min(1, Math.max(0, vol));
       if (typeof muted === 'boolean') desiredMuted = muted;
-      for (const el of elements()) applyMediaSettings(el);
       void startTrackPlayback(trackId, Number(startAt) || 0, context);
       return true;
     },
@@ -2936,10 +3778,14 @@
     },
     startJob: (key, spec) => {
       if (typeof key !== 'string' || !key) return false;
-      jobs[key] = { done: false, ok: false, data: null, error: '' };
+      const now = Date.now();
+      for (const k of Object.keys(jobs)) {
+        if (jobs[k]?.at && now - jobs[k].at > 60_000) delete jobs[k];
+      }
+      jobs[key] = { done: false, ok: false, data: null, error: '', at: now };
       void runSpec(spec).then(
-        data => { if (jobs[key]) jobs[key] = { done: true, ok: true, data, error: '' }; },
-        err => { if (jobs[key]) jobs[key] = { done: true, ok: false, data: null, error: String(err?.message || err || 'ERROR') }; },
+        data => { if (jobs[key]) jobs[key] = { done: true, ok: true, data, error: '', at: now }; },
+        err => { if (jobs[key]) jobs[key] = { done: true, ok: false, data: null, error: String(err?.message || err || 'ERROR'), at: now }; },
       );
       return true;
     },
@@ -2949,12 +3795,23 @@
       if (job.done) delete jobs[key];
       return job;
     },
+    dropJob: key => {
+      if (typeof key === 'string' && key && key in jobs) {
+        delete jobs[key];
+        return true;
+      }
+      return false;
+    },
     control: (action, value) => {
       const p = harmonyPlayer || harmonyController;
       if (action === 'pause') {
         const wasPending = counters.startPending;
         const wasPlaying = playing() === true;
+        hardPaused = true;
         bleedTrackId = '';
+        bleedPauseSent = false;
+        seamlessAdoptedTrackId = '';
+        setSwitchMute(false);
         setUnwantedBleedMute(false);
         desiredTrackId = '';
         playSeq++;
@@ -2963,25 +3820,40 @@
         counters.startPending = false;
         counters.trackEnded = false;
         counters.endedTrackId = '';
+        enforceHardPause(false);
         if (!wasPlaying) {
+          callHarmonyPause();
           if (wasPending) {
-            try { void (spotifyPlayerApi?.pause?.() ?? p?.pause?.()); } catch {}
             return true;
           }
           return false;
         }
       } else if (action === 'play') {
+        const wasHardPaused = hardPaused;
+        hardPaused = false;
         bleedTrackId = '';
         setUnwantedBleedMute(false);
         if (!desiredTrackId && counters.expectedTrackId) desiredTrackId = counters.expectedTrackId;
         counters.trackEnded = false;
         counters.endedTrackId = '';
         counters.lastPlaybackError = '';
-        if (playing() === true) return false;
-      } else if (action === 'toggle' || action === 'next' || action === 'previous') {
+        for (const el of elements()) applyMediaSettings(el);
+        if (!wasHardPaused && playing() === true) return false;
+      } else if (action === 'toggle') {
+        hardPaused = false;
         bleedTrackId = '';
         setUnwantedBleedMute(false);
         counters.endedTrackId = '';
+        for (const el of elements()) applyMediaSettings(el);
+      } else if (action === 'next' || action === 'previous') {
+        hardPaused = false;
+        bleedTrackId = '';
+        setUnwantedBleedMute(false);
+        desiredTrackId = '';
+        counters.expectedTrackId = '';
+        counters.trackEnded = false;
+        counters.endedTrackId = '';
+        for (const el of elements()) applyMediaSettings(el);
       }
       const selectors = {
         toggle: '[data-testid="control-button-playpause"]', play: '[data-testid="control-button-playpause"]', pause: '[data-testid="control-button-playpause"]',
@@ -2991,14 +3863,14 @@
       };
       if (selectors[action]) {
         if (action === 'pause') {
-          if (spotifyPlayerApi?.pause) { void spotifyPlayerApi.pause(); return true; }
-          if (p?.pause) { void p.pause(); return true; }
+          if (spotifyPlayerApi?.pause) { try { void Promise.resolve(spotifyPlayerApi.pause()).catch(() => {}); return true; } catch {} }
+          if (p?.pause) { try { void Promise.resolve(p.pause()).catch(() => {}); return true; } catch {} }
           const btn = typeof document !== 'undefined' ? document.querySelector?.(selectors[action]) : null;
           const lbl = btn?.getAttribute?.('aria-label') || '';
           if (/^(?:play|играть|воспроизвести)\b/i.test(lbl)) return false;
         } else if (action === 'play') {
-          if (spotifyPlayerApi?.resume) { void spotifyPlayerApi.resume(); return true; }
-          if (p?.resume) { void p.resume(); return true; }
+          if (spotifyPlayerApi?.resume) { try { void Promise.resolve(spotifyPlayerApi.resume()).catch(() => {}); return true; } catch {} }
+          if (p?.resume) { try { void Promise.resolve(p.resume()).catch(() => {}); return true; } catch {} }
           const btn = typeof document !== 'undefined' ? document.querySelector?.(selectors[action]) : null;
           const lbl = btn?.getAttribute?.('aria-label') || '';
           if (/^(?:pause|пауза)\b/i.test(lbl)) return false;
@@ -3006,14 +3878,28 @@
         if (click(selectors[action])) return true;
         try {
           if (action === 'toggle' && p?.togglePlay) {
-            void p.togglePlay();
+            void Promise.resolve(p.togglePlay()).catch(() => {});
+            return true;
+          }
+          if (action === 'next' && (spotifyPlayerApi?.skipToNext || p?.nextTrack)) {
+            void Promise.resolve((spotifyPlayerApi?.skipToNext ?? p?.nextTrack).call(spotifyPlayerApi?.skipToNext ? spotifyPlayerApi : p)).catch(() => {});
+            return true;
+          }
+          if (action === 'previous' && (spotifyPlayerApi?.skipToPrevious || p?.previousTrack)) {
+            void Promise.resolve((spotifyPlayerApi?.skipToPrevious ?? p?.previousTrack).call(spotifyPlayerApi?.skipToPrevious ? spotifyPlayerApi : p)).catch(() => {});
+            return true;
           }
         } catch {}
-        return Boolean(spotifyPlayerApi || p);
+        return Boolean(
+          (action === 'toggle' || action === 'play' || action === 'pause') &&
+          (spotifyPlayerApi || p)
+        );
       }
       if (typeof value !== 'number' || !Number.isFinite(value)) return false;
       if (action === 'seek') {
         bleedTrackId = '';
+        switchFromTrackId = '';
+        switchFromPosSec = 0;
         setUnwantedBleedMute(false);
         counters.trackEnded = false;
         counters.endedTrackId = '';

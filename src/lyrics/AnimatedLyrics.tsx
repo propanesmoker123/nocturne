@@ -1,9 +1,14 @@
+import '@fontsource-variable/onest/wght.css'
+import '@fontsource-variable/playfair-display/wght.css'
+import '@fontsource-variable/playfair-display/wght-italic.css'
+import '@fontsource-variable/unbounded/wght.css'
+import '@fontsource-variable/jetbrains-mono/wght.css'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { scrollWithin } from '../lib/scrollWithin'
 import { useSettings } from '../lib/settings'
 import { useWindowVisibility } from '../lib/windowVisibility'
 import { engine } from '../player/engine'
-import { usePlayer } from '../player/store'
+import { isEngineAttachedTo, livePlaybackPositionMs, usePlayer } from '../player/store'
 import { useWaveform } from '../player/waveformStore'
 import type { Lyrics, Track } from '../vk/models'
 import s from './AnimatedLyrics.module.css'
@@ -27,7 +32,6 @@ interface Props {
 export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false, footer }: Props) {
   const isPlaying = usePlayer((p) => p.isPlaying)
   const visible = useWindowVisibility((x) => x.visible)
-  const position = usePlayer((p) => p.position)
   const duration = usePlayer((p) => p.duration || track.duration)
   const seek = usePlayer((p) => p.seek)
   const lyricCfg = useSettings((st) => st.lyrics)
@@ -43,9 +47,13 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
   waveRef.current = { peaks: activePeaks, beats: activeBeats }
 
   const wrapRef = useRef<HTMLDivElement>(null)
+  const glowRef = useRef<HTMLDivElement>(null)
   const lineRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
   const wordRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
-  const clockRef = useRef<{ baseMs: number; wallMs: number }>({ baseMs: position * 1000, wallMs: performance.now() })
+  const clockRef = useRef<{ baseMs: number; wallMs: number }>({
+    baseMs: usePlayer.getState().position * 1000,
+    wallMs: performance.now(),
+  })
   const activeIdxRef = useRef<number>(-1)
   const prevScrolledIdxRef = useRef<number>(-1)
   const lastSeekWallRef = useRef<number>(0)
@@ -85,8 +93,24 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
   particlesOnRef.current = lyricCfg.particles
   const syncNowRef = useRef<((nowMs: number, wallNow: number) => void) | null>(null)
 
-  // Reset per-track indices cleanly
+  // Reset per-track and per-lyrics-replacement indices cleanly (e.g. when Whisper AI replaces lyrics in-place)
   useEffect(() => {
+    const prevIdx = activeIdxRef.current
+    if (prevIdx >= 0) {
+      const prevLineEl = lineRefs.current.get(prevIdx)
+      if (prevLineEl) {
+        prevLineEl.style.removeProperty('--beat')
+        prevLineEl.style.removeProperty('--energy')
+      }
+      for (const [k, el] of wordRefs.current) {
+        if (!k.startsWith(`${prevIdx}:`)) continue
+        el.style.removeProperty('--wp')
+        delete el.dataset.wordActive
+        delete el.dataset.wordLit
+        const unit = el.parentElement
+        if (unit && unit.dataset.fx) delete unit.dataset.lit
+      }
+    }
     activeIdxRef.current = -1
     lastWordIdxRef.current = -1
     wordPulseRef.current = 0
@@ -99,21 +123,47 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
     burstsRef.current.length = 0
     beatSmoothRef.current = { kick: 0, energy: 0, lastWall: performance.now() }
     setActiveIndex(-1)
-  }, [track.key])
+  }, [track.key, lyrics])
 
+  // Sync clock ref directly from player store without subscribing the React tree to 4Hz position ticks
   useEffect(() => {
-    const baseMs = position * 1000
-    clockRef.current = { baseMs, wallMs: performance.now() }
-    if (!isPlaying) {
-      const engineMs = engine.getPlaybackPositionMs()
-      const targetMs = engineMs > 0 || engine.playing ? engineMs : baseMs
-      syncNowRef.current?.(targetMs, performance.now())
+    const syncFromPos = (posSec: number, playingNow: boolean) => {
+      const baseMs = posSec * 1000
+      const now = performance.now()
+      clockRef.current = { baseMs, wallMs: now }
+      if (!playingNow) {
+        syncNowRef.current?.(livePlaybackPositionMs(track.key), now)
+      }
     }
-  }, [position, track.key, isPlaying])
+    const cur = usePlayer.getState()
+    syncFromPos(cur.position, isPlaying)
+    return usePlayer.subscribe((state, prev) => {
+      if (state.position !== prev.position) {
+        syncFromPos(state.position, state.isPlaying)
+      }
+    })
+  }, [track.key, isPlaying])
 
   useEffect(() => {
+    let lastBeatTarget: HTMLElement | null = null
+    let lastBeatStr = ''
+    let lastEnergyStr = ''
+
+    const clearBeatTarget = () => {
+      if (lastBeatTarget) {
+        lastBeatTarget.style.removeProperty('--beat')
+        lastBeatTarget.style.removeProperty('--energy')
+        lastBeatTarget = null
+      }
+    }
+
     const clearLineWords = (lineIdx: number) => {
       if (lineIdx < 0) return
+      const lineEl = lineRefs.current.get(lineIdx)
+      if (lineEl) {
+        lineEl.style.removeProperty('--beat')
+        lineEl.style.removeProperty('--energy')
+      }
       const count = lineWordsRef.current[lineIdx]?.length ?? 0
       for (let w = 0; w < count; w++) {
         const el = wordRefs.current.get(`${lineIdx}:${w}`)
@@ -186,23 +236,12 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
         setActiveIndex(idx)
       }
 
-      const triggerBurst = (el: HTMLElement, fx: WordBurst['fx'], variant: WordBurst['variant'], wrapBox: DOMRect | null) => {
-        if (!wrapBox || wallNow - lastBurstWallRef.current < 45) return
-        const wb = el.getBoundingClientRect()
-        if (wb.width <= 0 || wb.bottom < wrapBox.top || wb.top > wrapBox.bottom) return
-        lastBurstWallRef.current = wallNow
-        burstsRef.current.push({
-          x: wb.left - wrapBox.left + wb.width * 0.5,
-          y: wb.top - wrapBox.top + wb.height * 0.45,
-          fx,
-          variant,
-        })
-      }
+      const canBurst = effectsOn && particlesOnRef.current && isPlaying && !seekLockRef.current
+      const pendingBursts: Array<{ el: HTMLElement; fx: WordBurst['fx']; variant: WordBurst['variant'] }> = []
 
       if (idx >= 0) {
         const words = lineWordsRef.current[idx] ?? []
         const lineData = effectsOn ? analyzedRef.current?.lineFx.get(idx) : undefined
-        const wrapBox = effectsOn && particlesOnRef.current && isPlaying && !seekLockRef.current ? wrapRef.current?.getBoundingClientRect() ?? null : null
 
         if (!wordSyncOn) {
           if (!effectsOn) {
@@ -219,7 +258,7 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
                 const wasLit = el.dataset.wordLit === 'true'
                 el.dataset.wordLit = 'true'
                 if (unit && unit.dataset.fx) unit.dataset.lit = 'true'
-                if (!wasLit) triggerBurst(el, fx, lineData?.wordVariant.get(w) ?? 0, wrapBox)
+                if (!wasLit && canBurst) pendingBursts.push({ el, fx, variant: lineData?.wordVariant.get(w) ?? 0 })
               } else {
                 delete el.dataset.wordLit
                 if (unit && unit.dataset.fx) delete unit.dataset.lit
@@ -250,7 +289,7 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
               el.dataset.wordLit = 'true'
               if (unit && unit.dataset.fx) unit.dataset.lit = 'true'
               const fx = lineData?.wordFx.get(w)
-              if (!wasLit && fx) triggerBurst(el, fx, lineData?.wordVariant.get(w) ?? 0, wrapBox)
+              if (!wasLit && fx && canBurst) pendingBursts.push({ el, fx, variant: lineData?.wordVariant.get(w) ?? 0 })
             } else {
               delete el.dataset.wordLit
               if (unit && unit.dataset.fx) delete unit.dataset.lit
@@ -282,10 +321,50 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
 
       stepBeatEnvelope(beatSmoothRef.current, targetKick, targetEnergy, dtMs)
 
-      const host = wrapRef.current
-      if (host) {
-        host.style.setProperty('--beat', effectsOn ? beatSmoothRef.current.kick.toFixed(3) : '0')
-        host.style.setProperty('--energy', effectsOn ? beatSmoothRef.current.energy.toFixed(3) : '0')
+      // Scope --beat/--energy to only the ambient glow div + single active line when synced
+      // to avoid full-subtree style invalidation over 500-1500 inactive word spans at 60 FPS.
+      const beatStr = effectsOn ? beatSmoothRef.current.kick.toFixed(3) : '0'
+      const energyStr = effectsOn ? beatSmoothRef.current.energy.toFixed(3) : '0'
+      const valuesChanged = beatStr !== lastBeatStr || energyStr !== lastEnergyStr
+      const targetEl = lyrics.synced ? (idx >= 0 ? lineRefs.current.get(idx) ?? null : null) : wrapRef.current
+      const targetChanged = targetEl !== lastBeatTarget
+
+      if (targetChanged) {
+        clearBeatTarget()
+        lastBeatTarget = targetEl
+      }
+
+      if (valuesChanged || targetChanged) {
+        lastBeatStr = beatStr
+        lastEnergyStr = energyStr
+        const glowEl = glowRef.current
+        if (glowEl) {
+          glowEl.style.setProperty('--beat', beatStr)
+          glowEl.style.setProperty('--energy', energyStr)
+        }
+        if (targetEl) {
+          targetEl.style.setProperty('--beat', beatStr)
+          targetEl.style.setProperty('--energy', energyStr)
+        }
+      }
+
+      // Batch DOM geometry reads AFTER all style/dataset writes to eliminate layout thrashing.
+      if (pendingBursts.length > 0 && wallNow - lastBurstWallRef.current >= 45) {
+        const wrapBox = wrapRef.current?.getBoundingClientRect() ?? null
+        if (wrapBox) {
+          for (const b of pendingBursts) {
+            if (wallNow - lastBurstWallRef.current < 45) break
+            const wb = b.el.getBoundingClientRect()
+            if (wb.width <= 0 || wb.bottom < wrapBox.top || wb.top > wrapBox.bottom) continue
+            lastBurstWallRef.current = wallNow
+            burstsRef.current.push({
+              x: wb.left - wrapBox.left + wb.width * 0.5,
+              y: wb.top - wrapBox.top + wb.height * 0.45,
+              fx: b.fx,
+              variant: b.variant,
+            })
+          }
+        }
       }
     }
 
@@ -293,9 +372,11 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
 
     const readPlaybackMs = (wallNow: number) => {
       const leadMs = isPlaying ? (engine.isRemoteClock ? SPOTIFY_LEAD_MS : AUDIO_LEAD_MS) : 0
-      const engineMs = engine.getPlaybackPositionMs()
-      if (engineMs > 0 || engine.playing) {
-        return Math.max(0, engineMs + leadMs)
+      if (isEngineAttachedTo(track.key)) {
+        const engineMs = engine.getPlaybackPositionMs()
+        if (engineMs > 0 || engine.playing) {
+          return Math.max(0, engineMs + leadMs)
+        }
       }
       const elapsed = isPlaying ? Math.min(1150, Math.max(0, wallNow - clockRef.current.wallMs)) : 0
       return Math.max(0, clockRef.current.baseMs + elapsed + leadMs)
@@ -305,6 +386,7 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
     if (!visible || (!isPlaying && beatSmoothRef.current.kick === 0 && beatSmoothRef.current.energy === 0)) {
       return () => {
         syncNowRef.current = null
+        clearBeatTarget()
       }
     }
 
@@ -318,9 +400,10 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
     raf = requestAnimationFrame(tick)
     return () => {
       syncNowRef.current = null
+      clearBeatTarget()
       cancelAnimationFrame(raf)
     }
-  }, [isPlaying, visible, duration, lyrics, effectsOn, wordSyncOn])
+  }, [track.key, isPlaying, visible, duration, lyrics, effectsOn, wordSyncOn])
 
   // Smooth spring scroll on normal playback advances; only snap immediately right after a multi-line seek jump
   useEffect(() => {
@@ -341,6 +424,7 @@ export function AnimatedLyrics({ track, lyrics, fromVk = false, theater = false,
       data-theater={theater ? 'true' : 'false'}
       data-playing={isPlaying ? 'true' : 'false'}
     >
+      <div ref={glowRef} className={s.glow} aria-hidden="true" />
       <ParticlesCanvas
         mode="sparks"
         enabled={effectsOn && lyricCfg.particles}

@@ -108,8 +108,8 @@ pub async fn sc_stream(app: AppHandle, track_id: u64) -> Result<PlaybackSource, 
     if !pick.url.starts_with("https://api-v2.soundcloud.com/media/") {
         return Err(invalid("unexpected stream address"));
     }
-    let mut url = Url::parse(&pick.url).map_err(|_| invalid("unexpected stream address"))?;
-    url.query_pairs_mut().append_pair("client_id", &app.state::<ScState>().ids().client_id);
+    let parsed = Url::parse(&pick.url).map_err(|_| invalid("unexpected stream address"))?;
+    let mut url = super::api::with_client_id(&parsed, &app.state::<ScState>().ids().client_id);
     if let Some(auth) = track.get("track_authorization").and_then(Value::as_str) {
         url.query_pairs_mut().append_pair("track_authorization", auth);
     }

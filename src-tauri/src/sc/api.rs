@@ -14,8 +14,12 @@ use super::client_id::{self, Ids};
 use super::{emit_status, login, store, trace, ScState, ScUser};
 use crate::http::Http;
 
-/// The site's ids are looked up again at most this often (a 401 can also mean a dead key).
+/// The site's ids are looked up again at most this often after a completed check.
 const REDISCOVER_EVERY: Duration = Duration::from_secs(600);
+/// Shorter cooldown after a transient network/scrape error so we don't lock out for 10 minutes.
+const REDISCOVER_ERR_COOLDOWN: Duration = Duration::from_secs(30);
+/// One rediscovery at a time: concurrent 401s share one rotation instead of signing out.
+static REDISCOVER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub const API_BASE: &str = "https://api-v2.soundcloud.com";
 const SITE_ORIGIN: &str = "https://soundcloud.com";
@@ -150,30 +154,44 @@ pub fn signs_out(current: Option<&str>, failed: &str) -> bool {
     current == Some(failed)
 }
 
-fn with_client_id(url: &Url, client_id: &str) -> Url {
+pub(crate) fn with_client_id(url: &Url, client_id: &str) -> Url {
     let mut url = url.clone();
     let kept: Vec<(String, String)> = url.query_pairs().into_owned().filter(|(k, _)| k != "client_id").collect();
     url.query_pairs_mut().clear().extend_pairs(kept).append_pair("client_id", client_id);
     url
 }
 
-/// New ids from the site, if they differ from ours (at most once per `REDISCOVER_EVERY`).
-async fn rediscover(app: &AppHandle) -> bool {
+fn url_client_id(url: &Url) -> Option<String> {
+    url.query_pairs().find(|(k, _)| k == "client_id").map(|(_, v)| v.into_owned())
+}
+
+/// New ids from the site, if they differ from the ones that failed. Serialized: concurrent 401s
+/// share one lookup, and a request whose id was already rotated by another just retries.
+pub(crate) async fn rediscover(app: &AppHandle, failed_client_id: &str) -> bool {
+    let _guard = REDISCOVER.lock().await;
     let st = app.state::<ScState>();
-    if let Ok(mut last) = st.rediscovered.lock() {
-        if last.is_some_and(|t| t.elapsed() < REDISCOVER_EVERY) {
+    if st.ids().client_id != failed_client_id {
+        return true;
+    }
+    if let Ok(last) = st.rediscovered.lock() {
+        if last.is_some_and(|deadline| Instant::now() < deadline) {
             return false;
         }
-        *last = Some(Instant::now());
     }
-    match client_id::discover(&app.state::<Http>()).await {
+    let result = client_id::discover(&app.state::<Http>()).await;
+    let (changed, cooldown) = match result {
         Ok(ids) if ids != st.ids() => {
             trace!("SoundCloud changed its client id");
             st.set_ids(ids);
-            true
+            (true, REDISCOVER_EVERY)
         }
-        _ => false,
+        Ok(_) => (false, REDISCOVER_EVERY),
+        Err(_) => (false, REDISCOVER_ERR_COOLDOWN),
+    };
+    if let Ok(mut last) = st.rediscovered.lock() {
+        *last = Some(Instant::now() + cooldown);
     }
+    changed
 }
 
 /// A request with the key and the 401 steps. Journals the method, the path and the error only.
@@ -183,6 +201,11 @@ pub async fn request_url(app: &AppHandle, method: Method, mut url: Url) -> Resul
     let mut policy = Unauthorized::default();
     loop {
         let Some(token) = st.token() else { return Err(ScError::SignedOut) };
+        // another request may have rotated the site's id meanwhile
+        let current_id = st.ids().client_id;
+        if url_client_id(&url).is_some_and(|id| id != current_id) {
+            url = with_client_id(&url, &current_id);
+        }
         match send(&http, method.clone(), url.clone(), &token).await {
             Err(ScError::Http { status: 401 }) => trace!("{method} {}: HTTP 401", super::shown_path(url.path())),
             Err(e) => {
@@ -198,7 +221,8 @@ pub async fn request_url(app: &AppHandle, method: Method, mut url: Url) -> Resul
         loop {
             match policy.next() {
                 Step::Rediscover => {
-                    if rediscover(app).await {
+                    let failed = url_client_id(&url).unwrap_or_default();
+                    if rediscover(app, &failed).await {
                         url = with_client_id(&url, &st.ids().client_id);
                         break;
                     }
@@ -209,9 +233,8 @@ pub async fn request_url(app: &AppHandle, method: Method, mut url: Url) -> Resul
                     }
                 }
                 Step::SignOut => {
-                    if signs_out(st.token().as_deref(), &token) {
+                    if st.sign_out_if_token(&token) {
                         trace!("the key no longer works, signing out");
-                        st.set_signed_out();
                         store::clear_token();
                         emit_status(app);
                         return Err(ScError::SignedOut);

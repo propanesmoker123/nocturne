@@ -7,10 +7,37 @@ use crate::http::Http;
 const MAX_BYTES: usize = 3 * 1024 * 1024;
 const MAX_AI_BYTES: usize = 256 * 1024;
 const MAX_AI_PROMPT_BYTES: usize = 32 * 1024;
+const MAX_REDIRECT_HOPS: usize = 5;
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 const GEMINI_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 const LYRICS_UA: &str = concat!("Nocturne/", env!("CARGO_PKG_VERSION"), " (lyrics)");
 
+fn has_encoded_traversal(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("..")
+        || lower.contains('\\')
+        || lower.contains("%2e")
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+}
+
+fn raw_path_part(url: &str) -> &str {
+    let before_query = url.split(['?', '#']).next().unwrap_or(url);
+    if let Some(idx) = before_query.find("://") {
+        let after_scheme = &before_query[idx + 3..];
+        match after_scheme.find(['/', '\\']) {
+            Some(slash) => &after_scheme[slash..],
+            None => "",
+        }
+    } else {
+        before_query
+    }
+}
+
 pub fn lyrics_url_allowed(url: &str) -> bool {
+    if has_encoded_traversal(raw_path_part(url)) {
+        return false;
+    }
     let Ok(u) = url::Url::parse(url) else {
         return false;
     };
@@ -21,6 +48,9 @@ pub fn lyrics_url_allowed(url: &str) -> bool {
         return false;
     };
     let path = u.path();
+    if has_encoded_traversal(path) {
+        return false;
+    }
     match host.as_str() {
         "lrclib.net" => path == "/api/get" || path == "/api/search",
         "genius.com" => {
@@ -28,15 +58,14 @@ pub fn lyrics_url_allowed(url: &str) -> bool {
                 || (path.starts_with('/')
                     && path.ends_with("-lyrics")
                     && path.len() > "/-lyrics".len()
-                    && !path[1..].contains('/')
-                    && !path.contains(".."))
+                    && !path[1..].contains('/'))
         }
         "music.163.com" => path == "/api/cloudsearch/pc" || path == "/api/song/lyric",
         "c.y.qq.com" => path == "/soso/fcgi-bin/client_search_cp" || path == "/lyric/fcgi-bin/fcg_query_lyric_new.fcg",
         "mobileservice.kugou.com" => path == "/api/v3/search/song",
         "krcs.kugou.com" => path == "/search",
         "lyrics.kugou.com" => path == "/download",
-        "api.lyrics.ovh" => path.starts_with("/v1/") && path.len() > 4 && !path.contains(".."),
+        "api.lyrics.ovh" => path.starts_with("/v1/") && path.len() > 4,
         _ => false,
     }
 }
@@ -55,22 +84,25 @@ pub async fn lyrics_fetch(http: State<'_, Http>, url: String) -> Result<String, 
     if !lyrics_url_allowed(&url) {
         return Err("url not allowed".into());
     }
-    let mut req = http
-        .client
-        .get(&url)
-        .header(reqwest::header::USER_AGENT, LYRICS_UA)
-        .header(reqwest::header::ACCEPT, "application/json, text/html;q=0.9");
-    if let Some(referer) = lyrics_referer_for(&url) {
-        req = req.header(reqwest::header::REFERER, referer);
-    }
-    let mut resp = req
-        .send()
-        .await
-        .map_err(|e| format!("network: {}", e.without_url()))?;
+    let mut resp = http
+        .send_with_validated_redirects(
+            &url,
+            MAX_REDIRECT_HOPS,
+            |u| lyrics_url_allowed(u.as_str()),
+            |client, u| {
+                let mut req = client
+                    .get(u.clone())
+                    .timeout(FETCH_TIMEOUT)
+                    .header(reqwest::header::USER_AGENT, LYRICS_UA)
+                    .header(reqwest::header::ACCEPT, "application/json, text/html;q=0.9");
+                if let Some(referer) = lyrics_referer_for(u.as_str()) {
+                    req = req.header(reqwest::header::REFERER, referer);
+                }
+                req
+            },
+        )
+        .await?;
 
-    if !lyrics_url_allowed(resp.url().as_str()) {
-        return Err("redirect not allowed".into());
-    }
     let status = resp.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(String::new());
@@ -181,6 +213,12 @@ mod tests {
         assert!(!lyrics_url_allowed("https://evil.com/api/get"));
         assert!(!lyrics_url_allowed("https://user@lrclib.net/api/get"));
         assert!(!lyrics_url_allowed("https://lrclib.net:8443/api/get"));
+        assert!(!lyrics_url_allowed("https://api.lyrics.ovh/v1/artist/%2e%2e/secret"));
+        assert!(!lyrics_url_allowed("https://api.lyrics.ovh/v1/artist/%2E%2E/secret"));
+        assert!(!lyrics_url_allowed("https://genius.com/foo%2fbar-lyrics"));
+        assert!(!lyrics_url_allowed("https://genius.com/foo%2Fbar-lyrics"));
+        assert!(!lyrics_url_allowed("https://genius.com/foo%5cbar-lyrics"));
+        assert!(!lyrics_url_allowed("https://api.lyrics.ovh/v1/a%5Cb"));
     }
 
     #[test]

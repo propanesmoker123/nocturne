@@ -3,6 +3,7 @@ import { queryClient } from '../app/queryClient'
 import { EV } from '../lib/events'
 import { invoke, isTauri, listen } from '../lib/tauri'
 import { clearScCache, hydrateScSnapshots, markScSnapshotsStale, readScSessionSnapshot, writeScSessionSnapshot } from '../lib/warmCache'
+import { clearPreload } from '../player/preload'
 import { serviceOf, type Track } from '../vk/models'
 import { setScMeId } from './api'
 import type { ScUser } from './normalize'
@@ -29,6 +30,7 @@ interface ScSessionState {
 const MOCK_USER: ScUser = { id: 7, name: 'listener', avatar: null, permalink: 'https://soundcloud.com/listener' }
 
 let liveScReadyConfirmed = false
+let statusVersion = 0
 
 export const useScSession = create<ScSessionState>((set) => ({
   phase: 'checking',
@@ -67,6 +69,7 @@ export function hydrateScWarmState(): void {
 }
 
 export function applyStatus(s: { state: ScPhase; user?: ScUser | null }) {
+  statusVersion++
   const prev = useScSession.getState()
   if (s.state === 'signed-in') {
     const finalUser = s.user ?? prev.user
@@ -84,6 +87,7 @@ export function applyStatus(s: { state: ScPhase; user?: ScUser | null }) {
     liveScReadyConfirmed = false
     if (isTauri()) clearScCache()
     setScMeId(0)
+    clearPreload()
     queryClient.removeQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('sc-') })
   }
   const nextPhase = s.state === 'checking' && isTauri() && prev.phase === 'signed-in' ? 'signed-in' : s.state
@@ -91,6 +95,7 @@ export function applyStatus(s: { state: ScPhase; user?: ScUser | null }) {
     phase: nextPhase,
     user: s.state === 'signed-out' ? null : (s.user ?? prev.user),
     signingIn: s.state === 'checking' ? prev.signingIn : false,
+    ...(s.state === 'signed-in' ? { error: null } : {}),
   })
 }
 
@@ -103,9 +108,11 @@ export async function initScSession() {
   if (!isTauri()) return applyStatus({ state: 'signed-in', user: MOCK_USER })
   void listen<{ state: ScPhase; user?: ScUser | null }>(EV.scStatus, (e) => applyStatus(e.payload))
   void listen<{ message: string; cancelled: boolean }>(EV.scLoginFailed, (e) => applyLoginFailed(e.payload))
+  const versionAtCall = statusVersion
   try {
-    applyStatus(await invoke<{ state: ScPhase; user?: ScUser | null }>('sc_status'))
+    const initial = await invoke<{ state: ScPhase; user?: ScUser | null }>('sc_status')
+    if (statusVersion === versionAtCall) applyStatus(initial)
   } catch {
-    applyStatus({ state: 'signed-out' })
+    if (statusVersion === versionAtCall) applyStatus({ state: 'signed-out' })
   }
 }

@@ -26,25 +26,29 @@ export const scKeys = {
 
 /** The next page to load: the last page's cursor, while there is one and fewer than `max` items came. */
 export function nextCursor<T>(pages: ScPage<T>[], max: number): string | undefined {
-  const loaded = pages.reduce((n, p) => n + p.items.length, 0)
   const last = pages[pages.length - 1]
-  return last?.next && loaded < max ? last.next : undefined
+  if (!last?.next || last.items.length === 0) return undefined
+  if (pages.length >= Math.max(1, Math.ceil(max / 20) + 5)) return undefined
+  if (pages.slice(0, -1).some((p) => p.next === last.next)) return undefined
+  const loaded = pages.reduce((n, p) => n + p.items.length, 0)
+  return loaded < max ? last.next : undefined
 }
 
 /** Loads a cursor-paged SoundCloud list in the background (up to `max` items), merged. */
 export function useAllCursorPages<T>(key: QueryKey, fetchPage: (cursor?: string) => Promise<ScPage<T>>, opts: { max?: number; enabled?: boolean } = {}) {
   const max = opts.max ?? 2000
+  const enabled = opts.enabled ?? true
   const q = useInfiniteQuery({
     queryKey: key,
-    enabled: opts.enabled ?? true,
+    enabled,
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => fetchPage(pageParam),
     getNextPageParam: (_last, pages) => nextCursor(pages, max),
   })
-  const { hasNextPage, isFetchingNextPage, fetchNextPage, isError } = q
+  const { hasNextPage, isFetchingNextPage, fetchNextPage, isError, isFetchNextPageError } = q
   useEffect(() => {
-    if (hasNextPage && !isFetchingNextPage && !isError) void fetchNextPage()
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage, isError, q.data])
+    if (enabled && hasNextPage && !isFetchingNextPage && !isError && !isFetchNextPageError) void fetchNextPage()
+  }, [enabled, hasNextPage, isFetchingNextPage, fetchNextPage, isError, isFetchNextPageError, q.data])
   const items = useMemo(() => q.data?.pages.flatMap((p) => p.items) ?? [], [q.data])
   return { ...q, items }
 }

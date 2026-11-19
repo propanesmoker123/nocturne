@@ -142,6 +142,7 @@ const MY_PLAYLISTS: RawPlaylist[] = [
 const REC_PLAYLISTS: RawPlaylist[] = Array.from({ length: 8 }, (_, i) =>
   playlist(10 + i, -2000, ['Плейлист дня', 'Открытия', 'Новинки для вас', 'Тише', 'Энергия', 'Вечер', 'Фокус', 'Утро'][i], 30 + i * 5, { type: i === 2 ? 1 : 0 }),
 )
+let nextPlaylistId = 24
 
 const FRIENDS: RawUser[] = ['Аня Соколова', 'Дима Орлов', 'Катя Белова', 'Миша Ким', 'Лера Ветрова', 'Саша Громов', 'Оля Нестерова', 'Ваня Лис', 'Женя Тихонова'].map(
   (n, i) => {
@@ -296,13 +297,14 @@ export async function mockCall(method: string, params: Record<string, unknown>):
       return 1
     case 'audio.get': {
       if (params.playlist_id) {
-        const n = Number(params.playlist_id)
-        return page(CATALOG.slice(n % 7, (n % 7) + 30).map(withUrl), params)
+        const n = Math.abs(Number(params.playlist_id)) % 7
+        return page(CATALOG.slice(n, n + 30).map(withUrl), params)
       }
       if (owner === ME) return page(MY.filter((a) => !removed.has(`${a.owner_id}_${a.id}`)).map(withUrl), params)
       const fr = FRIENDS.find((f) => f.id === owner)
       if (fr && !fr.can_see_audio) throw { kind: 'vk', code: 201, message: 'Access denied: no access to audio' }
-      return page(CATALOG.slice(owner % 10, (owner % 10) + 25).map(withUrl), params)
+      const start = Math.abs(owner) % 10
+      return page(CATALOG.slice(start, start + 25).map(withUrl), params)
     }
     case 'audio.getById': {
       const keys = String(params.audios).split(',').map((k) => k.split('_').slice(0, 2).join('_'))
@@ -349,7 +351,7 @@ export async function mockCall(method: string, params: Record<string, unknown>):
       removed.delete(`${params.owner_id}_${params.audio_id}`)
       return 1
     case 'audio.createPlaylist': {
-      const p = playlist(MY_PLAYLISTS.length + 20, ME, String(params.title), 0, { description: String(params.description ?? '') })
+      const p = playlist(nextPlaylistId++, ME, String(params.title), 0, { description: String(params.description ?? '') })
       MY_PLAYLISTS.unshift(p)
       return p
     }

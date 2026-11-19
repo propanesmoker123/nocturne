@@ -131,6 +131,7 @@ function BigScrubber() {
   const trackKey = usePlayer((p) => p.current?.key)
   const controlledBy = useControlledBy()
   const [drag, setDrag] = useState<number | null>(null)
+  useEffect(() => setDrag(null), [trackKey])
   const shown = drag ?? position
   return (
     <div className={s.bigWave}>
@@ -149,6 +150,7 @@ function BigScrubber() {
           setDrag(null)
           seek(v * duration)
         }}
+        onCancel={() => setDrag(null)}
       />
       <div className={s.times}>
         <span>{formatTime(shown)}</span>
@@ -252,7 +254,7 @@ export function NowPlaying() {
           transition={reduced ? { duration: 0.01 } : { duration: 0.19, ease: [0.22, 1, 0.36, 1] }}
         >
           <PointerGate />
-          <Backdrop src={current.cover?.m} />
+          <Backdrop src={current.cover?.m || current.cover?.l || current.cover?.s} />
           <div className={s.scrim} />
           <ParticlesCanvas
             mode="ambient"

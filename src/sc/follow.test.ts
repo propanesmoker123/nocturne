@@ -77,6 +77,21 @@ describe('following on SoundCloud', () => {
     await toggleFollow({ id: 3, permalink: null }, d)
     expect(followings()).toEqual([3])
   })
+
+  test('blocks concurrent double-clicks for the same user while a follow request is in flight', async () => {
+    const d = deps()
+    let resolveFollow!: () => void
+    d.follow.mockReturnValue(new Promise<void>((r) => { resolveFollow = r }))
+
+    const first = toggleFollow(person, d)
+    const second = toggleFollow(person, d)
+    await second
+    expect(d.follow).toHaveBeenCalledTimes(1)
+
+    resolveFollow()
+    await first
+    expect(d.follow).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('leaving someone', () => {

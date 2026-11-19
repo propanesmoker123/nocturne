@@ -1,9 +1,9 @@
 import './styles/global.css'
-import '@fontsource-variable/onest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './app/App'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { applyDemoHash } from './app/demo'
 import { toggleLibrary } from './app/library'
 import { queryClient } from './app/queryClient'
@@ -33,7 +33,7 @@ import { openQuickSearch, startQuickSearch } from './quicksearch/bridge'
 import { initPlayer, usePlayer } from './player/store'
 import { setDrmAvailable } from './sc/normalize'
 import { probeDrm } from './sc/playback'
-import { hydrateScWarmState, initScSession } from './sc/session'
+import { hydrateScWarmState, initScSession, useScSession } from './sc/session'
 import { hydrateSpotifyWarmState, initSpotifySession } from './spotify/session'
 import { setCaptchaHandler } from './vk/api'
 import { startSpotifyBridge } from './spotify/runtime'
@@ -80,17 +80,19 @@ async function boot() {
   await loadAlbums()
   await initService()
   if (window.location.hash === '#spotify') useService.getState().select('spotify')
-  installWarmCacheObserver(queryClient)
   hydrateVkWarmState()
   hydrateScWarmState()
   hydrateSpotifyWarmState()
+  installWarmCacheObserver(queryClient)
   if (isTauri()) void invoke('set_user_agent', { ua: navigator.userAgent }).catch(() => {})
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <App />
-      </QueryClientProvider>
+      <ErrorBoundary label="root">
+        <QueryClientProvider client={queryClient}>
+          <App />
+        </QueryClientProvider>
+      </ErrorBoundary>
     </StrictMode>,
   )
 
@@ -131,8 +133,15 @@ async function boot() {
     toggleWindow: () => void showMainWindow(true),
     // Signed out there is nothing to search: bring up the sign-in screen instead
     quickSearch: () => {
-      if (useService.getState().current === 'spotify') { useRouter.getState().push({ name: 'spotify-search', q: '' }); void showMainWindow(); return }
-      if (useSession.getState().phase === 'ready') openQuickSearch(); else void showMainWindow()
+      const svc = useService.getState().current
+      if (svc === 'spotify') {
+        useRouter.getState().push({ name: 'spotify-search', q: '' })
+        void showMainWindow()
+        return
+      }
+      const ready = svc === 'sc' ? useScSession.getState().phase === 'signed-in' : useSession.getState().phase === 'ready'
+      if (ready) openQuickSearch()
+      else void showMainWindow()
     },
   })
 }

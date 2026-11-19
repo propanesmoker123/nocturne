@@ -1,6 +1,7 @@
 import { motion, MotionConfig, useReducedMotion } from 'motion/react'
-import { lazy, Suspense, useLayoutEffect, useRef, type ComponentType, type UIEvent } from 'react'
+import { lazy, Suspense, useLayoutEffect, useRef, useState, type ComponentType, type UIEvent } from 'react'
 import { Spinner } from '../components/controls'
+import { ErrorBoundary } from '../components/ErrorBoundary'
 import { Wallpaper } from '../components/Wallpaper'
 import { useSettings } from '../lib/settings'
 import { Home } from '../pages/Home'
@@ -9,7 +10,6 @@ import s from './App.module.css'
 import { useChrome } from './chrome'
 import { ContextMenu } from './ContextMenu'
 import { MiniPlayer } from './MiniPlayer'
-import { NowPlaying } from './NowPlaying'
 import { routeService, useRouter, type Route } from './router'
 import { ScrollerContext } from './scroller'
 import { ServiceRail } from './ServiceRail'
@@ -18,13 +18,16 @@ import { Sheets } from './Sheets'
 import { Sidebar } from './Sidebar'
 import { Titlebar } from './Titlebar'
 import { Toasts } from './Toasts'
-import { SpotifyMiniPlayer } from '../spotify/SpotifyMiniPlayer'
+import { useUi } from './ui'
 import { useSpotify } from '../spotify/runtime'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function lazyNamed<T extends Record<string, ComponentType<any>>, K extends keyof T>(load: () => Promise<T>, name: K) {
   return lazy(async () => ({ default: (await load())[name] }))
 }
+
+const NowPlaying = lazyNamed(() => import('./NowPlaying'), 'NowPlaying')
+const SpotifyMiniPlayer = lazyNamed(() => import('../spotify/SpotifyMiniPlayer'), 'SpotifyMiniPlayer')
 
 const AlbumPage = lazyNamed(() => import('../pages/albums/AlbumPage'), 'AlbumPage')
 const AlbumsPage = lazyNamed(() => import('../pages/albums/AlbumsPage'), 'AlbumsPage')
@@ -145,6 +148,9 @@ function Shell() {
   const key = routeKey(route)
   const navKey = `${key}:${navIndex}`
   const spotifyPlaying = useSpotify((x) => x.owner && x.track !== null)
+  const nowPlaying = useUi((u) => u.nowPlaying)
+  const [npMounted, setNpMounted] = useState(false)
+  if (nowPlaying && !npMounted) setNpMounted(true)
   const reduced = useReducedMotion()
   const needsVkAuth = routeService(route) === 'vk' && vkPhase !== 'ready'
 
@@ -232,16 +238,30 @@ function Shell() {
               {needsVkAuth ? (
                 vkPhase === 'pending' ? <VkPendingGate busy={busy} /> : <Login embedded />
               ) : (
-                <Suspense fallback={<div className={s.routeFallback}><Spinner size={24} /></div>}>
-                  <Page route={route} />
-                </Suspense>
+                <ErrorBoundary label="page" resetKey={navKey}>
+                  <Suspense fallback={<div className={s.routeFallback}><Spinner size={24} /></div>}>
+                    <Page route={route} />
+                  </Suspense>
+                </ErrorBoundary>
               )}
             </motion.div>
           </div>
           <Titlebar />
-          {spotifyPlaying ? <SpotifyMiniPlayer /> : <MiniPlayer />}
+          {spotifyPlaying ? (
+            <Suspense fallback={<MiniPlayer />}>
+              <SpotifyMiniPlayer />
+            </Suspense>
+          ) : (
+            <MiniPlayer />
+          )}
         </main>
-        <NowPlaying />
+        {(nowPlaying || npMounted) && (
+          <ErrorBoundary label="now-playing" resetKey={String(nowPlaying)}>
+            <Suspense fallback={null}>
+              <NowPlaying />
+            </Suspense>
+          </ErrorBoundary>
+        )}
         <ContextMenu />
       </div>
     </ScrollerContext.Provider>

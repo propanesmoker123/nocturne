@@ -939,7 +939,7 @@ describe('Engine crossfade', () => {
       return true
     }, async () => {
       engine.load(`spotify:track:${idB}`, 0, true, { spotifyTitle: 'With Me', spotifyDuration: 202 })
-      await vi.advanceTimersByTimeAsync(950)
+      await vi.advanceTimersByTimeAsync(250)
       expect(engine.waiting).toBe(true)
 
       await vi.advanceTimersByTimeAsync(1900)
@@ -1014,6 +1014,392 @@ describe('Engine crossfade', () => {
     } finally {
       offEnded()
       engine.stop()
+    }
+  })
+
+  test('applies seek requested before HLS MANIFEST_PARSED once manifest arrives', () => {
+    engine.load('https://cdn.example/song/playlist.m3u8', 0, true)
+    const audio = engine.audio as unknown as InstanceType<typeof h.MockAudio>
+    engine.seek(42.5)
+    expect(engine.position).toBe(42.5)
+
+    // Manifest arrives later and must apply pendingSeek to audio.currentTime
+    audio.currentTime = 0
+    h.hlsHandlers.get('hlsManifestParsed')?.forEach((fn) => fn('hlsManifestParsed'))
+    expect(audio.currentTime).toBe(42.5)
+  })
+
+  test('setVolume throttled Spotify timer sends the latest volume and mute state instead of stale closure', async () => {
+    const sentVolumes: Array<{ volume: number; muted: boolean }> = []
+    await withInvokeMock(async (cmd, payload) => {
+      const req = (payload as { request?: { kind?: string; volume?: number; muted?: boolean } } | undefined)?.request
+      if (cmd === 'spotify_status' && req?.kind === 'volume') {
+        sentVolumes.push({ volume: req.volume ?? -1, muted: Boolean(req.muted) })
+        return { ok: true }
+      }
+      if (cmd === 'spotify_status' && req?.kind === 'play') return { ok: true }
+      return { open: true, phase: 'ready', playing: true, nowPlaying: { trackId: '4cOdK2wGLETKBW3PvgPWqT', position: 1, duration: 180, paused: false } }
+    }, async () => {
+      engine.load('spotify:track:4cOdK2wGLETKBW3PvgPWqT', 0, true)
+      await vi.advanceTimersByTimeAsync(0)
+      sentVolumes.length = 0
+
+      // First call fires immediately; second schedules a 50ms timer; third updates state before timer fires.
+      engine.setVolume(0.8, false)
+      vi.advanceTimersByTime(10)
+      engine.setVolume(0.5, false)
+      vi.advanceTimersByTime(10)
+      engine.setVolume(0.2, true)
+      await vi.advanceTimersByTimeAsync(50)
+
+      expect(sentVolumes.at(-1)).toEqual({ volume: expect.closeTo(0.04, 4), muted: true })
+    })
+  })
+
+  test('pauses Spotify in the background if an in-flight play resolves after switching to a non-Spotify track', async () => {
+    let resolvePlay!: (v: unknown) => void
+    const controls: string[] = []
+    await withInvokeMock(async (cmd, payload) => {
+      const req = (payload as { request?: { kind?: string } } | undefined)?.request
+      if (cmd === 'spotify_status' && req?.kind === 'play') {
+        return new Promise((r) => { resolvePlay = r })
+      }
+      if (cmd === 'spotify_control') {
+        controls.push(String((payload as { action?: string } | undefined)?.action ?? ''))
+        return true
+      }
+      return { open: true, phase: 'ready', playing: false }
+    }, async () => {
+      engine.load('spotify:track:4cOdK2wGLETKBW3PvgPWqT', 0, true)
+      // User immediately switches to a VK MP3 while Spotify play IPC is still in flight
+      engine.load('https://cdn.example/vk.mp3', 0, true)
+      controls.length = 0
+
+      // Late resolution of Spotify play IPC must immediately fire a pause command to prevent dual audio
+      resolvePlay({ ok: true })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(controls).toContain('pause')
+    })
+  })
+
+  test('restarting the same Spotify track from 0:00 while startPending is true does not trigger a false ended event', async () => {
+    const id = '4cOdK2wGLETKBW3PvgPWqT'
+    let startPending = true
+    let pos = 178.5
+    let paused = false
+    const onEnded = vi.fn()
+    const offEnded = engine.on('ended', onEnded)
+    try {
+      await withInvokeMock(async (cmd, payload) => {
+        const req = (payload as { request?: { kind?: string } } | undefined)?.request
+        if (cmd === 'spotify_status' && req?.kind === 'play') return { ok: true }
+        if (cmd === 'spotify_status') {
+          return {
+            open: true,
+            phase: 'ready',
+            playing: !paused,
+            startPending,
+            nowPlaying: {
+              trackId: id,
+              isAd: false,
+              paused,
+              title: 'Song',
+              artist: 'Artist',
+              position: pos,
+              duration: 180,
+              buffered: 180,
+            },
+          }
+        }
+        return true
+      }, async () => {
+        engine.load(`spotify:track:${id}`, 0, true)
+        // Poll 1: startPending=true, WebView still reports old near-end position 178.5s
+        await vi.advanceTimersByTimeAsync(950)
+        expect(onEnded).not.toHaveBeenCalled()
+
+        // Poll 2: startPending finishes and WebView resets to 0.2s (briefly paused during seek/reload)
+        startPending = false
+        pos = 0.2
+        paused = true
+        await vi.advanceTimersByTimeAsync(950)
+        expect(onEnded).not.toHaveBeenCalled()
+      })
+    } finally {
+      offEnded()
+    }
+  })
+
+  test('crossfade at low volume does not spike outgoing volume to 0.05 floor', () => {
+    // baseVolume = 0.1 -> volumeToGain(0.1) = 0.01 (< 0.05)
+    engine.setVolume(0.1, false)
+    engine.load('https://cdn.example/low1.mp3', 0, true)
+    const audio1 = engine.audio as unknown as InstanceType<typeof h.MockAudio>
+    audio1.paused = false
+    audio1.currentTime = 116
+    engine.setPreFade(0.5)
+    expect(audio1.volume).toBeCloseTo(0.005, 4)
+
+    engine.prepareCrossfade(4)
+    engine.load('https://cdn.example/low2.mp3', 0, true)
+    // At start of crossfade ramp (p = 0), outgoing volume must stay at 0.005, never jumping up to 0.01!
+    expect(audio1.volume).toBeCloseTo(0.005, 4)
+  })
+
+  test('switching Spotify Track A (at 90s) to Track B (at 0s) ignores a stale 90s transition frame so lyrics never jump to the middle', async () => {
+    const idA = '1111111111111111111111'
+    const idB = '2222222222222222222222'
+    let activeId = idA
+    let reportedPos = 90
+    await withInvokeMock(async (cmd, payload) => {
+      const req = (payload as { request?: { kind?: string } } | undefined)?.request
+      if (cmd === 'spotify_status' && req?.kind === 'play') return { ok: true }
+      if (cmd === 'spotify_status') {
+        return {
+          open: true,
+          phase: 'ready',
+          playing: true,
+          startPending: false,
+          nowPlaying: {
+            trackId: activeId,
+            isAd: false,
+            paused: false,
+            title: activeId === idA ? 'm3 killa laharl' : 'Next Track',
+            artist: 'Artist',
+            position: reportedPos,
+            duration: 180,
+            buffered: 120,
+          },
+        }
+      }
+      return true
+    }, async () => {
+      // Track A is playing at 90s
+      engine.load(`spotify:track:${idA}`, 0, true, { spotifyTitle: 'm3 killa laharl', spotifyDuration: 180 })
+      await vi.advanceTimersByTimeAsync(950)
+      expect(engine.position).toBeGreaterThanOrEqual(90)
+
+      // User skips to Track B; Harmony briefly emits Track B with Track A's stale 90s position on Poll 1
+      activeId = idB
+      reportedPos = 90.2
+      engine.load(`spotify:track:${idB}`, 0, true, { spotifyTitle: 'Next Track', spotifyDuration: 180 })
+      await vi.advanceTimersByTimeAsync(950)
+      expect(engine.position).toBe(0)
+      expect(engine.getPlaybackPositionMs()).toBe(0)
+      expect(engine.waiting).toBe(true)
+
+      // Poll 2: Harmony settles Track B at 0.8s -> Engine confirms playing within 250ms from start
+      reportedPos = 0.8
+      await vi.advanceTimersByTimeAsync(250)
+      expect(engine.waiting).toBe(false)
+      expect(engine.playing).toBe(true)
+      expect(engine.position).toBeCloseTo(0.8, 1)
+    })
+  })
+
+  test('post-roll ad after Spotify track completion emits ended immediately, and pre-roll ad clears by restarting requested track', async () => {
+    const idA = '1111111111111111111111'
+    const idB = '2222222222222222222222'
+    const playCalls: string[] = []
+    let pollResp: Record<string, unknown> = {
+      open: true,
+      phase: 'ready',
+      playing: true,
+      nowPlaying: { trackId: idA, isAd: false, paused: false, title: 'A', position: 178, duration: 180, buffered: 180 },
+    }
+    const onEnded = vi.fn()
+    const offEnded = engine.on('ended', onEnded)
+    try {
+      await withInvokeMock(async (cmd, payload) => {
+        const req = (payload as { request?: { kind?: string; id?: string } } | undefined)?.request
+        if (cmd === 'spotify_status' && req?.kind === 'play') {
+          playCalls.push(String(req.id ?? ''))
+          return { ok: true }
+        }
+        if (cmd === 'spotify_status') return pollResp
+        return true
+      }, async () => {
+        // 1. Track A plays near end, then Spotify enters a post-roll ad with endedTrackId=idA
+        engine.load(`spotify:track:${idA}`, 0, true, { spotifyTitle: 'A', spotifyDuration: 180 })
+        await vi.advanceTimersByTimeAsync(950)
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: false,
+          trackEnded: true,
+          endedTrackId: idA,
+          nowPlaying: { trackId: null, isAd: true, paused: true, trackEnded: true, endedTrackId: idA, title: 'Реклама', position: 1, duration: 29 },
+        }
+        await vi.advanceTimersByTimeAsync(950)
+        expect(onEnded).toHaveBeenCalledTimes(1)
+
+        // 2. Track B starts during a pre-roll ad -> when ad clears onto paused/other track, Engine immediately restarts Track B
+        playCalls.length = 0
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: true,
+          nowPlaying: { trackId: null, isAd: true, paused: false, title: 'Реклама', position: 2, duration: 29 },
+        }
+        engine.load(`spotify:track:${idB}`, 0, true, { spotifyTitle: 'B', spotifyDuration: 200 })
+        await vi.advanceTimersByTimeAsync(950)
+        expect(playCalls).toEqual([idB])
+        expect(engine.waiting).toBe(true)
+
+        // Ad ends and Spotify stays paused on a random track past the 1.2s inter-ad grace window -> Engine restarts Track B once
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: false,
+          nowPlaying: { trackId: '9999999999999999999999', isAd: false, paused: true, title: 'Other', position: 0, duration: 190 },
+        }
+        await vi.advanceTimersByTimeAsync(1500)
+        expect(playCalls).toEqual([idB, idB])
+      })
+    } finally {
+      offEnded()
+    }
+  })
+
+  test('recovers immediately on MEDIA_NOT_SUPPORTED when DRM is available, and fails fast when Widevine DRM is unavailable', async () => {
+    const id = '4cOdK2wGLETKBW3PvgPWqT'
+    const playCalls: Array<Record<string, unknown>> = []
+    let drm: boolean | null = true
+    const onError = vi.fn()
+    const offErr = engine.on('error', onError)
+    try {
+      await withInvokeMock(async (cmd, payload) => {
+        const req = (payload as { request?: Record<string, unknown> } | undefined)?.request
+        if (cmd === 'spotify_status' && req?.kind === 'play') {
+          playCalls.push(req)
+          return { ok: true }
+        }
+        if (cmd === 'spotify_status') {
+          return {
+            open: true,
+            phase: 'ready',
+            drm,
+            playing: false,
+            lastPlaybackError: 'MEDIA_NOT_SUPPORTED: Media not supported. (MEDIA_ELEMENT_ERROR: Format error)',
+            nowPlaying: { trackId: id, isAd: false, paused: true, title: 'Song', position: 0, duration: 180 },
+          }
+        }
+        return true
+      }, async () => {
+        // Case 1: DRM available -> transient MEDIA_NOT_SUPPORTED triggers immediate recovery retry instead of 25s hang
+        engine.load(`spotify:track:${id}`, 0, true, { spotifyAlbumId: '6N9PS4QXF1D0OWPk0Sxtb4' })
+        await vi.advanceTimersByTimeAsync(950)
+        expect(playCalls).toHaveLength(2)
+        expect(playCalls[1].preferContext).toBe(true)
+        expect(onError).not.toHaveBeenCalled()
+
+        // Case 2: DRM explicitly unavailable (drm: false) -> fails fast with clear error
+        drm = false
+        playCalls.length = 0
+        engine.load(`spotify:track:${id}`, 0, true)
+        await vi.advanceTimersByTimeAsync(950)
+        expect(onError).toHaveBeenCalledTimes(1)
+        expect(engine.lastError).toContain('Widevine DRM')
+      })
+    } finally {
+      offErr()
+    }
+  })
+
+  test('never false-skips a freshly started track on leaked unattributed trackEnded and never restarts the same track across a 2-ad break or post-ad buffering', async () => {
+    const id = '6yjReFxdITeGActHEA3WO2'
+    const playCalls: string[] = []
+    let pollResp: Record<string, unknown> = {
+      open: true,
+      phase: 'ready',
+      playing: true,
+      nowPlaying: { trackId: id, isAd: false, paused: false, title: 'CONFINED.', position: 0.5, duration: 185, buffered: 20 },
+    }
+    const onEnded = vi.fn()
+    const offEnded = engine.on('ended', onEnded)
+    try {
+      await withInvokeMock(async (cmd, payload) => {
+        const req = (payload as { request?: { kind?: string; id?: string } } | undefined)?.request
+        if (cmd === 'spotify_status' && req?.kind === 'play') {
+          playCalls.push(String(req.id ?? ''))
+          return { ok: true }
+        }
+        if (cmd === 'spotify_status') return pollResp
+        return true
+      }, async () => {
+        // Part 1: Freshly started track at 0.5s receives leaked unattributed trackEnded=true (endedTrackId=null) -> MUST NOT skip!
+        engine.load(`spotify:track:${id}`, 0, true, { spotifyTitle: 'CONFINED.', spotifyDuration: 185 })
+        await vi.advanceTimersByTimeAsync(300)
+        expect(engine.playing).toBe(true)
+
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: false,
+          trackEnded: true,
+          endedTrackId: null,
+          nowPlaying: { trackId: id, isAd: false, paused: true, trackEnded: true, endedTrackId: null, title: 'CONFINED.', position: 0.7, duration: 185, buffered: 20 },
+        }
+        await vi.advanceTimersByTimeAsync(950)
+        expect(onEnded).not.toHaveBeenCalled()
+
+        // Part 2: 2-ad break (Ad #1 -> 400ms gap -> Ad #2 -> 400ms buffering on requested track -> plays) -> play called ONLY ONCE!
+        engine.stop()
+        playCalls.length = 0
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: true,
+          nowPlaying: { trackId: null, isAd: true, paused: false, title: 'Реклама', position: 2, duration: 30 },
+        }
+        engine.load(`spotify:track:${id}`, 0, true, { spotifyTitle: 'CONFINED.', spotifyDuration: 185 })
+        await vi.advanceTimersByTimeAsync(300)
+        expect(playCalls).toEqual([id])
+
+        // 400ms inter-ad transition gap (isAd=false, paused=true, wrong track) -> must NOT restart!
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: false,
+          nowPlaying: { trackId: '9999999999999999999999', isAd: false, paused: true, title: 'Prev', position: 0, duration: 180 },
+        }
+        await vi.advanceTimersByTimeAsync(400)
+        expect(playCalls).toEqual([id])
+
+        // Ad #2 starts
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: true,
+          nowPlaying: { trackId: null, isAd: true, paused: false, title: 'Реклама', position: 1, duration: 20 },
+        }
+        await vi.advanceTimersByTimeAsync(600)
+        expect(playCalls).toEqual([id])
+
+        // Ad #2 ends -> Harmony switches to CONFINED. and buffers briefly (paused=true for 500ms) before unpausing
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: false,
+          nowPlaying: { trackId: id, isAd: false, paused: true, title: 'CONFINED.', position: 0, duration: 185 },
+        }
+        await vi.advanceTimersByTimeAsync(500)
+        expect(playCalls).toEqual([id])
+
+        // Now CONFINED. unpauses and plays -> still ONLY 1 play call, never restarted!
+        pollResp = {
+          open: true,
+          phase: 'ready',
+          playing: true,
+          nowPlaying: { trackId: id, isAd: false, paused: false, title: 'CONFINED.', position: 0.4, duration: 185, buffered: 25 },
+        }
+        await vi.advanceTimersByTimeAsync(300)
+        expect(playCalls).toEqual([id])
+        expect(engine.playing).toBe(true)
+        expect(engine.waiting).toBe(false)
+      })
+    } finally {
+      offEnded()
     }
   })
 })

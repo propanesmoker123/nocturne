@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest'
-import { audioAttachment, call, sendTrack, setBroadcast, setCaptchaHandler, setTransport } from './api'
+import { addToPlaylist, audioAttachment, call, getMe, removeFromPlaylist, sendTrack, setBroadcast, setCaptchaHandler, setTransport } from './api'
 import { VkError } from './errors'
-import type { Track } from './models'
+import type { Playlist, Track } from './models'
 
 afterEach(() => {
   setTransport(null)
@@ -48,6 +48,46 @@ describe('call', () => {
     const err = (await call('audio.add', {}).catch((e: unknown) => e)) as VkError
     expect(err.isCaptcha).toBe(true)
   })
+
+  test('serializes concurrent captcha prompts so one sheet completes before the next opens', async () => {
+    let activePrompts = 0
+    let maxConcurrentPrompts = 0
+    setTransport(async (_m, params) => {
+      if (!params.captcha_key) {
+        const sid = `sid_${String(params.audio_id)}`
+        throw { kind: 'vk', code: 14, message: 'Captcha needed', captchaSid: sid, captchaImg: 'https://c' }
+      }
+      return `ok_${String(params.captcha_key)}`
+    })
+    setCaptchaHandler(async (e) => {
+      activePrompts++
+      maxConcurrentPrompts = Math.max(maxConcurrentPrompts, activePrompts)
+      await new Promise((r) => setTimeout(r, 15))
+      activePrompts--
+      return `key_for_${e.captchaSid}`
+    })
+
+    const [r1, r2] = await Promise.all([
+      call('audio.add', { audio_id: 1 }),
+      call('audio.add', { audio_id: 2 }),
+    ])
+    expect(maxConcurrentPrompts).toBe(1)
+    expect(r1).toBe('ok_key_for_sid_1')
+    expect(r2).toBe('ok_key_for_sid_2')
+  })
+
+  test('skips empty playlist mutations and rejects empty getMe response cleanly', async () => {
+    const calls: string[] = []
+    setTransport(async (method) => {
+      calls.push(method)
+      return []
+    })
+    const pl = { id: 1, ownerId: 1 } as Playlist
+    await addToPlaylist(pl, [])
+    await removeFromPlaylist(pl, [])
+    expect(calls).toEqual([])
+    await expect(getMe()).rejects.toMatchObject({ kind: 'invalid' })
+  })
 })
 
 describe('sending a track to a friend', () => {
@@ -70,15 +110,17 @@ describe('sending a track to a friend', () => {
 })
 
 describe('the VK status', () => {
-  test('a SoundCloud track never goes to VK as an audio: the status is cleared instead', async () => {
+  test('SoundCloud and Spotify tracks never go to VK as an audio: the status is cleared instead', async () => {
     const seen: unknown[] = []
     setTransport(async (method, params) => {
       seen.push([method, params])
       return 1
     })
     await setBroadcast({ service: 'sc', id: 402, ownerId: 501 } as Track)
+    await setBroadcast({ service: 'spotify', id: 123, ownerId: 0 } as Track)
     await setBroadcast({ id: 5, ownerId: 2 } as Track)
     expect(seen).toEqual([
+      ['audio.setBroadcast', {}],
       ['audio.setBroadcast', {}],
       ['audio.setBroadcast', { audio: '2_5' }],
     ])

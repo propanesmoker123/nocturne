@@ -23,12 +23,44 @@ function parseMs(minStr: string, secStr: string, fracStr?: string): number {
   return min * 60_000 + sec * 1000 + frac
 }
 
-function parseEnhancedWords(body: string): { text: string; words: LyricsWord[] } | null {
+function pushEnhancedTokens(
+  words: LyricsWord[],
+  textParts: string[],
+  tokens: string[],
+  begin: number,
+  nextBegin: number | undefined,
+): void {
+  if (tokens.length === 1) {
+    words.push(nextBegin !== undefined && nextBegin > begin ? { text: tokens[0], begin, end: nextBegin } : { text: tokens[0], begin })
+    textParts.push(tokens[0])
+    return
+  }
+
+  const span = nextBegin !== undefined && nextBegin > begin ? nextBegin - begin : 0
+  for (let j = 0; j < tokens.length; j++) {
+    const tBegin = span ? Math.round(begin + (span * j) / tokens.length) : begin
+    const tEnd = span ? Math.round(begin + (span * (j + 1)) / tokens.length) : undefined
+    words.push(tEnd !== undefined && tEnd > tBegin ? { text: tokens[j], begin: tBegin, end: tEnd } : { text: tokens[j], begin: tBegin })
+    textParts.push(tokens[j])
+  }
+}
+
+function parseEnhancedWords(body: string, lineBegin: number): { text: string; words: LyricsWord[] } | null {
   const matches = [...body.matchAll(WORD_TAG_RE)]
   if (!matches.length) return null
 
   const words: LyricsWord[] = []
   const textParts: string[] = []
+
+  const firstIdx = matches[0].index ?? 0
+  if (firstIdx > 0) {
+    const leading = body.slice(0, firstIdx).trim()
+    if (leading) {
+      const tokens = leading.split(/\s+/).filter(Boolean)
+      const firstMatchBegin = parseMs(matches[0][1], matches[0][2], matches[0][3])
+      pushEnhancedTokens(words, textParts, tokens, lineBegin, firstMatchBegin)
+    }
+  }
 
   for (let i = 0; i < matches.length; i++) {
     const m = matches[i]
@@ -39,20 +71,7 @@ function parseEnhancedWords(body: string): { text: string; words: LyricsWord[] }
     const tokens = chunk.split(/\s+/).filter(Boolean)
     const nextMatch = matches.slice(i + 1).find((n) => n[4].trim().length > 0)
     const nextBegin = nextMatch ? parseMs(nextMatch[1], nextMatch[2], nextMatch[3]) : undefined
-
-    if (tokens.length === 1) {
-      words.push(nextBegin !== undefined && nextBegin > begin ? { text: tokens[0], begin, end: nextBegin } : { text: tokens[0], begin })
-      textParts.push(tokens[0])
-      continue
-    }
-
-    const span = nextBegin !== undefined && nextBegin > begin ? nextBegin - begin : 0
-    for (let j = 0; j < tokens.length; j++) {
-      const tBegin = span ? Math.round(begin + (span * j) / tokens.length) : begin
-      const tEnd = span ? Math.round(begin + (span * (j + 1)) / tokens.length) : undefined
-      words.push(tEnd !== undefined && tEnd > tBegin ? { text: tokens[j], begin: tBegin, end: tEnd } : { text: tokens[j], begin: tBegin })
-      textParts.push(tokens[j])
-    }
+    pushEnhancedTokens(words, textParts, tokens, begin, nextBegin)
   }
 
   if (!words.length) return null
@@ -106,7 +125,7 @@ export function parseLrc(raw: string): LyricsLine[] {
 
     if (!begins.length) continue
     const body = rest.trim()
-    const enhanced = begins.length === 1 ? parseEnhancedWords(body) : null
+    const enhanced = begins.length === 1 ? parseEnhancedWords(body, begins[0]) : null
 
     for (const begin of begins) {
       if (enhanced) {
@@ -380,16 +399,23 @@ const NAMED_ENTITIES: Record<string, string> = {
   nbsp: ' ',
 }
 
+function safeFromCodePoint(code: number, fallback: string): string {
+  if (!Number.isInteger(code) || code < 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
+    return fallback
+  }
+  return String.fromCodePoint(code)
+}
+
 export function decodeHtmlEntities(text: string): string {
   return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (full, entity: string) => {
     const lower = entity.toLowerCase()
     if (lower.startsWith('#x')) {
       const code = Number.parseInt(lower.slice(2), 16)
-      return Number.isFinite(code) ? String.fromCodePoint(code) : full
+      return safeFromCodePoint(code, full)
     }
     if (lower.startsWith('#')) {
       const code = Number.parseInt(lower.slice(1), 10)
-      return Number.isFinite(code) ? String.fromCodePoint(code) : full
+      return safeFromCodePoint(code, full)
     }
     return NAMED_ENTITIES[lower] ?? full
   })

@@ -33,6 +33,7 @@ function PlaylistBody({ id, urn, title }: { id: number; urn?: string; title?: st
   const name = p?.title || title || ''
   const setTitle = useChrome((c) => c.setTitle)
   useEffect(() => setTitle(name), [name, setTitle])
+  const art = usePlaylistCovers(p, tracks)
 
   if (q.isError) {
     return <EmptyState icon={<ListMusic size={26} />} title="Плейлист недоступен" text={describeScError(q.error)} action={<Button onClick={() => void q.refetch()}>Повторить</Button>} />
@@ -40,8 +41,7 @@ function PlaylistBody({ id, urn, title }: { id: number; urn?: string; title?: st
   const totalSec = tracks.reduce((n, t) => n + t.duration, 0)
   const count = tracks.length || p?.count || 0
   const playable = tracks.some((t) => t.playable)
-  const source = { kind: 'list' as const, label: name }
-  const art = usePlaylistCovers(p, tracks)
+  const source = { kind: 'list' as const, service: 'sc' as const, label: name }
   return (
     <>
       <div className={s.hero}>

@@ -17,7 +17,7 @@ import { beginWaveform, captureSource } from './waveform'
 export interface QueueSource {
   kind: 'list' | 'mix'
   label?: string
-  service?: 'vk' | 'spotify'
+  service?: 'vk' | 'sc' | 'spotify'
   seed?: string
   contextUri?: string
 }
@@ -109,6 +109,20 @@ export function livePosition(): number {
   // in remote mode this engine may still hold the same track, paused somewhere else
   if (remote) return position
   return activeLoad?.attached && activeLoad.key === current?.key ? engine.position : position
+}
+
+/** Whether `engine` is currently attached to `trackKey` (as opposed to still holding an outgoing track during load). */
+export function isEngineAttachedTo(trackKey: string): boolean {
+  const { current } = usePlayer.getState()
+  return !remote && Boolean(activeLoad?.attached && activeLoad.key === trackKey && current?.key === trackKey)
+}
+
+/** Sub-millisecond playback timestamp in ms, guarded against reading an outgoing track from `engine` during track switches. */
+export function livePlaybackPositionMs(trackKey?: string): number {
+  const { current, position } = usePlayer.getState()
+  if (trackKey && current?.key !== trackKey) return 0
+  if (remote) return Math.max(0, position * 1000)
+  return activeLoad?.attached && activeLoad.key === current?.key ? engine.getPlaybackPositionMs() : Math.max(0, position * 1000)
 }
 
 /** What a press means when another device plays and this one is its remote. */
@@ -214,6 +228,7 @@ function stopScWatch() {
   scWatch = undefined
 }
 let consecutiveFailures = 0
+let volumeModified = false
 /** How much of the current load was really heard: it reaches «Недавние» only past half. */
 let heard = { key: '', seconds: 0, last: 0, recorded: false }
 const sessionSaver = debouncedSaver('session', 1200)
@@ -282,11 +297,16 @@ export const usePlayer = create<PlayerState>((set, get) => {
           } else if (n2) {
             set({ queue: n2 })
             void loadCurrent(adv.autoplay)
+          } else {
+            set({ isLoading: false })
           }
         }
       } catch {
         if (queueSession === session) journal('player', `${source.service ?? 'vk'} mix replenishment failed`)
-        if (pendingAdvance?.session === session) pendingAdvance = null
+        if (pendingAdvance?.session === session) {
+          pendingAdvance = null
+          set({ isLoading: false })
+        }
         // the mix simply ends when upstream stops answering
       } finally {
         if (extendInFlight?.promise === promise) extendInFlight = null
@@ -370,10 +390,17 @@ export const usePlayer = create<PlayerState>((set, get) => {
           if (fresh) {
             track = { ...t, url: fresh.url, urlFetchedAt: fresh.urlFetchedAt, playable: fresh.playable, liked: fresh.liked || t.liked }
             replaceTrack(track)
+          } else if (retried) {
+            onFailure(t, undefined, intent.autoplay)
+            return
           }
         } catch {
           if (activeLoad !== intent) return
           journal('player', 'vk: fresh link lookup failed')
+          if (retried) {
+            onFailure(t, undefined, intent.autoplay)
+            return
+          }
         }
       }
     }
@@ -465,6 +492,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
           if (manual) pendingAdvance.manual = true
           if (!autoplay) pendingAdvance.autoplay = false
         }
+        set({ isLoading: pendingAdvance.autoplay })
         void extendMixIfNeeded()
       } else if (engineLoad()) {
         setPlayback(false)
@@ -500,12 +528,21 @@ export const usePlayer = create<PlayerState>((set, get) => {
   engine.on('time', () => {
     const load = engineLoad()
     if (!load) return
+    const st = get()
     const position = engine.position
-    const duration = engine.duration || get().current?.duration || 0
-    set({ position, duration, buffered: engine.buffered })
-    const cur = get().current
+    const duration = engine.duration || st.current?.duration || 0
+    const buffered = engine.buffered
+    if (position !== st.position || duration !== st.duration || buffered !== st.buffered) {
+      set({ position, duration, buffered })
+    }
+    const cur = st.current
     if (!cur || cur.key !== heard.key) return
-    if (engine.playing) heard.seconds += heardBetween(heard.last, position)
+    if (engine.playing) {
+      heard.seconds += heardBetween(heard.last, position)
+      if (load.retried && !engine.waiting && (heard.seconds > 2 || Math.abs(position - load.startAt) > 2)) {
+        load.retried = false
+      }
+    }
     heard.last = position
     if (!heard.recorded && heardEnough(heard.seconds, duration)) {
       heard.recorded = true
@@ -533,7 +570,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
             engine.setPreFade?.(1 - smooth * 0.42)
           } else {
             const overlapSec = Math.min(2.4, Math.max(1.2, crossfade * 0.6))
-            advance(false, true, overlapSec)
+            advance(false, true, Math.min(overlapSec, Math.max(0.4, rem)))
           }
         } else {
           engine.setPreFade?.(1)
@@ -557,6 +594,9 @@ export const usePlayer = create<PlayerState>((set, get) => {
     if (!waiting && engine.playing && cur) {
       consecutiveFailures = 0
       stopScWatch()
+      if (load.retried && (heard.seconds > 2 || engine.position > load.startAt + 2)) {
+        load.retried = false
+      }
     }
   })
   engine.on('buffered', () => {
@@ -622,12 +662,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
       let queue = Q.createQueue(tracks, start, shuffle, get().repeat)
       const first = Q.current(queue)
       if (first && !first.playable) {
-        const n = Q.next(queue, isPlayable, true)
+        const n = Q.next(queue, isPlayable, true) ?? Q.next({ ...queue, repeat: 'all' }, isPlayable, true)
         if (!n) {
           toast('В этом списке нет доступных треков', 'error')
           return
         }
-        queue = n
+        queue = { ...n, repeat: queue.repeat }
       }
       selectionToken++
       queueSession++
@@ -747,7 +787,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     seekBy(delta) {
       const d = get().duration || get().current?.duration || 0
-      get().seek(Math.min(Math.max(0, livePosition() + delta), Math.max(0, d - 1)))
+      const target = Math.max(0, livePosition() + delta)
+      get().seek(d > 0 ? Math.min(target, Math.max(0, d - 1)) : target)
     },
 
     setVolume(v) {
@@ -757,6 +798,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
         set({ volume })
         return remote.setVolume(volume)
       }
+      volumeModified = true
       set({ volume, muted: volume === 0 ? get().muted : false })
       engine.setVolume(volume, get().muted)
     },
@@ -767,6 +809,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     toggleMute() {
       if (remote) return
+      volumeModified = true
       const muted = !get().muted
       set({ muted })
       engine.setVolume(get().volume, muted)
@@ -794,7 +837,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     playNext(tracks) {
       if (remote) return toast('Очередь на другом устройстве отсюда пока не меняется', 'info')
       const q = get().queue
-      if (!q) return get().playList(tracks, 0)
+      if (!q || !q.order.length) return get().playList(tracks, 0)
       set({ queue: Q.insertNext(q, tracks) })
       syncPreload()
       toast(tracks.length > 1 ? `${tracks.length} треков будут следующими` : 'Будет следующим', 'queue')
@@ -803,7 +846,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     addToQueue(tracks) {
       if (remote) return toast('Очередь на другом устройстве отсюда пока не меняется', 'info')
       const q = get().queue
-      if (!q) return get().playList(tracks, 0)
+      if (!q || !q.order.length) return get().playList(tracks, 0)
       set({ queue: Q.append(q, tracks) })
       syncPreload()
       toast('Добавлено в очередь', 'queue')
@@ -816,8 +859,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
       const wasCurrent = orderPos === q.pos
       const autoplay = currentLoad()?.autoplay ?? false
       const n = Q.removeAt(q, orderPos)
-      set({ queue: n })
-      if (wasCurrent) {
+      set({ queue: n.order.length ? n : null })
+      if (wasCurrent || !n.order.length) {
         pendingAdvance = null
         void loadCurrent(autoplay)
       }
@@ -881,24 +924,42 @@ function snapshot(): SavedSession | null {
   }
 }
 
+const isValidSavedTrack = (t: unknown): t is Track =>
+  Boolean(t && typeof t === 'object' && typeof (t as Track).key === 'string' && typeof (t as Track).id === 'number')
+
 /** Restores the last session (paused) and starts persisting changes. Call once. */
 export async function initPlayer() {
   const [saved, history] = await Promise.all([loadJSON<SavedSession>('session'), loadJSON<Track[]>('history')])
+  if (Array.isArray(history)) {
+    const validHistory = history.filter(isValidSavedTrack)
+    if (validHistory.length) {
+      const existing = usePlayer.getState().history
+      const seen = new Set(existing.map((h) => h.key))
+      const merged = [...existing, ...validHistory.filter((h) => !seen.has(h.key))].slice(0, 200)
+      usePlayer.setState({ history: merged })
+    }
+  }
+  const restoredVolume = Number.isFinite(saved?.volume) ? Math.min(1, Math.max(0, saved!.volume)) : undefined
+  const restoredMuted = typeof saved?.muted === 'boolean' ? saved.muted : undefined
+  if (!volumeModified && !remote && (restoredVolume !== undefined || restoredMuted !== undefined)) {
+    usePlayer.setState({
+      ...(restoredVolume !== undefined ? { volume: restoredVolume } : {}),
+      ...(restoredMuted !== undefined ? { muted: restoredMuted } : {}),
+    })
+  }
   const st = usePlayer.getState()
-  if (Array.isArray(history) && history.length) usePlayer.setState({ history })
+  const validTracks = Array.isArray(saved?.tracks) ? saved.tracks.filter(isValidSavedTrack) : []
   // The app can already accept playback commands while the persisted state is being read.
-  if (!st.queue && !st.current && !remote && Array.isArray(saved?.tracks) && saved.tracks.length) {
+  if (!st.queue && !st.current && !remote && validTracks.length && saved) {
     const repeat = saved.repeat === 'one' || saved.repeat === 'all' ? saved.repeat : 'off'
     const index = Number.isFinite(saved.pos) ? Math.trunc(saved.pos) : 0
-    const queue = Q.createQueue(saved.tracks, index, false, repeat)
+    const queue = Q.createQueue(validTracks, index, false, repeat)
     const track = Q.current(queue)
     usePlayer.setState({
       queue: { ...queue, shuffle: saved.shuffle === true },
       current: track,
       position: Number.isFinite(saved.position) ? Math.max(0, saved.position) : 0,
       duration: track?.duration ?? 0,
-      volume: Number.isFinite(saved.volume) ? Math.min(1, Math.max(0, saved.volume)) : st.volume,
-      muted: saved.muted === true,
       shuffle: saved.shuffle === true,
       repeat,
       source: saved.source,

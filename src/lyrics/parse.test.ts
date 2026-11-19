@@ -53,6 +53,21 @@ describe('parseLrc', () => {
       { text: 'c', begin: 3000 },
     ])
   })
+
+  test('preserves leading text before the first <mm:ss.xx> tag in enhanced LRC', () => {
+    expect(parseLrc('[00:01.00]Hello <00:01.50>world\n[00:02.50]Next')).toEqual([
+      {
+        text: 'Hello world',
+        begin: 1000,
+        end: 2500,
+        words: [
+          { text: 'Hello', begin: 1000, end: 1500 },
+          { text: 'world', begin: 1500, end: 2500 },
+        ],
+      },
+      { text: 'Next', begin: 2500 },
+    ])
+  })
 })
 
 describe('geniusLyricsFromHtml', () => {
@@ -185,6 +200,12 @@ describe('parseNeteaseYrc and decodeHtmlEntities', () => {
 
   test('decodeHtmlEntities decodes named and numeric HTML entities cleanly', () => {
     expect(decodeHtmlEntities('Don&apos;t &quot;cry&quot; &amp; run&#39;s&#10;now')).toBe('Don\'t "cry" & run\'s\nnow')
+  })
+
+  test('decodeHtmlEntities leaves out-of-range and surrogate numeric entities intact instead of throwing', () => {
+    expect(decodeHtmlEntities('&#99999999; &#x110000; &#xD800; &#xDFFF; &#65;')).toBe(
+      '&#99999999; &#x110000; &#xD800; &#xDFFF; A',
+    )
   })
 })
 

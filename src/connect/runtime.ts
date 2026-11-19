@@ -1,6 +1,7 @@
 import { toast } from '../app/toast'
 import { journal } from '../lib/journal'
 import { isAndroid } from '../lib/platform'
+import { serverNow } from '../lib/serverTime'
 import { livePosition, remoteActive, setPlayerRemote, showRemote, usePlayer, type PlayerRemote } from '../player/store'
 import { isResolvable, type WireTrack } from '../together/protocol'
 import { toWire, useTogether } from '../together/session'
@@ -24,6 +25,8 @@ const openBusDefault: OpenBus = (code, me, onMessage, onOpen) => openConnectBus(
 
 let bus: ConnectBus | null = null
 let openedFor: string | null = null
+let syncGen = 0
+let orderSeq = 0
 /** When this device's own playback started (for «one device plays»). */
 let since = 0
 let lastKey = ''
@@ -31,34 +34,52 @@ let lastSentAt = 0
 let pending: ReturnType<typeof setTimeout> | undefined
 let pendingForce = false
 let ticker: ReturnType<typeof setInterval> | null = null
+let remoteCleanup: (() => void) | null = null
 let cleanups: (() => void)[] = []
 /** After next/previous on the remote: the track it switched away from — words still showing it are from before the switch and wait out a moment. */
 let holding: { id: string; from: string; until: number } | null = null
 const HOLD_MS = 2500
 /** Tracks another device announced, in full once VK answers (cover, «in my music»). */
 const full = new Map<string, Track>()
+const inFlightFull = new Set<string>()
+const MAX_FULL_CACHE = 200
 
 const keyOf = (w: WireTrack) => `${w.owner}_${w.id}`
 const clampSeconds = (s: number) => Math.max(0, Math.min(s, 36_000))
 const remoteOn = () => useDevices.getState().remoteId !== null
 const together = () => !!useTogether.getState().role
 
+function rememberFull(k: string, t: Track) {
+  if (full.has(k)) full.delete(k)
+  else if (full.size >= MAX_FULL_CACHE) {
+    const oldest = full.keys().next().value
+    if (oldest !== undefined) full.delete(oldest)
+  }
+  full.set(k, t)
+}
+
 function displayTrack(w: WireTrack): Track {
   const k = keyOf(w)
-  // a SoundCloud track: shown by name as it came, never looked up in VK
+  // a non-VK track (SoundCloud/Spotify): shown by name as it came, never looked up in VK
   if (!isResolvable(w)) return { service: 'sc', id: w.id, ownerId: 0, key: `sc_${w.id}`, artist: w.artist, title: w.title, duration: w.duration, urlFetchedAt: 0, explicit: false, artists: [{ name: w.artist }], playable: true, hasLyrics: false, liked: false }
   const known = full.get(k)
   if (known) return known
   const bare: Track = { id: w.id, ownerId: w.owner, key: k, accessKey: w.accessKey, artist: w.artist, title: w.title, duration: w.duration, urlFetchedAt: 0, explicit: false, artists: [{ name: w.artist }], playable: true, hasLyrics: false, liked: false }
-  full.set(k, bare)
-  void vk
-    .getByIds([{ ownerId: w.owner, id: w.id, accessKey: w.accessKey }])
-    .then(([t]) => {
-      if (!t) return
-      full.set(k, t)
-      applyRemote()
-    })
-    .catch(() => {})
+  if (!inFlightFull.has(k)) {
+    inFlightFull.add(k)
+    const gen = syncGen
+    void vk
+      .getByIds([{ ownerId: w.owner, id: w.id, accessKey: w.accessKey }])
+      .then(([t]) => {
+        if (!t || gen !== syncGen) return
+        rememberFull(k, t)
+        applyRemote()
+      })
+      .catch(() => {})
+      .finally(() => {
+        inFlightFull.delete(k)
+      })
+  }
   return bare
 }
 
@@ -116,15 +137,15 @@ function announceSoon(force = false) {
 }
 
 /** This device's queue as an order for another one: up to MAX_PLAY_TRACKS around the current track, in play order. */
-const SC_NO_TRANSFER = 'Треки SoundCloud пока нельзя перенести на другое устройство'
+const NON_VK_NO_TRANSFER = 'На другое устройство пока можно перенести только треки VK'
 
-const playingSoundCloud = () => {
+const playingNonVk = () => {
   const t = usePlayer.getState().current
-  return !remoteOn() && !!t && serviceOf(t) === 'sc'
+  return !remoteOn() && !!t && serviceOf(t) !== 'vk'
 }
 
-/** The device this one steers plays a track known by name only (a SoundCloud one). */
-const steeredPlaysSoundCloud = () => {
+/** The device this one steers plays a track known by name only (SoundCloud or Spotify). */
+const steeredPlaysNonVk = () => {
   const { remoteId, devices } = useDevices.getState()
   const t = remoteId ? devices[remoteId]?.presence.track : null
   return !!t && !isResolvable(t)
@@ -154,12 +175,15 @@ function myOrder(): PlayOrder | null {
 
 /** Plays here what another device sent. */
 async function startOrder(o: PlayOrder) {
+  const seq = ++orderSeq
+  const gen = syncGen
   let found: Track[] = []
   try {
     found = await vk.getByIds(o.tracks.map((w) => ({ ownerId: w.owner, id: w.id, accessKey: w.accessKey })))
   } catch {
     // nothing found: said below
   }
+  if (seq !== orderSeq || gen !== syncGen || !bus || together()) return
   const byKey = new Map(found.map((t) => [t.key, t]))
   const list = o.tracks.map((w) => byKey.get(keyOf(w))).filter((t): t is Track => !!t)
   if (!list.length) return toast('Не получилось включить музыку с другого устройства', 'error')
@@ -186,13 +210,15 @@ function runCommand(action: CommandAction, value?: number) {
   announceSoon()
 }
 
-function remoteFor(id: string): PlayerRemote {
+function remoteFor(id: string): { remote: PlayerRemote; cleanup: () => void } {
   const cmd = (action: CommandAction, value?: number) => bus?.send({ type: 'command', action, ...(value === undefined ? {} : { value }) }, id)
   /** What this remote just asked for, kept in the device's last word so the player does not snap back before it answers. */
-  const expect = (p: Partial<Presence>) =>
+  const expect = (p: Partial<Presence>, touchSeen = true) =>
     useDevices.setState((s) => {
       const d = s.devices[id]
-      return d ? { devices: { ...s.devices, [id]: { ...d, presence: { ...d.presence, ...p }, seen: Date.now() } } } : {}
+      if (!d) return {}
+      // Only update `seen` when position is explicitly set; otherwise preserve the clock anchor so volume drags don't rewind progress.
+      return { devices: { ...s.devices, [id]: { ...d, presence: { ...d.presence, ...p }, seen: touchSeen ? Date.now() : d.seen } } }
     })
   // a volume drag sends at most every 150 ms, and always its last value
   let volumeAt = 0
@@ -209,11 +235,11 @@ function remoteFor(id: string): PlayerRemote {
     const target = d?.presence.near?.[to]
     if (!d || !target) return
     const was = d.presence.track
-    expect({ track: target, position: 0, duration: target.duration, near: { prev: to === 'next' ? was : null, next: to === 'prev' ? was : null } })
+    expect({ track: target, position: 0, duration: target.duration, near: { prev: to === 'next' ? was : null, next: to === 'prev' ? was : null } }, true)
     if (was) holding = { id, from: keyOf(was), until: Date.now() + HOLD_MS }
     applyRemote()
   }
-  return {
+  const remote: PlayerRemote = {
     toggle: () => cmd('toggle'),
     play: () => cmd('play'),
     pause: () => cmd('pause'),
@@ -227,12 +253,12 @@ function remoteFor(id: string): PlayerRemote {
     },
     seek: (sec) => {
       const at = clampSeconds(sec)
-      expect({ position: at })
+      expect({ position: at }, true)
       cmd('seek', at)
     },
     setVolume: (v) => {
       volumeValue = Math.max(0, Math.min(v, 1))
-      expect({ volume: volumeValue })
+      expect({ volume: volumeValue }, false)
       const wait = 150 - (Date.now() - volumeAt)
       if (wait <= 0) sendVolume()
       else volumeTimer ??= setTimeout(sendVolume, wait)
@@ -242,7 +268,7 @@ function remoteFor(id: string): PlayerRemote {
     playMix: () => cmd('mix'),
     playList: (tracks, index, opts) => {
       const vkTracks = vkOnly(tracks, index)
-      if (!vkTracks) return void toast(SC_NO_TRANSFER, 'info')
+      if (!vkTracks) return void toast(NON_VK_NO_TRANSFER, 'info')
       const w = queueWindow(vkTracks.tracks, vkTracks.index, MAX_PLAY_TRACKS)
       const label = opts?.source?.label
       const order = fitOrder({
@@ -257,6 +283,13 @@ function remoteFor(id: string): PlayerRemote {
         ...(opts?.shuffle ? { randomStart: true } : {}),
       })
       bus?.send({ type: 'play', ...order }, id)
+    },
+  }
+  return {
+    remote,
+    cleanup: () => {
+      if (volumeTimer) clearTimeout(volumeTimer)
+      volumeTimer = undefined
     },
   }
 }
@@ -275,7 +308,9 @@ function enterRemote(id: string) {
   if (together() || useDevices.getState().remoteId === id) return
   if (remoteOn()) leaveRemote()
   useDevices.setState({ remoteId: id })
-  setPlayerRemote(remoteFor(id))
+  const built = remoteFor(id)
+  remoteCleanup = built.cleanup
+  setPlayerRemote(built.remote)
   applyRemote()
   ticker ??= setInterval(applyRemote, 500)
   announceSoon()
@@ -283,6 +318,8 @@ function enterRemote(id: string) {
 
 /** This player is this device's own again (safe to call any time). */
 export function leaveRemote() {
+  remoteCleanup?.()
+  remoteCleanup = null
   if (!remoteOn() && !remoteActive()) return
   useDevices.setState({ remoteId: null })
   setPlayerRemote(null)
@@ -330,7 +367,7 @@ function onMessage(msg: ConnectMessage, from: string) {
   // a remote steers; it is not the one playing
   if (remoteOn()) return
   if (msg.type === 'command') return runCommand(msg.action, msg.value)
-  if (playingSoundCloud()) return toast(SC_NO_TRANSFER, 'info')
+  if (playingNonVk()) return toast(NON_VK_NO_TRANSFER, 'info')
   const order = myOrder()
   if (!order) return
   bus?.send({ type: 'play', ...order }, msg.type === 'pull' ? from : msg.target)
@@ -352,11 +389,11 @@ export function playOn(id: string) {
   if (together()) return toast('Сначала завершите совместное прослушивание', 'info')
   if (id === deviceId) return playHere()
   if (remoteId) {
-    if (steeredPlaysSoundCloud()) return toast(SC_NO_TRANSFER, 'info')
+    if (steeredPlaysNonVk()) return toast(NON_VK_NO_TRANSFER, 'info')
     if (remoteId !== id) bus?.send({ type: 'move', target: id }, remoteId)
     return
   }
-  if (playingSoundCloud()) return toast(SC_NO_TRANSFER, 'info')
+  if (playingNonVk()) return toast(NON_VK_NO_TRANSFER, 'info')
   const order = myOrder()
   if (!order) return toast('Сначала включите что-нибудь', 'info')
   bus?.send({ type: 'play', ...order }, id)
@@ -368,15 +405,20 @@ export function playHere() {
   const { remoteId } = useDevices.getState()
   if (together()) return toast('Сначала завершите совместное прослушивание', 'info')
   if (!remoteId) return
-  if (steeredPlaysSoundCloud()) return toast(SC_NO_TRANSFER, 'info')
+  if (steeredPlaysNonVk()) return toast(NON_VK_NO_TRANSFER, 'info')
   bus?.send({ type: 'pull' }, remoteId)
 }
 
 function closeBus() {
   if (!bus) return
-  bus.send({ type: 'bye' })
-  bus.close()
+  const old = bus
   bus = null
+  const sent = old.send({ type: 'bye' })
+  if (sent && typeof (sent as Promise<void>).finally === 'function') {
+    void (sent as Promise<void>).catch(() => {}).finally(() => old.close())
+  } else {
+    old.close()
+  }
   leaveRemote()
   useDevices.setState({ devices: {} })
 }
@@ -387,16 +429,25 @@ export async function startConnect(openBus: OpenBus = openBusDefault) {
   const sync = async () => {
     const { code, deviceId } = useDevices.getState()
     if (code === openedFor) return
+    const gen = ++syncGen
     closeBus()
     openedFor = code
     if (!code) return
+    let nextBus: ConnectBus
     try {
-      bus = await openBus(code, deviceId, onMessage, () => announceSoon(true))
+      nextBus = await openBus(code, deviceId, onMessage, () => announceSoon(true))
     } catch (e) {
-      journal('connect', `channel did not open: ${String(e).slice(0, 80)}`)
-      openedFor = null
+      if (gen === syncGen) {
+        journal('connect', `channel did not open: ${String(e).slice(0, 80)}`)
+        openedFor = null
+      }
       return
     }
+    if (gen !== syncGen) {
+      nextBus.close()
+      return
+    }
+    bus = nextBus
     lastKey = ''
     announce(true)
   }
@@ -407,7 +458,7 @@ export async function startConnect(openBus: OpenBus = openBusDefault) {
     }),
     usePlayer.subscribe((s, prev) => {
       if (remoteOn()) return
-      if (s.isPlaying && !prev.isPlaying) since = Date.now()
+      if (s.isPlaying && !prev.isPlaying) since = serverNow()
       // a jump (a seek here or from a remote) goes out at once, so remotes do not show the old place
       if (Math.abs(s.position - prev.position) > 2) announceSoon(true)
       // (a queue change moves the neighbours a remote's swipe shows)
@@ -421,7 +472,7 @@ export async function startConnect(openBus: OpenBus = openBusDefault) {
   const t = setInterval(() => tickConnect(), 5000)
   cleanups.push(() => clearInterval(t))
   if (typeof window !== 'undefined') {
-    const bye = () => bus?.send({ type: 'bye' })
+    const bye = () => void bus?.send({ type: 'bye' })
     window.addEventListener('beforeunload', bye)
     cleanups.push(() => window.removeEventListener('beforeunload', bye))
   }
@@ -430,6 +481,8 @@ export async function startConnect(openBus: OpenBus = openBusDefault) {
 
 /** Closes everything (tests, sign-out). */
 export function stopConnect() {
+  syncGen++
+  orderSeq++
   for (const f of cleanups.splice(0)) f()
   closeBus()
   clearTimeout(pending)
@@ -438,4 +491,6 @@ export function stopConnect() {
   since = 0
   lastKey = ''
   holding = null
+  full.clear()
+  inFlightFull.clear()
 }

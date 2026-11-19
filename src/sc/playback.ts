@@ -1,4 +1,5 @@
 import type { HlsConfig } from 'hls.js'
+import { BINS } from '../player/peaks'
 
 /** Per-stream license authorization, never part of a persisted Track. Account OAuth stays in Rust. */
 export interface ScDrm {
@@ -69,5 +70,19 @@ export function providerPeaks(raw: unknown): Float32Array | null {
   const { height, samples } = raw as { height?: unknown; samples?: unknown }
   if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0 || !Array.isArray(samples) || !samples.length || samples.length > 100_000) return null
   if (!samples.every((x) => typeof x === 'number' && Number.isFinite(x))) return null
-  return Float32Array.from(samples as number[], (x) => Math.max(0, Math.min(1, x / height)))
+  const src = samples as number[]
+  if (src.length <= BINS) {
+    return Float32Array.from(src, (x) => Math.max(0, Math.min(1, x / height)))
+  }
+  const out = new Float32Array(BINS)
+  for (let i = 0; i < BINS; i++) {
+    const from = Math.floor((i * src.length) / BINS)
+    const to = Math.max(from + 1, Math.floor(((i + 1) * src.length) / BINS))
+    let max = 0
+    for (let j = from; j < to && j < src.length; j++) {
+      if (src[j] > max) max = src[j]
+    }
+    out[i] = Math.max(0, Math.min(1, max / height))
+  }
+  return out
 }

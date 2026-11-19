@@ -11,6 +11,7 @@ export const MAX_META_CHARS = 64
 export const MAX_LOG_CHARS = 140_000
 export const MAX_REPLY_CHARS = 2000
 const TELEGRAM_CAPTION_LIMIT = 900
+const TELEGRAM_TEXT_LIMIT = 4096
 const MAX_REPORTS_TRACKED = 3000
 const MAX_REPLIES_PER_CLIENT = 50
 const MAX_ANNOUNCEMENTS = 20
@@ -91,33 +92,60 @@ export function formatTelegramHtml(data) {
         ? '💬 Обратная связь'
         : '🐛 Ошибка (баг)'
   const env = [data.platform, data.arch].filter(Boolean).join(' ')
-  const lines = [
-    `<b>${badge}</b> · Nocturne <code>${escapeHtml(data.version)}</code> (${escapeHtml(env)})`,
-    '',
-    escapeHtml(data.message),
-  ]
-  const meta = []
-  if (data.contact) meta.push(`<b>Контакт:</b> ${escapeHtml(data.contact)}`)
-  if (data.ip) meta.push(`<b>IP:</b> <code>${escapeHtml(data.ip)}</code>`)
-  if (data.clientId) {
-    meta.push(`<b>Устройство:</b> <code>${escapeHtml(data.clientId.slice(0, 8))}</code> · <i>Ответьте (Reply) сюда для ответа в Nocturne</i>`)
+  const headerPlain = `${badge} · Nocturne ${data.version} (${env})`
+  const headerHtml = `<b>${badge}</b> · Nocturne <code>${escapeHtml(data.version)}</code> (${escapeHtml(env)})`
+  const metaHtml = []
+  const metaPlain = []
+  if (data.contact) {
+    metaHtml.push(`<b>Контакт:</b> ${escapeHtml(data.contact)}`)
+    metaPlain.push(`Контакт: ${data.contact}`)
   }
-  if (meta.length) {
-    lines.push('', ...meta)
+  if (data.ip) {
+    metaHtml.push(`<b>IP:</b> <code>${escapeHtml(data.ip)}</code>`)
+    metaPlain.push(`IP: ${data.ip}`)
+  }
+  if (data.clientId) {
+    metaHtml.push(`<b>Устройство:</b> <code>${escapeHtml(data.clientId.slice(0, 8))}</code> · <i>Ответьте (Reply) сюда для ответа в Nocturne</i>`)
+    metaPlain.push(`Устройство: ${data.clientId.slice(0, 8)} · Ответьте (Reply) сюда для ответа в Nocturne`)
+  }
+  const overheadPlain =
+    headerPlain.length + 2 + (metaPlain.length ? 2 + metaPlain.join('\n').length : 0)
+  const maxBodyChars = Math.max(200, TELEGRAM_TEXT_LIMIT - overheadPlain - 32)
+  const rawMessage = String(data.message || '')
+  const body =
+    rawMessage.length > maxBodyChars
+      ? `${rawMessage.slice(0, maxBodyChars - 1)}…`
+      : rawMessage
+  const lines = [headerHtml, '', escapeHtml(body)]
+  if (metaHtml.length) {
+    lines.push('', ...metaHtml)
   }
   return lines.join('\n')
 }
 
-export function createRateLimiter({ max = 6, windowMs = 10 * 60 * 1000 } = {}) {
+export function createRateLimiter({ max = 6, windowMs = 10 * 60 * 1000, maxKeys = 4096 } = {}) {
   const hits = new Map()
+  let lastSweepAt = 0
   return function allow(ip, now = Date.now()) {
     const key = String(ip || 'unknown')
-    if (hits.size > 4096) {
+    if (hits.size >= maxKeys && now - lastSweepAt >= Math.min(60_000, windowMs)) {
+      lastSweepAt = now
       for (const [k, ts] of hits) {
         if (!ts.length || now - ts[ts.length - 1] > windowMs) hits.delete(k)
       }
     }
-    const list = (hits.get(key) ?? []).filter((t) => now - t < windowMs)
+    const existing = hits.get(key)
+    const list = (existing ?? []).filter((t) => now - t < windowMs)
+    if (existing !== undefined) {
+      // Refresh LRU insertion order
+      hits.delete(key)
+    } else {
+      while (hits.size >= maxKeys) {
+        const oldestKey = hits.keys().next().value
+        if (oldestKey === undefined) break
+        hits.delete(oldestKey)
+      }
+    }
     if (list.length >= max) {
       hits.set(key, list)
       return false
@@ -139,7 +167,7 @@ export function createRelayStore(stateFile = '') {
   })
 
   let state = empty()
-  let persistDisabled = !stateFile
+  let lastPersistErrAt = 0
 
   if (stateFile) {
     try {
@@ -163,16 +191,22 @@ export function createRelayStore(stateFile = '') {
   }
 
   function flush() {
-    if (persistDisabled || !stateFile) return
+    if (!stateFile) return
+    const tmp = `${stateFile}.${process.pid}.tmp`
     try {
       const dir = path.dirname(stateFile)
       fs.mkdirSync(dir, { recursive: true })
-      const tmp = `${stateFile}.tmp`
       fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
       fs.renameSync(tmp, stateFile)
     } catch (err) {
-      persistDisabled = true
-      console.error(`[relay-store] persist disabled (${stateFile}): ${err?.message || err}`)
+      try {
+        fs.rmSync(tmp, { force: true })
+      } catch {}
+      const now = Date.now()
+      if (now - lastPersistErrAt >= 30_000) {
+        lastPersistErrAt = now
+        console.error(`[relay-store] persist error (${stateFile}): ${err?.message || err}`)
+      }
     }
   }
 
@@ -317,14 +351,16 @@ export function createRelayStore(stateFile = '') {
 
 async function telegramPost(fetchImpl, token, method, payload, isMultipart = false) {
   const url = `https://api.telegram.org/bot${token}/${method}`
+  const signal = AbortSignal.timeout(15_000)
   const res = await fetchImpl(
     url,
     isMultipart
-      ? { method: 'POST', body: payload }
+      ? { method: 'POST', body: payload, signal }
       : {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
+          signal,
         },
   )
   const body = await res.json().catch(() => null)
@@ -391,9 +427,11 @@ export async function deliverToTelegram(data, { token, chatId, fetchImpl = fetch
 function isOwnerMessage(msg, configuredChatId, knownOwnerChatId) {
   const cid = msg?.chat?.id !== undefined ? String(msg.chat.id) : ''
   if (!cid) return false
-  if (knownOwnerChatId && cid === String(knownOwnerChatId)) return true
   const expected = String(configuredChatId || '').trim()
-  if (/^-?\d+$/.test(expected) && cid === expected) return true
+  if (/^-?\d+$/.test(expected)) {
+    return cid === expected
+  }
+  if (knownOwnerChatId && cid === String(knownOwnerChatId)) return true
   if (expected.startsWith('@')) {
     const handle = expected.slice(1).toLowerCase()
     if (msg?.chat?.username?.toLowerCase() === handle) return true
@@ -403,12 +441,12 @@ function isOwnerMessage(msg, configuredChatId, knownOwnerChatId) {
 }
 
 export async function processTelegramUpdate(update, { store, token, chatId, fetchImpl = fetch }) {
-  const isEdit = Boolean(update?.edited_message && !update?.message)
-  const msg = update?.message || update?.edited_message
+  const isEdit = Boolean((update?.edited_message || update?.edited_channel_post) && !update?.message && !update?.channel_post)
+  const msg = update?.message || update?.edited_message || update?.channel_post || update?.edited_channel_post
   if (!msg || typeof msg !== 'object') return { handled: false }
   if (msg.from?.is_bot) return { handled: false }
   if (!isOwnerMessage(msg, chatId, store.getOwnerChatId())) return { handled: false }
-  if (msg.chat?.id !== undefined && msg.chat?.type === 'private') {
+  if (msg.chat?.id !== undefined && msg.chat?.type === 'private' && String(chatId || '').trim().startsWith('@')) {
     store.setOwnerChatId(String(msg.chat.id))
   }
 
@@ -488,17 +526,28 @@ export async function processTelegramUpdate(update, { store, token, chatId, fetc
 function readJsonBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     let size = 0
+    let settled = false
     const chunks = []
+    const fail = (err) => {
+      if (settled) return
+      settled = true
+      reject(err)
+    }
     req.on('data', (chunk) => {
+      if (settled) return
       size += chunk.length
       if (size > maxBytes) {
-        reject(Object.assign(new Error('Payload too large'), { status: 413 }))
-        req.destroy()
+        chunks.length = 0
+        fail(Object.assign(new Error('Payload too large'), { status: 413 }))
+        // Pause instead of destroying the socket immediately so jsonReply(res, 413) can flush cleanly.
+        req.pause?.()
         return
       }
       chunks.push(chunk)
     })
     req.on('end', () => {
+      if (settled) return
+      settled = true
       try {
         const text = Buffer.concat(chunks).toString('utf8')
         resolve(JSON.parse(text))
@@ -506,7 +555,12 @@ function readJsonBody(req, maxBytes) {
         reject(Object.assign(new Error('Invalid JSON'), { status: 400 }))
       }
     })
-    req.on('error', () => reject(Object.assign(new Error('Read error'), { status: 400 })))
+    req.on('close', () => {
+      if (!settled && !req.complete) {
+        fail(Object.assign(new Error('Request aborted'), { status: 400 }))
+      }
+    })
+    req.on('error', () => fail(Object.assign(new Error('Read error'), { status: 400 })))
   })
 }
 
@@ -515,23 +569,32 @@ function normalizeIp(raw) {
   return raw.trim().replace(/^::ffff:/i, '')
 }
 
-export function clientIp(req) {
-  const real = req.headers?.['x-real-ip']
-  const realIp = normalizeIp(Array.isArray(real) ? real[real.length - 1] : real)
-  if (realIp) return realIp
+function isLoopbackIp(ip) {
+  return ip === '127.0.0.1' || ip === '::1' || ip === 'localhost'
+}
 
-  const xff = req.headers?.['x-forwarded-for']
-  const xffRaw = Array.isArray(xff) ? xff.join(',') : xff
-  if (typeof xffRaw === 'string' && xffRaw.trim()) {
-    // Use the right-most hop added by the trusted reverse proxy rather than an untrusted left-most header value.
-    const parts = xffRaw
-      .split(',')
-      .map(normalizeIp)
-      .filter(Boolean)
-    if (parts.length) return parts[parts.length - 1]
+export function clientIp(req) {
+  const remote = normalizeIp(req.socket?.remoteAddress)
+  const trustProxyHeaders = !remote || isLoopbackIp(remote)
+
+  if (trustProxyHeaders) {
+    const xff = req.headers?.['x-forwarded-for']
+    const xffRaw = Array.isArray(xff) ? xff.join(',') : xff
+    if (typeof xffRaw === 'string' && xffRaw.trim()) {
+      // Use the right-most hop added by the trusted reverse proxy rather than an untrusted left-most header value.
+      const parts = xffRaw
+        .split(',')
+        .map(normalizeIp)
+        .filter(Boolean)
+      if (parts.length) return parts[parts.length - 1]
+    }
+
+    const real = req.headers?.['x-real-ip']
+    const realIp = normalizeIp(Array.isArray(real) ? real[real.length - 1] : real)
+    if (realIp) return realIp
   }
 
-  return normalizeIp(req.socket?.remoteAddress) || 'unknown'
+  return remote || 'unknown'
 }
 
 function normalizeRoute(rawUrl) {
@@ -613,8 +676,8 @@ export function createRelayHandler({
     }
 
     if (parsed.data.clientId) {
-      const reg = store.verifyOrRegisterClient(parsed.data.clientId, parsed.data.clientToken)
-      if (!reg.ok) {
+      const auth = store.verifyClient(parsed.data.clientId, parsed.data.clientToken)
+      if (auth === 'mismatch') {
         return jsonReply(res, 403, { ok: false, error: 'Client token mismatch' })
       }
     }
@@ -622,7 +685,13 @@ export function createRelayHandler({
     const reportId = `r_${crypto.randomUUID()}`
     try {
       const sent = await deliverToTelegram({ ...parsed.data, ip }, { token, chatId, fetchImpl })
-      if (sent.chatId) store.setOwnerChatId(sent.chatId)
+      if (parsed.data.clientId) {
+        const reg = store.verifyOrRegisterClient(parsed.data.clientId, parsed.data.clientToken)
+        if (!reg.ok) {
+          return jsonReply(res, 403, { ok: false, error: 'Client token mismatch' })
+        }
+      }
+      if (sent.chatId && String(chatId || '').trim().startsWith('@')) store.setOwnerChatId(sent.chatId)
       if (sent.messageIds.length) {
         store.recordReport({
           reportId,
@@ -646,7 +715,7 @@ async function runTelegramPolling({ token, chatId, store, fetchImpl = fetch }) {
   while (true) {
     try {
       const offset = store.getUpdateOffset()
-      const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${offset}&timeout=25&allowed_updates=${encodeURIComponent(JSON.stringify(['message', 'edited_message']))}`
+      const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${offset}&timeout=25&allowed_updates=${encodeURIComponent(JSON.stringify(['message', 'edited_message', 'channel_post', 'edited_channel_post']))}`
       const res = await fetchImpl(url, { signal: AbortSignal.timeout(35_000) })
       const body = await res.json().catch(() => null)
       if (!res.ok || !body?.ok) {
@@ -679,6 +748,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   const windowMs = Number(process.env.RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000)
   const max = Number(process.env.RATE_LIMIT_MAX || 6)
   const stateFile = process.env.STATE_FILE?.trim() || (process.env.DATA_DIR ? path.join(process.env.DATA_DIR, 'relay-state.json') : '/tmp/nocturne-relay-state.json')
+  if (stateFile.startsWith('/tmp/')) {
+    console.warn(`[relay-store] WARNING: using ephemeral path ${stateFile}; set DATA_DIR or STATE_FILE for persistence across restarts`)
+  }
   const store = createRelayStore(stateFile)
   const handler = createRelayHandler({
     token,
@@ -686,7 +758,17 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     store,
     allowIp: createRateLimiter({ max, windowMs }),
   })
-  const server = http.createServer((req, res) => void handler(req, res))
+  const server = http.createServer((req, res) => {
+    void handler(req, res).catch((err) => {
+      console.error(`[feedback] unhandled handler error: ${err?.message || err}`)
+      try {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        }
+        if (!res.writableEnded) res.end(JSON.stringify({ ok: false, error: 'Internal server error' }))
+      } catch {}
+    })
+  })
   server.listen(port, host, () => {
     console.log(`Nocturne feedback relay listening on http://${host}:${port} (state=${stateFile})`)
   })

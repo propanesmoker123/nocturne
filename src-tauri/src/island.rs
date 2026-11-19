@@ -3,11 +3,12 @@
 //! a poller compares the cursor with the shape's rectangle and toggles
 //! `set_ignore_cursor_events`. It also hides the island over full-screen apps.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tokio::sync::Notify;
 
 macro_rules! trace {
     ($($arg:tt)*) => {
@@ -46,17 +47,25 @@ pub fn covers_monitor(window: PxRect, monitor: PxRect) -> bool {
     window.0 <= monitor.0 && window.1 <= monitor.1 && window.2 >= monitor.2 && window.3 >= monitor.3
 }
 
-/// Where the island window goes: the user's saved spot if it is still on a monitor,
-/// otherwise the top centre of `fallback`. `width` is the window width in physical px.
-pub fn resolve_position(saved: Option<(i32, i32)>, monitors: &[PxRect], fallback: PxRect, width: i32) -> (i32, i32) {
+/// Where the island window goes and which monitor scale applies: each monitor tests the pill's
+/// top-centre using that monitor's own scale factor so mixed-DPI setups never falsely reset.
+pub fn resolve_placement(
+    saved: Option<(i32, i32)>,
+    monitors: &[(PxRect, f64)],
+    fallback: (PxRect, f64),
+) -> ((i32, i32), f64) {
     if let Some(p) = saved {
-        // The pill sits at the top centre of the window: that point must be on a screen.
-        let pill = (p.0 + width / 2, p.1 + 8);
-        if monitors.iter().any(|m| contains(*m, pill)) {
-            return p;
+        for &(m_rect, scale) in monitors {
+            let half_w = (WIDTH * scale).round() as i32 / 2;
+            let pill = (p.0 + half_w, p.1 + 8);
+            if contains(m_rect, pill) {
+                return (p, scale);
+            }
         }
     }
-    (fallback.0 + (fallback.2 - fallback.0 - width) / 2, fallback.1)
+    let (fb_rect, fb_scale) = fallback;
+    let fb_w = (WIDTH * fb_scale).round() as i32;
+    ((fb_rect.0 + (fb_rect.2 - fb_rect.0 - fb_w) / 2, fb_rect.1), fb_scale)
 }
 
 pub fn contains(rect: PxRect, point: (i32, i32)) -> bool {
@@ -90,17 +99,23 @@ struct Inner {
     placed_for: Option<(Option<String>, Option<IslandPos>)>,
 }
 
-pub struct IslandState(Mutex<Inner>);
+pub struct IslandState {
+    inner: Mutex<Inner>,
+    notify: Arc<Notify>,
+}
 
 impl IslandState {
     pub fn new() -> Self {
-        Self(Mutex::new(Inner {
-            rect: Rect::default(),
-            interactive: false,
-            config: IslandConfig { want_visible: false, mode: "always".into(), monitor: None, hide_in_fullscreen: true, position: None },
-            shown: false,
-            placed_for: None,
-        }))
+        Self {
+            inner: Mutex::new(Inner {
+                rect: Rect::default(),
+                interactive: false,
+                config: IslandConfig { want_visible: false, mode: "always".into(), monitor: None, hide_in_fullscreen: true, position: None },
+                shown: false,
+                placed_for: None,
+            }),
+            notify: Arc::new(Notify::new()),
+        }
     }
 }
 
@@ -110,7 +125,7 @@ struct Hover {
 }
 
 pub fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("island.html".into()))
+    let win = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("island.html".into()))
         .title("Nocturne Island")
         .inner_size(WIDTH, HEIGHT)
         .decorations(false)
@@ -124,7 +139,9 @@ pub fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .focused(false)
         .focusable(false)
         .visible(false)
-        .build()
+        .build()?;
+    let _ = win.set_ignore_cursor_events(true);
+    Ok(win)
 }
 
 /// Puts the island where the user dragged it, or at the top centre of the named monitor
@@ -140,14 +157,12 @@ fn place(win: &WebviewWindow, monitor: Option<&str>, saved: Option<IslandPos>) {
         let (p, s) = (m.position(), m.size());
         (p.x, p.y, p.x + s.width as i32, p.y + s.height as i32)
     };
-    let rects: Vec<PxRect> = monitors.iter().map(rect).collect();
-    let fallback_w = (WIDTH * fallback.scale_factor()).round() as i32;
-    let (x, y) = resolve_position(saved.map(|p| (p.x, p.y)), &rects, rect(&fallback), fallback_w);
-    let scale = monitors
-        .iter()
-        .find(|m| contains(rect(m), (x + fallback_w / 2, y + 8)))
-        .map(|m| m.scale_factor())
-        .unwrap_or_else(|| fallback.scale_factor());
+    let scaled_monitors: Vec<(PxRect, f64)> = monitors.iter().map(|m| (rect(m), m.scale_factor())).collect();
+    let ((x, y), scale) = resolve_placement(
+        saved.map(|p| (p.x, p.y)),
+        &scaled_monitors,
+        (rect(&fallback), fallback.scale_factor()),
+    );
     let _ = win.set_position(PhysicalPosition::new(x, y));
     let _ = win.set_size(PhysicalSize::new((WIDTH * scale).round() as u32, (HEIGHT * scale).round() as u32));
 }
@@ -209,19 +224,39 @@ fn main_active(app: &AppHandle) -> bool {
 
 /// Starts the cursor/visibility poller. Called once from setup.
 pub fn start(app: &AppHandle) {
+    let notify = Arc::clone(&app.state::<IslandState>().notify);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut tick: u32 = 0;
         let mut last_inside = false;
-        let mut ignoring: Option<bool> = None;
+        let mut ignoring: Option<bool> = Some(true);
         let mut fullscreen = false;
         let mut main_is_active = false;
+        let mut force_env_check = true;
+        let mut just_woke = true;
         let mut interval = tokio::time::interval(Duration::from_millis(40));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            interval.tick().await;
+            if !just_woke {
+                interval.tick().await;
+            }
+            just_woke = false;
+            let state = app.state::<IslandState>();
+            let (idle_hidden, want_visible_peek) = match state.inner.lock() {
+                Ok(g) => (!g.config.want_visible && !g.shown, g.config.want_visible),
+                Err(_) => continue,
+            };
+            if idle_hidden {
+                notify.notified().await;
+                interval.reset();
+                force_env_check = true;
+                just_woke = true;
+                continue;
+            }
             tick = tick.wrapping_add(1);
             let Some(win) = app.get_webview_window(LABEL) else { continue };
-            if tick % 10 == 0 {
+            if want_visible_peek && (force_env_check || tick.is_multiple_of(10)) {
+                force_env_check = false;
                 let w = win.outer_size().map(|s| s.width as i32).unwrap_or(WIDTH as i32);
                 let pos = win.outer_position().map(|p| (p.x + w / 2, p.y + 8)).unwrap_or((0, 0));
                 let now_full = fullscreen_on(pos);
@@ -231,11 +266,11 @@ pub fn start(app: &AppHandle) {
                 fullscreen = now_full;
                 main_is_active = main_active(&app);
             }
-            let state = app.state::<IslandState>();
-            let (should_show, rect, interactive, monitor, needs_place) = {
-                let Ok(mut g) = state.0.lock() else { continue };
+            let (should_show, want_visible, rect, interactive, monitor, needs_place) = {
+                let Ok(mut g) = state.inner.lock() else { continue };
                 let c = &g.config;
-                let show = c.want_visible && !(c.hide_in_fullscreen && fullscreen) && (c.mode != "background" || !main_is_active);
+                let want_visible = c.want_visible;
+                let show = want_visible && !(c.hide_in_fullscreen && fullscreen) && (c.mode != "background" || !main_is_active);
                 let monitor = c.monitor.clone();
                 let saved = c.position;
                 let key = (monitor.clone(), saved);
@@ -245,7 +280,7 @@ pub fn start(app: &AppHandle) {
                 }
                 let changed = show != g.shown;
                 g.shown = show;
-                ((show, changed), g.rect, g.interactive, (monitor, saved), needs_place)
+                ((show, changed), want_visible, g.rect, g.interactive, (monitor, saved), needs_place)
             };
             let (show, visibility_changed) = should_show;
             if needs_place || (visibility_changed && show) {
@@ -261,6 +296,19 @@ pub fn start(app: &AppHandle) {
                 }
             }
             if !show {
+                if last_inside {
+                    last_inside = false;
+                    let _ = app.emit_to(LABEL, "island:hover", Hover { inside: false });
+                }
+                if ignoring != Some(true) && win.set_ignore_cursor_events(true).is_ok() {
+                    ignoring = Some(true);
+                }
+                if !want_visible {
+                    notify.notified().await;
+                    interval.reset();
+                    force_env_check = true;
+                    just_woke = true;
+                }
                 continue;
             }
             let (Ok(cursor), Ok(pos), Ok(scale)) = (app.cursor_position(), win.outer_position(), win.scale_factor()) else { continue };
@@ -270,10 +318,8 @@ pub fn start(app: &AppHandle) {
                 let _ = app.emit_to(LABEL, "island:hover", Hover { inside });
             }
             let want_ignore = !(inside && interactive);
-            if ignoring != Some(want_ignore) {
-                if win.set_ignore_cursor_events(want_ignore).is_ok() {
-                    ignoring = Some(want_ignore);
-                }
+            if ignoring != Some(want_ignore) && win.set_ignore_cursor_events(want_ignore).is_ok() {
+                ignoring = Some(want_ignore);
             }
         }
     });
@@ -281,7 +327,7 @@ pub fn start(app: &AppHandle) {
 
 #[tauri::command]
 pub fn island_set_hit_rect(state: tauri::State<'_, IslandState>, x: f64, y: f64, w: f64, h: f64, interactive: bool) {
-    if let Ok(mut g) = state.0.lock() {
+    if let Ok(mut g) = state.inner.lock() {
         g.rect = Rect { x, y, w, h };
         g.interactive = interactive;
     }
@@ -290,9 +336,10 @@ pub fn island_set_hit_rect(state: tauri::State<'_, IslandState>, x: f64, y: f64,
 #[tauri::command]
 pub fn island_configure(state: tauri::State<'_, IslandState>, config: IslandConfig) {
     trace!("configure {config:?}");
-    if let Ok(mut g) = state.0.lock() {
+    if let Ok(mut g) = state.inner.lock() {
         g.config = config;
     }
+    state.notify.notify_one();
 }
 
 #[cfg(test)]
@@ -351,19 +398,31 @@ mod tests {
 
     #[test]
     fn saved_position_on_a_monitor_is_kept() {
-        let mons = [(0, 0, 1920, 1080), (-1920, 0, 0, 1080)];
-        assert_eq!(resolve_position(Some((-1500, 300)), &mons, mons[0], 480), (-1500, 300));
+        let mons = [((0, 0, 1920, 1080), 1.0), ((-1920, 0, 0, 1080), 1.0)];
+        assert_eq!(resolve_placement(Some((-1500, 300)), &mons, mons[0]), ((-1500, 300), 1.0));
     }
 
     #[test]
     fn saved_position_off_every_monitor_falls_back_to_top_centre() {
-        let mons = [(0, 0, 1920, 1080)];
-        assert_eq!(resolve_position(Some((-1500, 300)), &mons, mons[0], 480), (720, 0));
-        assert_eq!(resolve_position(None, &mons, mons[0], 480), (720, 0));
+        let mons = [((0, 0, 1920, 1080), 1.0)];
+        assert_eq!(resolve_placement(Some((-1500, 300)), &mons, mons[0]), ((720, 0), 1.0));
+        assert_eq!(resolve_placement(None, &mons, mons[0]), ((720, 0), 1.0));
     }
 
     #[test]
     fn empty_rect_never_hits() {
         assert!(!hit_test((0.0, 0.0), (0, 0), 1.0, Rect::default()));
+    }
+
+    #[test]
+    fn mixed_dpi_saved_position_uses_each_monitors_own_scale() {
+        let primary = ((0, 0, 3840, 2160), 2.0);
+        let secondary = ((3840, 0, 5760, 1080), 1.0);
+        let mons = [primary, secondary];
+        // Saved near right edge of 100% secondary: x + 240 = 5590 < 5760,
+        // whereas using primary's 200% half-width (480) would give 5830 >= 5760 and falsely reset!
+        assert_eq!(resolve_placement(Some((5350, 10)), &mons, primary), ((5350, 10), 1.0));
+        // Disconnected monitor still falls back to top-centre of primary using primary scale.
+        assert_eq!(resolve_placement(Some((9000, 10)), &mons, primary), ((1440, 0), 2.0));
     }
 }

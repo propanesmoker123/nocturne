@@ -17,7 +17,14 @@ const LIMIT: usize = 256 * 1024;
 fn remove_profile(root: &std::path::Path, profile: &std::path::Path) {
     if let Ok(profile) = profile.canonicalize() {
         if profile.parent() == Some(root) && profile.file_name().and_then(|name| name.to_str()).is_some_and(|name| uuid::Uuid::parse_str(name).is_ok()) {
-            let _ = std::fs::remove_dir_all(profile);
+            for attempt in 0..6 {
+                if std::fs::remove_dir_all(&profile).is_ok() || !profile.exists() {
+                    break;
+                }
+                if attempt < 5 {
+                    std::thread::sleep(Duration::from_millis(60));
+                }
+            }
         }
     }
 }
@@ -96,10 +103,11 @@ async fn cdp(url: &Url, method: &str, params: Value) -> Result<Value, String> {
 }
 
 pub struct BrowserLogin {
-    child: Child,
+    child: Option<Child>,
     profile: PathBuf,
     root: PathBuf,
     debugger: Option<Url>,
+    client: reqwest::Client,
     started: Instant,
     #[cfg(windows)]
     job: Option<OwnedHandle>,
@@ -131,33 +139,60 @@ impl BrowserLogin {
         cleanup_orphans(&root);
         let profile = root.join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir(&profile).map_err(|_| TRANSPORT_ERROR)?;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|_| TRANSPORT_ERROR)?;
-        let port = listener.local_addr().map_err(|_| TRANSPORT_ERROR)?.port();
+        let cleanup_early = |root: &std::path::Path, profile: &std::path::Path| {
+            remove_profile(root, profile);
+        };
+        let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => l,
+            Err(_) => { cleanup_early(&root, &profile); return Err(TRANSPORT_ERROR.into()); }
+        };
+        let port = match listener.local_addr() {
+            Ok(a) => a.port(),
+            Err(_) => { cleanup_early(&root, &profile); return Err(TRANSPORT_ERROR.into()); }
+        };
         drop(listener);
-        let mut child = Command::new(chrome)
+        let client = match reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(4)).build() {
+            Ok(c) => c,
+            Err(_) => { cleanup_early(&root, &profile); return Err(TRANSPORT_ERROR.into()); }
+        };
+        let mut child = match Command::new(chrome)
             .arg(format!("--user-data-dir={}", profile.display()))
             .arg(format!("--remote-debugging-port={port}"))
             .args(["--remote-debugging-address=127.0.0.1", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--new-window", LOGIN_URL])
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|_| "Не удалось открыть Chrome")?;
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        {
+            Ok(c) => c,
+            Err(_) => { cleanup_early(&root, &profile); return Err("Не удалось открыть Chrome".into()); }
+        };
         #[cfg(windows)]
-        let job = Some(browser_job(&mut child)?);
-        let mut login = Self { child, profile, root, debugger: None, started: Instant::now(), #[cfg(windows)] job };
-        let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_millis(250)).build().map_err(|_| TRANSPORT_ERROR)?;
+        let job = match browser_job(&mut child) {
+            Ok(j) => Some(j),
+            Err(e) => { cleanup_early(&root, &profile); return Err(e); }
+        };
+        let mut login = Self { child: Some(child), profile, root, debugger: None, client: client.clone(), started: Instant::now(), #[cfg(windows)] job };
         for _ in 0..100 {
-            if login.child.try_wait().map_err(|_| TRANSPORT_ERROR)?.is_some() { return Err(TRANSPORT_ERROR.into()); }
-            if let Ok(text) = std::fs::read_to_string(login.profile.join("DevToolsActivePort")) {
-                let url = debugger_url(&text)?;
-                if url.port() != Some(port) { return Err(TRANSPORT_ERROR.into()); }
-                login.debugger = Some(url); return Ok(login);
+            if login.child.as_mut().is_some_and(|c| c.try_wait().ok().flatten().is_some()) {
+                return Err(TRANSPORT_ERROR.into());
             }
-            if let Ok(response) = client.get(format!("http://127.0.0.1:{port}/json/version")).send().await {
+            if let Ok(text) = std::fs::read_to_string(login.profile.join("DevToolsActivePort")) {
+                // DevToolsActivePort may be read while Chrome is still flushing it; retry on parse failure.
+                if let Ok(url) = debugger_url(&text) {
+                    if url.port() != Some(port) { return Err(TRANSPORT_ERROR.into()); }
+                    login.debugger = Some(url);
+                    return Ok(login);
+                }
+            }
+            if let Ok(response) = client.get(format!("http://127.0.0.1:{port}/json/version")).timeout(Duration::from_millis(250)).send().await {
                 if response.content_length().is_some_and(|size| size <= 16384) {
                     if let Ok(value) = response.json::<Value>().await {
                         if let Some(raw) = value["webSocketDebuggerUrl"].as_str() {
-                            let url = Url::parse(raw).map_err(|_| TRANSPORT_ERROR)?;
-                            let expected = debugger_url(&format!("{port}\n{}", url.path()))?;
-                            if url != expected { return Err(TRANSPORT_ERROR.into()); }
-                            login.debugger = Some(url); return Ok(login);
+                            if let Ok(url) = Url::parse(raw) {
+                                if let Ok(expected) = debugger_url(&format!("{port}\n{}", url.path())) {
+                                    if url != expected { return Err(TRANSPORT_ERROR.into()); }
+                                    login.debugger = Some(url);
+                                    return Ok(login);
+                                }
+                            }
                         }
                     }
                 }
@@ -166,11 +201,16 @@ impl BrowserLogin {
         }
         Err(TRANSPORT_ERROR.into())
     }
-    pub fn expired(&mut self) -> bool { self.started.elapsed() > Duration::from_secs(600) || self.child.try_wait().ok().flatten().is_some() }
-    pub async fn cookies(&mut self) -> Result<Vec<SessionCookie>, String> {
+    pub fn expired(&mut self) -> bool {
+        self.started.elapsed() > Duration::from_secs(600)
+            || self.child.as_mut().is_none_or(|c| c.try_wait().ok().flatten().is_some())
+    }
+    pub fn probe_info(&mut self) -> Result<(u16, reqwest::Client), String> {
         if self.expired() { return Err(TRANSPORT_ERROR.into()); }
         let port = self.debugger.as_ref().and_then(Url::port).ok_or(TRANSPORT_ERROR)?;
-        let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(4)).build().map_err(|_| TRANSPORT_ERROR)?;
+        Ok((port, self.client.clone()))
+    }
+    pub async fn fetch_cookies(port: u16, client: reqwest::Client) -> Result<Vec<SessionCookie>, String> {
         let mut response = client.get(format!("http://127.0.0.1:{port}/json/list")).send().await.map_err(|_| TRANSPORT_ERROR)?;
         if !response.status().is_success() { return Err(TRANSPORT_ERROR.into()); }
         let mut bytes = Vec::new();
@@ -194,19 +234,49 @@ impl BrowserLogin {
         if !cookies.iter().any(|cookie| cookie.cookie.name() == "sp_dc") { return Err(NOT_SIGNED_IN.into()); }
         Ok(cookies)
     }
+    #[allow(dead_code)]
+    pub async fn cookies(&mut self) -> Result<Vec<SessionCookie>, String> {
+        let (port, client) = self.probe_info()?;
+        Self::fetch_cookies(port, client).await
+    }
     pub async fn close(mut self) {
         if let Some(url) = self.debugger.take() { let _ = cdp(&url, "Browser.close", json!({})).await; }
-        // Drop also handles a manually closed browser or an interrupted sign-in.
+        let child = self.child.take();
+        #[cfg(windows)]
+        let job = self.job.take();
+        let root = self.root.clone();
+        let profile = self.profile.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            #[cfg(windows)]
+            drop(job);
+            if let Some(mut c) = child {
+                if c.try_wait().ok().flatten().is_none() { let _ = c.kill(); }
+                let _ = c.wait();
+            }
+            remove_profile(&root, &profile);
+        }).await;
     }
 }
 impl Drop for BrowserLogin {
     fn drop(&mut self) {
         #[cfg(windows)]
-        self.job.take(); // Closing this handle terminates only this Chrome process tree, even on app exit.
-        if self.child.try_wait().ok().flatten().is_none() { let _ = self.child.kill(); }
-        let _ = self.child.wait();
-        // Delete only this generated profile, after canonical verification of both absolute paths.
-        remove_profile(&self.root, &self.profile);
+        let job = self.job.take();
+        let child = self.child.take();
+        if child.is_none() {
+            return;
+        }
+        let root = self.root.clone();
+        let profile = self.profile.clone();
+        // Never block a Tokio async worker thread if dropped synchronously (e.g. during shutdown).
+        std::thread::spawn(move || {
+            #[cfg(windows)]
+            drop(job);
+            if let Some(mut c) = child {
+                if c.try_wait().ok().flatten().is_none() { let _ = c.kill(); }
+                let _ = c.wait();
+            }
+            remove_profile(&root, &profile);
+        });
     }
 }
 

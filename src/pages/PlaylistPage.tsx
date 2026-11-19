@@ -22,6 +22,7 @@ export function PlaylistPage({ ownerId, id, accessKey }: { ownerId: number; id: 
   const p = meta.data
   const setTitle = useChrome((c) => c.setTitle)
   useEffect(() => setTitle(p?.title ?? ''), [p?.title, setTitle])
+  const art = usePlaylistCovers(p, tracks.items)
 
   if (meta.isError) {
     return <EmptyState icon={<ListMusic size={26} />} title="Плейлист недоступен" text={describeError(meta.error)} />
@@ -30,7 +31,6 @@ export function PlaylistPage({ ownerId, id, accessKey }: { ownerId: number; id: 
   const totalSec = tracks.items.reduce((n, t) => n + t.duration, 0)
   const count = tracks.total || p?.count || 0
   const playable = tracks.items.some((t) => t.playable)
-  const art = usePlaylistCovers(p, tracks.items)
 
   return (
     <>

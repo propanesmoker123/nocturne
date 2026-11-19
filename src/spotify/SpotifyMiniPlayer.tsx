@@ -1,10 +1,11 @@
 import { Heart } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Artwork } from '../components/Artwork'
 import { IconButton } from '../components/controls'
 import { IconBackward, IconForward, IconPause, IconPlay, IconRepeat, IconShuffle } from '../components/Icons'
 import { WaveformScrubber } from '../components/Waveform'
 import { formatTime } from '../lib/format'
+import { useWindowVisibility } from '../lib/windowVisibility'
 import { useRouter } from '../app/router'
 import { VolumeControl } from '../app/MiniPlayer'
 import s from '../app/MiniPlayer.module.css'
@@ -13,26 +14,108 @@ import { spotifyControl, spotifyPosition, useSpotify } from './runtime'
 
 const run = (...args: Parameters<typeof spotifyControl>) => void spotifyControl(...args).catch(() => {})
 
-/** Ticks twice a second while Spotify plays, from its last reading. */
+/** Ticks twice a second while Spotify plays and the window is visible, from its last reading. */
 function useSpotifyPosition() {
-  const playing = useSpotify(x => x.playing)
-  const at = useSpotify(x => x.at)
+  const playing = useSpotify((x) => x.playing)
+  const visible = useWindowVisibility((x) => x.visible)
+  useSpotify((x) => x.at)
   const [, tick] = useState(0)
   useEffect(() => {
-    if (!playing) return
-    const timer = setInterval(() => tick(n => n + 1), 500)
+    if (!playing || !visible) return
+    const timer = setInterval(() => tick((n) => n + 1), 500)
     return () => clearInterval(timer)
-  }, [playing, at])
+  }, [playing, visible])
   return spotifyPosition()
+}
+
+function SpotifyScrubber({
+  trackKey,
+  duration,
+  bufferedRatio,
+}: {
+  trackKey: string | undefined
+  duration: number
+  bufferedRatio: number
+}) {
+  const position = useSpotifyPosition()
+  const [drag, setDrag] = useState<number | null>(null)
+  useEffect(() => setDrag(null), [trackKey])
+  const shown = drag ?? position
+  return (
+    <div className={s.timeline}>
+      <span>{formatTime(shown)}</span>
+      <div className={s.waveBox}>
+        <WaveformScrubber
+          trackKey={trackKey}
+          height={26}
+          label="Позиция трека"
+          value={duration ? shown / duration : 0}
+          buffered={bufferedRatio}
+          disabled={!duration}
+          step={5 / Math.max(duration, 1)}
+          valueText={(v) => formatTime(v * duration)}
+          onChange={(v) => setDrag(v * duration)}
+          onCommit={(v) => {
+            setDrag(null)
+            run('seek', v * duration)
+          }}
+          onCancel={() => setDrag(null)}
+        />
+      </div>
+      <span>-{formatTime(Math.max(0, duration - shown))}</span>
+    </div>
+  )
 }
 
 /** The bottom bar while Spotify is the player and another page is open: Spotify's own bar is not on screen then. */
 export function SpotifyMiniPlayer() {
-  const track = useSpotify(x => x.track)
-  const playing = useSpotify(x => x.playing)
-  const push = useRouter(r => r.push)
-  const position = useSpotifyPosition()
-  const [drag, setDrag] = useState<number | null>(null)
+  const track = useSpotify((x) => x.track)
+  const playing = useSpotify((x) => x.playing)
+  const push = useRouter((r) => r.push)
+  const volLastSentRef = useRef(0)
+  const volPendingRef = useRef<number | null>(null)
+  const volTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+
+  useEffect(
+    () => () => {
+      clearTimeout(volTimerRef.current)
+    },
+    [],
+  )
+
+  const sendVolumeThrottled = useCallback((v: number) => {
+    const now = Date.now()
+    const elapsed = now - volLastSentRef.current
+    if (elapsed >= 120) {
+      clearTimeout(volTimerRef.current)
+      volTimerRef.current = undefined
+      volPendingRef.current = null
+      volLastSentRef.current = now
+      run('volume', v)
+    } else {
+      volPendingRef.current = v
+      if (!volTimerRef.current) {
+        volTimerRef.current = setTimeout(() => {
+          volTimerRef.current = undefined
+          const next = volPendingRef.current
+          volPendingRef.current = null
+          if (next !== null) {
+            volLastSentRef.current = Date.now()
+            run('volume', next)
+          }
+        }, 120 - elapsed)
+      }
+    }
+  }, [])
+
+  const commitVolume = useCallback((v: number) => {
+    clearTimeout(volTimerRef.current)
+    volTimerRef.current = undefined
+    volPendingRef.current = null
+    volLastSentRef.current = Date.now()
+    run('volume', v)
+  }, [])
+
   const trackKey = track ? (track.trackId ? `sp_${track.trackId}` : `sp_live_${track.title}_${track.artist}`) : undefined
   const waveformSeed = track?.trackId || trackKey || ''
   const trackDuration = track?.duration ?? 0
@@ -45,7 +128,6 @@ export function SpotifyMiniPlayer() {
   const bufferedRatio = duration > 0 && typeof track.buffered === 'number' ? Math.min(1, Math.max(0, track.buffered / duration)) : 1
   const vol = track.volume ?? 1
   const muted = vol <= 0.001
-  const shown = drag ?? position
   const open = () => push({ name: 'spotify' })
   return (
     <div className={s.wrap}>
@@ -79,24 +161,7 @@ export function SpotifyMiniPlayer() {
               <IconRepeat size={17} one={track.repeat === 'one'} />
             </IconButton>
           </div>
-          <div className={s.timeline}>
-            <span>{formatTime(shown)}</span>
-            <div className={s.waveBox}>
-              <WaveformScrubber
-                trackKey={trackKey}
-                height={26}
-                label="Позиция трека"
-                value={duration ? shown / duration : 0}
-                buffered={bufferedRatio}
-                disabled={!duration}
-                step={5 / Math.max(duration, 1)}
-                valueText={v => formatTime(v * duration)}
-                onChange={v => setDrag(v * duration)}
-                onCommit={v => { setDrag(null); run('seek', v * duration) }}
-              />
-            </div>
-            <span>-{formatTime(Math.max(0, duration - shown))}</span>
-          </div>
+          <SpotifyScrubber trackKey={trackKey} duration={duration} bufferedRatio={bufferedRatio} />
         </div>
         <div className={s.right}>
           <VolumeControl
@@ -106,8 +171,8 @@ export function SpotifyMiniPlayer() {
             muteLabel="Звук Spotify"
             showSlider={track.volume !== null}
             onToggleMute={() => run('mute')}
-            onChange={(v) => run('volume', v)}
-            onCommit={(v) => run('volume', v)}
+            onChange={sendVolumeThrottled}
+            onCommit={commitVolume}
           />
         </div>
       </div>

@@ -32,6 +32,9 @@ static ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 static POPUPS: AtomicU32 = AtomicU32::new(0);
 /// One silent sign-in at a time: two requests that both got a 401 share one.
 static SILENT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Opening a sign-in window, wiping the profile and signing out never overlap: the profile's
+/// browsing data is cleared asynchronously and a window built meanwhile would race it.
+pub(crate) static PROFILE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub struct Pending {
     pkce: Pkce,
@@ -53,6 +56,24 @@ impl Failure {
 
 pub(super) fn profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_local_data_dir().map(|d| d.join(PROFILE_DIR)).map_err(|e| e.to_string())
+}
+
+/// The popup labels of attempt `label` (`sc-login-7` → `sc-popup-7-*`).
+fn popup_prefix(label: &str) -> String {
+    format!("{POPUP_PREFIX}{}-", label.strip_prefix(LABEL_PREFIX).unwrap_or(label))
+}
+
+fn belongs_to_attempt(window_label: &str, attempt: &str) -> bool {
+    window_label == attempt || window_label.starts_with(&popup_prefix(attempt))
+}
+
+/// Closes the window of attempt `label` and its popups only (never a newer attempt's window).
+fn close_attempt(app: &AppHandle, label: &str) {
+    for (l, w) in app.webview_windows() {
+        if belongs_to_attempt(&l, label) {
+            let _ = w.destroy();
+        }
+    }
 }
 
 fn close_windows(app: &AppHandle) {
@@ -98,12 +119,13 @@ fn title_issue(title: &str) -> Option<&'static str> {
     None
 }
 
-fn handle_nav(app: &AppHandle, scope: &str, url: &Url, silent: bool) -> bool {
+fn handle_nav(app: &AppHandle, scope: &str, url: &Url, silent: bool, attempt: &str) -> bool {
     if auth::is_callback(url) {
         trace!("{scope} callback ({})", auth::callback_kind(url));
         let app = app.clone();
         let u = url.clone();
-        tauri::async_runtime::spawn(async move { finish(&app, u).await });
+        let attempt = attempt.to_string();
+        tauri::async_runtime::spawn(async move { finish(&app, u, &attempt).await });
         return false;
     }
     let allow = matches!(url.scheme(), "https" | "about");
@@ -125,24 +147,27 @@ pub fn open(app: &AppHandle, silent: bool) -> Result<oneshot::Receiver<Result<()
     let pkce = auth::new_pkce();
     let page: Url = auth::auth_url(&ids.client_id, &ids.app_id, &st.device_id(), &pkce).parse().map_err(|_| "bad sign-in address".to_string())?;
     let page_summary = safe_url(&page);
+    let dir = profile_dir(app)?;
     let label = format!("{LABEL_PREFIX}{}", ATTEMPTS.fetch_add(1, Ordering::Relaxed));
     let (tx, rx) = oneshot::channel();
     if let Ok(mut g) = st.pending.lock() {
         *g = Some(Pending { pkce, silent, label: label.clone(), done: Some(tx) });
     }
-    let dir = profile_dir(app)?;
     let nav_app = app.clone();
+    let nav_label = label.clone();
     let load_silent = silent;
     let title_silent = silent;
     let popup_app = app.clone();
-    WebviewWindowBuilder::new(app, &label, WebviewUrl::External(page))
+    let popup_parent = label.clone();
+    let popup_label_prefix = popup_prefix(&label);
+    let build_res = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(page))
         .title("Вход в SoundCloud — Nocturne")
         .inner_size(480.0, 760.0)
         .center()
         .visible(!silent)
         .data_directory(dir)
         .initialization_script(auth::INIT_SCRIPT)
-        .on_navigation(move |url| handle_nav(&nav_app, "sign-in", url, silent))
+        .on_navigation(move |url| handle_nav(&nav_app, "sign-in", url, silent, &nav_label))
         .on_page_load(move |_window, payload| {
             if !load_silent {
                 trace!("sign-in page {:?}: {}", payload.event(), safe_url(payload.url()));
@@ -165,14 +190,15 @@ pub fn open(app: &AppHandle, silent: bool) -> Result<oneshot::Receiver<Result<()
             trace!("popup #{n} requested: {requested}");
             let blank: Url = "about:blank".parse().expect("about:blank");
             let popup_nav_app = popup_app.clone();
+            let popup_attempt = popup_parent.clone();
             let scope = format!("popup #{n}");
             let nav_scope = scope.clone();
             let load_scope = scope.clone();
             let title_scope = scope.clone();
-            match WebviewWindowBuilder::new(&popup_app, format!("{POPUP_PREFIX}{n}"), WebviewUrl::External(blank))
+            match WebviewWindowBuilder::new(&popup_app, format!("{popup_label_prefix}{n}"), WebviewUrl::External(blank))
                 .window_features(features)
                 .title("Вход — SoundCloud (Nocturne)")
-                .on_navigation(move |nav_url| handle_nav(&popup_nav_app, &nav_scope, nav_url, false))
+                .on_navigation(move |nav_url| handle_nav(&popup_nav_app, &nav_scope, nav_url, false, &popup_attempt))
                 .on_page_load(move |_window, payload| {
                     trace!("{load_scope} page {:?}: {}", payload.event(), safe_url(payload.url()));
                 })
@@ -202,21 +228,34 @@ pub fn open(app: &AppHandle, silent: bool) -> Result<oneshot::Receiver<Result<()
                 }
             }
         })
-        .build()
-        .map_err(|e| {
-            let msg = e.to_string();
-            trace!("sign-in window build failed: {msg}");
-            msg
-        })?;
+        .build();
+    if let Err(e) = build_res {
+        if let Ok(mut g) = st.pending.lock() {
+            if g.as_ref().is_some_and(|p| p.label == label) {
+                g.take();
+            }
+        }
+        let msg = e.to_string();
+        trace!("sign-in window build failed: {msg}");
+        return Err(msg);
+    }
     trace!("{} sign-in window opened ({page_summary})", if silent { "silent" } else { "visible" });
     Ok(rx)
 }
 
-async fn finish(app: &AppHandle, url: Url) {
+async fn finish(app: &AppHandle, url: Url, attempt: &str) {
     let st = app.state::<ScState>();
-    let Some(mut p) = st.pending.lock().ok().and_then(|mut g| g.take()) else { return };
+    let Some(mut p) = st.pending.lock().ok().and_then(|mut g| {
+        if g.as_ref().is_some_and(|p| p.label == attempt) {
+            g.take()
+        } else {
+            None
+        }
+    }) else {
+        return;
+    };
     let result = exchange(app, &p, &url).await;
-    close_windows(app);
+    close_attempt(app, &p.label);
     match &result {
         Ok(()) => trace!("signed in"),
         Err(f) if f.cancelled => trace!("sign-in cancelled"),
@@ -242,6 +281,7 @@ async fn exchange(app: &AppHandle, p: &Pending, url: &Url) -> Result<(), Failure
         }
     };
     let st = app.state::<ScState>();
+    let gen0 = st.generation();
     let http = app.state::<Http>();
     let ids = st.ids();
     let resp = http
@@ -269,14 +309,18 @@ async fn exchange(app: &AppHandle, p: &Pending, url: &Url) -> Result<(), Failure
         trace!("sign-in token response missing access_token");
         Failure::new(GENERIC_FAILURE)
     })?;
+    if st.generation() != gen0 {
+        return Err(Failure { message: String::new(), cancelled: true });
+    }
+    let user = api::me_with(&http, &ids, &token).await.ok();
+    let missing = user.is_none();
+    if st.commit_signed_in_if_gen(gen0, token.clone(), user).is_none() {
+        return Err(Failure { message: String::new(), cancelled: true });
+    }
     // without Credential Manager the key still works for this run
     if let Err(e) = store::save_token(&token) {
         trace!("could not keep the key: {e}");
     }
-    st.set_token(Some(token.clone()));
-    let user = api::me_with(&http, &ids, &token).await.ok();
-    let missing = user.is_none();
-    st.set_signed_in(user);
     emit_status(app);
     if missing {
         super::repair_profile(app);
@@ -315,17 +359,27 @@ pub async fn silent(app: &AppHandle, failed: &str) -> Result<(), String> {
     if st.pending.lock().map(|g| g.as_ref().is_some_and(|p| !p.silent)).unwrap_or(false) {
         return Err("sign-in in progress".to_string());
     }
-    let rx = open(app, true)?;
+    let rx = {
+        let _prof = PROFILE.lock().await;
+        if st.pending.lock().map(|g| g.as_ref().is_some_and(|p| !p.silent)).unwrap_or(false) {
+            return Err("sign-in in progress".to_string());
+        }
+        open(app, true)?
+    };
     match tokio::time::timeout(SILENT_TIMEOUT, rx).await {
         Ok(Ok(r)) => r,
         Ok(Err(_)) => Err("sign-in dropped".to_string()),
         Err(_) => {
-            if let Ok(mut g) = st.pending.lock() {
+            let timed_out_label = st.pending.lock().ok().and_then(|mut g| {
                 if g.as_ref().is_some_and(|p| p.silent) {
-                    g.take();
+                    g.take().map(|p| p.label)
+                } else {
+                    None
                 }
+            });
+            if let Some(label) = timed_out_label {
+                close_attempt(app, &label);
             }
-            close_windows(app);
             trace!("silent sign-in: no session");
             Err("timeout".to_string())
         }
@@ -334,6 +388,7 @@ pub async fn silent(app: &AppHandle, failed: &str) -> Result<(), String> {
 
 /// The window of the attempt `label` went away (the person closed it): that attempt is over.
 pub fn closed(app: &AppHandle, label: &str) {
+    close_attempt(app, label);
     let st = app.state::<ScState>();
     let p = st.pending.lock().ok().and_then(|mut g| if g.as_ref().is_some_and(|p| p.label == label && !p.silent) { g.take() } else { None });
     if let Some(mut p) = p {
@@ -349,6 +404,7 @@ pub fn closed(app: &AppHandle, label: &str) {
 /// deadlocks on Windows (the window stays white and the app stops answering).
 #[tauri::command]
 pub async fn sc_login(app: AppHandle) -> Result<(), String> {
+    let _prof = PROFILE.lock().await;
     open(&app, false).map(|_| ())
 }
 
@@ -364,6 +420,9 @@ pub async fn sc_logout(app: AppHandle) -> Result<(), String> {
     close_windows(&app);
     super::web::close(&app);
     emit_status(&app);
+    let _prof = PROFILE.lock().await;
+    close_windows(&app);
+    super::web::close(&app);
     wipe_profile(&app).await
 }
 
@@ -416,5 +475,14 @@ mod tests {
         assert_eq!(title_issue("Error 403 (disallowed_useragent)"), Some("disallowed_useragent"));
         assert_eq!(title_issue("Just a moment..."), Some("challenge"));
         assert_eq!(title_issue("Sign in - Google Accounts — user@gmail.com"), None);
+    }
+
+    #[test]
+    fn attempt_window_ownership_isolates_popups_per_login_attempt() {
+        assert_eq!(popup_prefix("sc-login-3"), "sc-popup-3-");
+        assert!(belongs_to_attempt("sc-login-3", "sc-login-3"));
+        assert!(belongs_to_attempt("sc-popup-3-0", "sc-login-3"));
+        assert!(!belongs_to_attempt("sc-login-4", "sc-login-3"));
+        assert!(!belongs_to_attempt("sc-popup-4-0", "sc-login-3"));
     }
 }

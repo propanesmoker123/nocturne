@@ -78,11 +78,14 @@ async fn send(app: &AppHandle, method: &str, path: &str, token: &str) -> Result<
     let until = Instant::now() + DEADLINE;
     loop {
         if Instant::now() >= until { close(app); return Err(network()); }
-        let ready = match eval(&w, "location.origin === 'https://soundcloud.com' && document.readyState === 'complete'".to_string()).await {
-            Ok(ready) => ready,
-            Err(e) => { close(app); return Err(e); }
-        };
-        if ready == "true" { break; }
+        match eval(&w, "location.origin === 'https://soundcloud.com' && document.readyState === 'complete'".to_string()).await {
+            Ok(ready) if ready == "true" => break,
+            Ok(_) | Err(_) => {
+                if app.get_webview_window(LABEL).is_none() {
+                    return Err(network());
+                }
+            }
+        }
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
     // Check both natively and inside the script before handing a service key to its own origin.
@@ -103,7 +106,9 @@ async fn send(app: &AppHandle, method: &str, path: &str, token: &str) -> Result<
         if let Some(result) = progress(poll) { break result; }
         tokio::time::sleep(Duration::from_millis(150)).await;
     };
-    let _ = w.eval(format!("(() => {{ const b = window.__nocturneScLikes; b?.['{key}']?.abort(); if (b) delete b['{key}']; }})()"));
+    if !matches!(answer, Err(ScError::Challenge)) {
+        let _ = w.eval(format!("(() => {{ const b = window.__nocturneScLikes; b?.['{key}']?.abort(); if (b) delete b['{key}']; }})()"));
+    }
     match &answer {
         Err(ScError::Challenge) => { let _ = w.show(); let _ = w.set_focus(); }
         Ok(_) => { let _ = w.hide(); }
@@ -129,7 +134,13 @@ async fn write(app: &AppHandle, method: &str, path: &str) -> Result<Value, ScErr
         return Err(ScError::Invalid { message: "request not allowed".to_string() });
     }
     let token = st.token().ok_or(ScError::SignedOut)?;
+    let failed_cid = st.ids().client_id;
     let mut answer = send(app, method, path, &token).await;
+    if matches!(answer, Err(ScError::Http { status: 401 })) && api::rediscover(app, &failed_cid).await {
+        let token = st.token().ok_or(ScError::SignedOut)?;
+        if st.status().user.map(|u| u.id) != Some(me) { return Err(ScError::SignedOut); }
+        answer = send(app, method, path, &token).await;
+    }
     if matches!(answer, Err(ScError::Http { status: 401 })) && login::silent(app, &token).await.is_ok() {
         let token = st.token().ok_or(ScError::SignedOut)?;
         if st.status().user.map(|u| u.id) != Some(me) { return Err(ScError::SignedOut); }

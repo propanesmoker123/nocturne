@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest'
+import { queryClient } from '../app/queryClient'
 import * as sc from './api'
 import { describeScError, SC_UNREACHABLE, ScApiError } from './errors'
 import { playlistRaw, systemPlaylistRaw, trackRaw, tracks } from './fixtures'
@@ -255,11 +256,59 @@ describe('SoundCloud profiles', () => {
     expect(calls.map((c) => c.path)).toEqual(['/users/7/followings/ids?limit=5000', '/users/7/followings/ids?cursor=2'])
   })
 
-  test('unfollow is a DELETE of my following', async () => {
-    sc.setScMeId(7)
+  test('unfollow is a DELETE of my following and refuses signed-out, self, and invalid targets', async () => {
     const calls = record(() => null)
+    await expect(sc.unfollow(12)).rejects.toMatchObject({ kind: 'signedOut' })
+    sc.setScMeId(7)
+    for (const id of [7, 0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(sc.unfollow(id)).rejects.toMatchObject({ kind: 'invalid' })
+    }
+    expect(calls).toEqual([])
     await sc.unfollow(12)
     expect(calls).toEqual([{ method: 'DELETE', path: '/me/followings/12' }])
+  })
+
+  test('getLikes only populates likedIds for the signed-in user and reconciles on first page', async () => {
+    sc.setScMeId(7)
+    record((path) => {
+      if (path.startsWith('/users/99/track_likes')) return { collection: [{ track: trackRaw(405, 'other user like') }] }
+      if (path.startsWith('/users/7/track_likes')) return { collection: [{ track: trackRaw(403, 'my like') }] }
+      return [trackRaw(403, 'my'), trackRaw(405, 'other')]
+    })
+    const otherPage = await sc.getLikes(99)
+    expect(otherPage.items[0]?.liked).toBe(false)
+    await sc.getLikes(7)
+    const got = await sc.getTracks([403, 405])
+    expect(got.map((t) => t.liked)).toEqual([true, false])
+  })
+
+  test('getTracks deduplicates ids and filters invalid ids before querying', async () => {
+    const calls = record((path) => idsOf(path).map((id) => trackRaw(id, `t${id}`)))
+    const got = await sc.getTracks([402, -5, 0, 402, Number.NaN, 403])
+    expect(calls).toEqual([{ method: 'GET', path: '/tracks?ids=402,403' }])
+    expect(got.map((t) => t.id)).toEqual([402, 402, 403])
+  })
+
+  test('search returns tracks even when users or playlists endpoint fails, and getMyPlaylists returns empty when signed out', async () => {
+    expect(await sc.getMyPlaylists()).toEqual([])
+    record((path) => {
+      if (path.startsWith('/search/users')) throw { kind: 'http', status: 500 }
+      if (path.startsWith('/search/tracks')) return { collection: [trackRaw(402, 'found')] }
+      return { collection: [] }
+    })
+    const res = await sc.search('test')
+    expect(res.tracks.map((t) => t.id)).toEqual([402])
+    expect(res.users).toEqual([])
+  })
+
+  test('queryClient retry policy does not retry non-network ScApiError instances', () => {
+    const retry = queryClient.getDefaultOptions().queries?.retry as (count: number, err: unknown) => boolean
+    expect(retry(0, new ScApiError('signedOut', ''))).toBe(false)
+    expect(retry(0, new ScApiError('challenge', ''))).toBe(false)
+    expect(retry(0, new ScApiError('invalid', ''))).toBe(false)
+    expect(retry(0, new ScApiError('http', '404', 404))).toBe(false)
+    expect(retry(0, new ScApiError('network', 'offline'))).toBe(true)
+    expect(retry(2, new ScApiError('network', 'offline'))).toBe(false)
   })
 
   test('comments of a track come with the track they belong to', async () => {
